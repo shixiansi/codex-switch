@@ -1,0 +1,2 @@
+"""Codex Switch desktop app."""
+
