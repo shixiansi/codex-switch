@@ -736,8 +736,6 @@ class CodexSwitchApp:
             for model in profile.health.models:
                 if model not in models:
                     models.append(model)
-        if profile.model and profile.model not in models:
-            models.insert(0, profile.model)
         return models or ["-"]
 
     def _reset_chat_target(self, profile: Profile | None) -> None:
@@ -768,7 +766,10 @@ class CodexSwitchApp:
 
         if not keep_history:
             self.clear_chat_history()
-            self._append_chat_line("系统", f"当前测试配置：{profile.name}\n可选模型：{', '.join(options[:])}")
+            if options == ["-"]:
+                self._append_chat_line("系统", f"当前测试配置：{profile.name}\n还没有可用的 API 返回模型，请先执行健康检测。")
+            else:
+                self._append_chat_line("系统", f"当前测试配置：{profile.name}\n可选模型：{', '.join(options)}")
 
     def clear_chat_history(self) -> None:
         self.chat_history.configure(state="normal")
