@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
 import ctypes
@@ -46,8 +47,8 @@ from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, proj
 
 _SINGLE_INSTANCE_HANDLE = None
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-_MAX_VISIBLE_MODEL_LINES = 20
 MODEL_BATCH_PROMPT = "ping"
+MODEL_BATCH_MAX_WORKERS = 3
 
 
 @dataclass
@@ -92,6 +93,67 @@ def successful_model_batch_models(cache: ModelBatchCache | None) -> list[str]:
     if cache is None or not cache.completed:
         return []
     return [model for model in ordered_model_batch_models(cache.models, cache.results, True) if cache.results.get(model, ModelBatchResult()).status == "success"]
+
+
+def run_model_batch_requests(
+    chat_tester: ChatTester,
+    profile: Profile,
+    models: list[str],
+    wire_api: str,
+    payload_text: str | None,
+    on_start,
+    on_result,
+    *,
+    max_workers: int = MODEL_BATCH_MAX_WORKERS,
+) -> None:
+    if not models:
+        return
+
+    worker_count = max(1, min(max_workers, len(models)))
+
+    def test_model(model: str) -> tuple[str, str, str]:
+        try:
+            result = chat_tester.send_message(
+                profile,
+                MODEL_BATCH_PROMPT,
+                model_override=model,
+                wire_api_override=wire_api,
+                payload_override_text=payload_text,
+            )
+            status = "success" if result.ok else "error"
+            detail = result.text
+            if result.detail:
+                detail = f"{detail}  {result.detail}"
+        except Exception:
+            status = "error"
+            detail = "测试异常"
+        return model, status, detail
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        pending_models = iter(models)
+        future_by_model = {}
+
+        def submit_next() -> None:
+            try:
+                model = next(pending_models)
+            except StopIteration:
+                return
+            on_start(model)
+            future_by_model[executor.submit(test_model, model)] = model
+
+        for _ in range(worker_count):
+            submit_next()
+
+        while future_by_model:
+            done, _ = wait(future_by_model, return_when=FIRST_COMPLETED)
+            for future in done:
+                model = future_by_model.pop(future)
+                try:
+                    result_model, status, detail = future.result()
+                except Exception:
+                    result_model, status, detail = model, "error", "测试异常"
+                on_result(result_model, status, detail)
+                submit_next()
 
 
 def _has_visible_codex_window() -> bool:
@@ -582,15 +644,26 @@ class CodexSwitchApp:
         self._create_info_row(detail, 4, "备注", self.library_selected_notes_var, wraplength=460)
 
         tk.Label(detail, text="返回模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="nw", padx=(0, 14), pady=(12, 4))
-        tk.Label(
-            detail,
-            textvariable=self.library_models_summary_var,
-            bg=PALETTE["card_bg"],
-            fg=PALETTE["text"],
+        models_wrap = tk.Frame(detail, bg=PALETTE["card_bg"])
+        models_wrap.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=(12, 4))
+        models_wrap.columnconfigure(0, weight=1)
+        models_wrap.rowconfigure(0, weight=1)
+        self.library_models_text = tk.Text(
+            models_wrap,
+            height=12,
+            wrap="word",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
             font=self.small_font,
-            justify="left",
-            wraplength=460,
-        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=(12, 4))
+            bg="#FBFDFE",
+            fg=PALETTE["text"],
+            state="disabled",
+        )
+        self.library_models_text.grid(row=0, column=0, sticky="nsew")
+        library_models_scroll = ttk.Scrollbar(models_wrap, orient="vertical", command=self.library_models_text.yview)
+        library_models_scroll.grid(row=0, column=1, sticky="ns")
+        self.library_models_text.configure(yscrollcommand=library_models_scroll.set)
 
     def _build_project_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1333,17 +1406,18 @@ class CodexSwitchApp:
         self.status_var.set(f"已打开 {profile.name} 的签到地址。")
 
     def _render_library_model_tags(self, models: list[str], empty_text: str) -> None:
-        if not models:
+        normalized_models = [str(model).strip() for model in models if str(model).strip()]
+        if not normalized_models:
             self.library_models_summary_var.set(empty_text)
+            if hasattr(self, "library_models_text"):
+                self._set_text_content(self.library_models_text, empty_text, disabled=True)
             return
-        visible_models = [str(model).strip() for model in models[:_MAX_VISIBLE_MODEL_LINES] if str(model).strip()]
-        overflow_count = max(0, len(models) - len(visible_models))
-        summary_lines = [f"共 {len(models)} 个模型。"]
-        if visible_models:
-            summary_lines.extend(f"- {model}" for model in visible_models)
-        if overflow_count:
-            summary_lines.append(f"另有 {overflow_count} 个模型未显示，为避免界面卡顿已省略。")
-        self.library_models_summary_var.set("\n".join(summary_lines))
+        summary_lines = [f"共 {len(normalized_models)} 个模型。"]
+        summary_lines.extend(f"- {model}" for model in normalized_models)
+        content = "\n".join(summary_lines)
+        self.library_models_summary_var.set(content)
+        if hasattr(self, "library_models_text"):
+            self._set_text_content(self.library_models_text, content, disabled=True)
 
     def refresh_project_tab(self) -> None:
         selected_id = self.selected_project_id
@@ -2319,24 +2393,15 @@ class CodexSwitchApp:
         self.status_var.set(f"正在批量测试 {profile.name} 的 {len(models)} 个模型...")
 
         def worker() -> None:
-            for model in models:
-                self.root.after(0, self._apply_model_batch_result, profile.id, model, "running", "")
-                try:
-                    result = self.chat_tester.send_message(
-                        profile,
-                        MODEL_BATCH_PROMPT,
-                        model_override=model,
-                        wire_api_override=wire_api,
-                        payload_override_text=payload_text,
-                    )
-                    status = "success" if result.ok else "error"
-                    detail = result.text
-                    if result.detail:
-                        detail = f"{detail}  {result.detail}"
-                except Exception:
-                    status = "error"
-                    detail = "测试异常"
-                self.root.after(0, self._apply_model_batch_result, profile.id, model, status, detail)
+            run_model_batch_requests(
+                self.chat_tester,
+                profile,
+                models,
+                wire_api,
+                payload_text,
+                lambda model: self.root.after(0, self._apply_model_batch_result, profile.id, model, "running", ""),
+                lambda model, status, detail: self.root.after(0, self._apply_model_batch_result, profile.id, model, status, detail),
+            )
             self.root.after(0, self._mark_model_batch_complete, profile.id)
 
         threading.Thread(target=worker, daemon=True).start()

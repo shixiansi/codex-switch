@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import shutil
 import threading
+import time
 import tomllib
 import unittest
 import uuid
@@ -20,7 +21,7 @@ for path in (SRC, ROOT):
         sys.path.insert(0, str(path))
 
 from codex_switch import main
-from codex_switch.chat import ChatTester
+from codex_switch.chat import ChatResult, ChatTester
 from codex_switch.codex_config import CodexConfigManager, scope_mcp_servers_to_project
 from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import HealthResult, Profile
@@ -36,6 +37,7 @@ from codex_switch.ui.app import (
     ModelBatchResult,
     model_batch_targets,
     ordered_model_batch_models,
+    run_model_batch_requests,
     successful_model_batch_models,
     visible_profiles_for_filter,
 )
@@ -152,6 +154,45 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(successful_model_batch_models(cache), ["m2"])
         cache.completed = False
         self.assertEqual(successful_model_batch_models(cache), [])
+
+    def test_run_model_batch_requests_uses_three_concurrent_requests(self) -> None:
+        class FakeChatTester:
+            def __init__(self) -> None:
+                self.active = 0
+                self.max_active = 0
+                self.lock = threading.Lock()
+
+            def send_message(self, profile, prompt, model_override=None, wire_api_override=None, payload_override_text=None):
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(0.03)
+                    return ChatResult(ok=True, text=f"ok {model_override}")
+                finally:
+                    with self.lock:
+                        self.active -= 1
+
+        profile = Profile.create("api", "https://api.example.com", "sk-api")
+        models = [f"model-{index}" for index in range(8)]
+        tester = FakeChatTester()
+        started: list[str] = []
+        results: list[tuple[str, str, str]] = []
+
+        run_model_batch_requests(
+            tester,
+            profile,
+            models,
+            "responses",
+            None,
+            started.append,
+            lambda model, status, detail: results.append((model, status, detail)),
+        )
+
+        self.assertEqual(set(started), set(models))
+        self.assertEqual({model for model, _, _ in results}, set(models))
+        self.assertTrue(all(status == "success" for _, status, _ in results))
+        self.assertEqual(tester.max_active, 3)
 
 
 class CodexConfigManagerTests(unittest.TestCase):
@@ -328,6 +369,15 @@ class HealthCheckerTests(unittest.TestCase):
             build_candidate_urls("https://api.example.com/v1"),
             ["https://api.example.com/v1/models"],
         )
+
+    def test_success_payload_keeps_all_returned_models(self) -> None:
+        payload = {"data": [{"id": f"model-{index}"} for index in range(35)]}
+        detail, models = HealthChecker()._build_success_payload(json.dumps(payload))
+
+        self.assertIn("35", detail)
+        self.assertEqual(len(models), 35)
+        self.assertEqual(models[0], "model-0")
+        self.assertEqual(models[-1], "model-34")
 
     def test_health_check_success(self) -> None:
         class Handler(BaseHTTPRequestHandler):

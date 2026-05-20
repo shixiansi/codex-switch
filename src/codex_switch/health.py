@@ -123,8 +123,6 @@ class HealthChecker:
             model_id = str(item.get("id", "")).strip()
             if model_id and model_id not in models:
                 models.append(model_id)
-            if len(models) >= 24:
-                break
 
         if models:
             return f"接口可用，已返回 {len(models)} 个模型", models
