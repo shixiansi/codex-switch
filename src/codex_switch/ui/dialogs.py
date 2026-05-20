@@ -326,24 +326,24 @@ class SuccessfulModelsDialog(tk.Toplevel):
         for column in range(column_count):
             self.tags.columnconfigure(column, weight=1)
         for index, model in enumerate(models):
-            tag = tk.Label(
+            tag = tk.Canvas(
                 self.tags,
-                text=compact_text(model, 28),
-                bg=PALETTE["success_soft"],
-                fg=PALETTE["success"],
-                activebackground=PALETTE["selection_bg"],
-                activeforeground=PALETTE["success"],
-                font=("Microsoft YaHei UI", 10, "bold"),
-                relief="solid",
-                borderwidth=1,
-                padx=12,
-                pady=8,
+                width=244,
+                height=38,
+                bg=PALETTE["card_bg"],
+                highlightthickness=0,
                 cursor="hand2",
-                justify="left",
-                anchor="w",
-                width=28,
             )
-            tag.grid(row=index // column_count, column=index % column_count, sticky="ew", padx=6, pady=6)
+            tag.create_rectangle(1, 1, 243, 37, fill=PALETTE["success_soft"], outline="#A7F3D0")
+            tag.create_text(
+                13,
+                19,
+                text=compact_text(model, 28),
+                fill=PALETTE["success"],
+                font=("Microsoft YaHei UI", 10, "bold"),
+                anchor="w",
+            )
+            tag.grid(row=index // column_count, column=index % column_count, sticky="w", padx=6, pady=6)
             tag.bind("<Button-1>", lambda _event, name=model: self._copy_model(name))
 
     def _copy_model(self, model: str) -> None:
