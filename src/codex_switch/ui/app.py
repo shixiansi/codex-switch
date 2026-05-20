@@ -516,10 +516,10 @@ class CodexSwitchApp:
             ("global", "全局配置"),
             ("library", "配置库"),
             ("project", "项目配置"),
+            ("test", "模型测试"),
             ("mcp", "MCP配置"),
             ("docs", "文档配置"),
             ("settings", "设置"),
-            ("test", "模型测试"),
         ]
         self.top_nav = TopNav(shell, tabs, self._show_tab)
         self.top_nav.grid(row=1, column=0, sticky="ew", pady=(0, 10))
