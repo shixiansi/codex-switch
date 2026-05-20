@@ -31,10 +31,12 @@ from codex_switch.project_template import (
     GITIGNORE_MANAGED_END,
     ProjectTemplateService,
 )
-from codex_switch.storage import ProfileStore
+from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY, ProfileStore, clamp_model_batch_concurrency
 from codex_switch.ui.app import (
     ModelBatchCache,
     ModelBatchResult,
+    model_batch_caches_from_payload,
+    model_batch_caches_to_payload,
     model_batch_targets,
     ordered_model_batch_models,
     run_model_batch_requests,
@@ -77,6 +79,8 @@ class ProfileStoreTests(unittest.TestCase):
                 applied_global_mcp_server_names,
                 global_mcp_opt_out,
                 agents_doc_text,
+                model_batch_concurrency,
+                model_batch_cache_by_profile,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -93,6 +97,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertFalse(global_mcp_opt_out)
             self.assertIsInstance(agents_doc_text, str)
             self.assertTrue(agents_doc_text.strip())
+            self.assertEqual(model_batch_concurrency, DEFAULT_MODEL_BATCH_CONCURRENCY)
+            self.assertEqual(model_batch_cache_by_profile, {})
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -103,8 +109,47 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 4)
+            self.assertEqual(payload["version"], 5)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
+
+    def test_store_persists_model_batch_settings(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            cache_payload = {
+                "profile-1": {
+                    "models": ["m1"],
+                    "results": {"m1": {"status": "success", "detail": "ok"}},
+                    "completed": True,
+                    "tested_at": "2026-05-20T12:00:00",
+                }
+            }
+
+            store.save([], None, model_batch_concurrency=5, model_batch_cache_by_profile=cache_payload)
+            loaded = store.load()
+
+            self.assertEqual(loaded[9], 5)
+            self.assertEqual(loaded[10], cache_payload)
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["settings"]["model_batch_concurrency"], 5)
+            self.assertEqual(payload["settings"]["model_batch_cache_by_profile"], cache_payload)
+
+    def test_store_loads_legacy_payload_with_model_batch_defaults(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            store.storage_path.write_text(
+                json.dumps({"version": 4, "profiles": [], "settings": {}}),
+                encoding="utf-8",
+            )
+
+            loaded = store.load()
+
+            self.assertEqual(loaded[9], DEFAULT_MODEL_BATCH_CONCURRENCY)
+            self.assertEqual(loaded[10], {})
+
+    def test_model_batch_concurrency_is_clamped(self) -> None:
+        self.assertEqual(clamp_model_batch_concurrency(0), 1)
+        self.assertEqual(clamp_model_batch_concurrency(9), 5)
+        self.assertEqual(clamp_model_batch_concurrency("bad"), DEFAULT_MODEL_BATCH_CONCURRENCY)
 
 
 class UiFilterTests(unittest.TestCase):
@@ -154,6 +199,33 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(successful_model_batch_models(cache), ["m2"])
         cache.completed = False
         self.assertEqual(successful_model_batch_models(cache), [])
+
+    def test_model_batch_cache_payload_roundtrip_completed_only(self) -> None:
+        caches = {
+            "done": ModelBatchCache(
+                models=["m1", "m2"],
+                results={
+                    "m1": ModelBatchResult(status="success", detail="ok"),
+                    "m2": ModelBatchResult(status="error", detail="bad"),
+                },
+                completed=True,
+                tested_at="2026-05-20T12:00:00",
+            ),
+            "running": ModelBatchCache(
+                models=["m3"],
+                results={"m3": ModelBatchResult(status="running")},
+                completed=False,
+            ),
+        }
+
+        payload = model_batch_caches_to_payload(caches)
+        self.assertEqual(set(payload.keys()), {"done"})
+
+        restored = model_batch_caches_from_payload(payload)
+        self.assertEqual(restored["done"].models, ["m1", "m2"])
+        self.assertTrue(restored["done"].completed)
+        self.assertEqual(restored["done"].results["m1"].status, "success")
+        self.assertEqual(restored["done"].results["m2"].detail, "bad")
 
     def test_run_model_batch_requests_uses_three_concurrent_requests(self) -> None:
         class FakeChatTester:

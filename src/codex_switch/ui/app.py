@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 import ctypes
 from ctypes import wintypes
 import json
 import os
+import platform
 import subprocess
 import threading
 import tkinter as tk
 import webbrowser
+import sys
 from tkinter import font as tkfont
 from tkinter import messagebox
 
+from codex_switch import __version__
 from codex_switch.chat import SUPPORTED_WIRE_APIS, ChatResult, ChatTester
 from codex_switch.codex_config import (
     CodexConfigManager,
@@ -26,7 +30,13 @@ from codex_switch.codex_config import (
 from codex_switch.health import HealthChecker
 from codex_switch.models import CurrentCodexConfig, HealthResult, Profile, ProjectRecord, now_iso, project_dir_key, today_iso
 from codex_switch.project_template import CODEX_SCRIPT_DIRNAME, ProjectTemplateService, load_default_agents_doc_text
-from codex_switch.storage import ProfileStore
+from codex_switch.storage import (
+    DEFAULT_MODEL_BATCH_CONCURRENCY,
+    MODEL_BATCH_CONCURRENCY_MAX,
+    MODEL_BATCH_CONCURRENCY_MIN,
+    ProfileStore,
+    clamp_model_batch_concurrency,
+)
 from codex_switch.ui.dialogs import ChatSettingsDialog, McpConfigDialog, McpServerDialog, ModelBatchTestDialog, ProfileDialog, ProjectDialog
 from codex_switch.ui.styles import (
     BOOTSTRAP_THEME,
@@ -48,7 +58,6 @@ from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, proj
 _SINGLE_INSTANCE_HANDLE = None
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 MODEL_BATCH_PROMPT = "ping"
-MODEL_BATCH_MAX_WORKERS = 3
 
 
 @dataclass
@@ -95,6 +104,72 @@ def successful_model_batch_models(cache: ModelBatchCache | None) -> list[str]:
     return [model for model in ordered_model_batch_models(cache.models, cache.results, True) if cache.results.get(model, ModelBatchResult()).status == "success"]
 
 
+def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:
+    if not isinstance(payload, dict):
+        return {}
+
+    caches: dict[str, ModelBatchCache] = {}
+    for profile_id, cache_payload in payload.items():
+        if not str(profile_id).strip() or not isinstance(cache_payload, dict):
+            continue
+        if not bool(cache_payload.get("completed", False)):
+            continue
+
+        raw_models = cache_payload.get("models", [])
+        if not isinstance(raw_models, list):
+            continue
+        models = [str(model).strip() for model in raw_models if str(model).strip()]
+        if not models:
+            continue
+
+        raw_results = cache_payload.get("results", {})
+        if not isinstance(raw_results, dict):
+            raw_results = {}
+        results: dict[str, ModelBatchResult] = {}
+        for model in models:
+            result_payload = raw_results.get(model, {})
+            if not isinstance(result_payload, dict):
+                result_payload = {}
+            status = str(result_payload.get("status", "pending") or "pending")
+            if status not in {"pending", "running", "success", "error"}:
+                status = "pending"
+            results[model] = ModelBatchResult(
+                status=status,
+                detail=str(result_payload.get("detail", "") or ""),
+            )
+
+        caches[str(profile_id)] = ModelBatchCache(
+            models=models,
+            results=results,
+            completed=True,
+            tested_at=str(cache_payload.get("tested_at") or "") or None,
+        )
+    return caches
+
+
+def model_batch_caches_to_payload(caches: dict[str, ModelBatchCache]) -> dict[str, dict]:
+    payload: dict[str, dict] = {}
+    for profile_id, cache in caches.items():
+        if not cache.completed:
+            continue
+        models = [str(model).strip() for model in cache.models if str(model).strip()]
+        if not models:
+            continue
+        payload[str(profile_id)] = {
+            "models": models,
+            "results": {
+                model: {
+                    "status": cache.results.get(model, ModelBatchResult()).status,
+                    "detail": cache.results.get(model, ModelBatchResult()).detail,
+                }
+                for model in models
+            },
+            "completed": True,
+            "tested_at": cache.tested_at,
+        }
+    return payload
+
+
 def run_model_batch_requests(
     chat_tester: ChatTester,
     profile: Profile,
@@ -104,7 +179,7 @@ def run_model_batch_requests(
     on_start,
     on_result,
     *,
-    max_workers: int = MODEL_BATCH_MAX_WORKERS,
+    max_workers: int = DEFAULT_MODEL_BATCH_CONCURRENCY,
 ) -> None:
     if not models:
         return
@@ -279,6 +354,10 @@ class CodexSwitchApp:
                 self.global_mcp_opt_out,
             ) = load_state[:8]
             self.agents_doc_text = load_state[8] if len(load_state) >= 9 else load_default_agents_doc_text()
+            self.model_batch_concurrency = clamp_model_batch_concurrency(
+                load_state[9] if len(load_state) >= 10 else DEFAULT_MODEL_BATCH_CONCURRENCY
+            )
+            raw_model_batch_cache_by_profile = load_state[10] if len(load_state) >= 11 else {}
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -288,6 +367,8 @@ class CodexSwitchApp:
             self.applied_global_mcp_server_names = []
             self.global_mcp_opt_out = False
             self.agents_doc_text = load_default_agents_doc_text()
+            self.model_batch_concurrency = DEFAULT_MODEL_BATCH_CONCURRENCY
+            raw_model_batch_cache_by_profile = {}
         self.mcp_page_servers: dict[str, dict] = {}
 
         self.current_config: CurrentCodexConfig | None = None
@@ -296,7 +377,7 @@ class CodexSwitchApp:
         self.model_batch_busy = False
         self.model_batch_profile_id: str | None = None
         self.model_batch_running_profile_id: str | None = None
-        self.model_batch_cache_by_profile: dict[str, ModelBatchCache] = {}
+        self.model_batch_cache_by_profile: dict[str, ModelBatchCache] = model_batch_caches_from_payload(raw_model_batch_cache_by_profile)
         self.model_batch_dialog: ModelBatchTestDialog | None = None
         self.model_batch_dialog_profile_id: str | None = None
         self.updating_health_override = False
@@ -357,6 +438,18 @@ class CodexSwitchApp:
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
         self.mcp_selected_summary_var = tk.StringVar(value="选择左侧工具后查看配置预览。")
         self.docs_hint_var = tk.StringVar(value="编辑后的 AGENTS 模板会用于后续项目模板生成。")
+
+        self.settings_hint_var = tk.StringVar(value="模型批量测试设置会从下一次测试开始生效。")
+        self.model_batch_concurrency_var = tk.StringVar(value=str(self.model_batch_concurrency))
+        self.settings_version_var = tk.StringVar(value="-")
+        self.settings_python_var = tk.StringVar(value="-")
+        self.settings_tk_var = tk.StringVar(value="-")
+        self.settings_ttkbootstrap_var = tk.StringVar(value="-")
+        self.settings_storage_path_var = tk.StringVar(value="-")
+        self.settings_codex_config_path_var = tk.StringVar(value="-")
+        self.settings_codex_auth_path_var = tk.StringVar(value="-")
+        self.settings_project_root_var = tk.StringVar(value="-")
+        self.settings_platform_var = tk.StringVar(value="-")
 
         self.test_selected_name_var = tk.StringVar(value="未选择测试配置")
         self.test_detail_health_var = tk.StringVar(value="未检测")
@@ -425,6 +518,7 @@ class CodexSwitchApp:
             ("project", "项目配置"),
             ("mcp", "MCP配置"),
             ("docs", "文档配置"),
+            ("settings", "设置"),
             ("test", "模型测试"),
         ]
         self.top_nav = TopNav(shell, tabs, self._show_tab)
@@ -440,6 +534,7 @@ class CodexSwitchApp:
         self.project_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.mcp_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.docs_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
+        self.settings_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.test_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.tab_frames = {
             "global": self.global_tab,
@@ -447,6 +542,7 @@ class CodexSwitchApp:
             "project": self.project_tab,
             "mcp": self.mcp_tab,
             "docs": self.docs_tab,
+            "settings": self.settings_tab,
             "test": self.test_tab,
         }
         for frame in self.tab_frames.values():
@@ -457,6 +553,7 @@ class CodexSwitchApp:
         self._build_project_tab(self.project_tab)
         self._build_mcp_tab(self.mcp_tab)
         self._build_docs_tab(self.docs_tab)
+        self._build_settings_tab(self.settings_tab)
         self._build_test_tab(self.test_tab)
         self._show_tab("global")
 
@@ -881,6 +978,53 @@ class CodexSwitchApp:
         doc_scroll.grid(row=0, column=1, sticky="ns")
         self.agents_doc_editor.configure(yscrollcommand=doc_scroll.set)
 
+    def _build_settings_tab(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        settings_card = self._make_card(parent)
+        settings_card.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        settings_card.columnconfigure(1, weight=1)
+
+        tk.Label(settings_card, text="设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=3, sticky="w")
+        tk.Label(settings_card, textvariable=self.settings_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(4, 12),
+        )
+        tk.Label(settings_card, text="模型批量测试同时请求数", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=(0, 14),
+        )
+        tk.Spinbox(
+            settings_card,
+            from_=MODEL_BATCH_CONCURRENCY_MIN,
+            to=MODEL_BATCH_CONCURRENCY_MAX,
+            textvariable=self.model_batch_concurrency_var,
+            width=8,
+            font=self.body_font,
+            relief="solid",
+            borderwidth=1,
+        ).grid(row=2, column=1, sticky="w")
+        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=2, column=2, sticky="e")
+
+        info_card = self._make_card(parent)
+        info_card.grid(row=1, column=0, sticky="nsew")
+        info_card.columnconfigure(1, weight=1)
+        info_card.columnconfigure(3, weight=1)
+        tk.Label(info_card, text="版本与环境", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=4, sticky="w")
+        self._create_dual_info_row(info_card, 1, "应用版本", self.settings_version_var, "Python", self.settings_python_var)
+        self._create_dual_info_row(info_card, 2, "Tk/Tcl", self.settings_tk_var, "ttkbootstrap", self.settings_ttkbootstrap_var)
+        self._create_info_row(info_card, 3, "配置库", self.settings_storage_path_var, wraplength=900)
+        self._create_info_row(info_card, 4, "Codex config", self.settings_codex_config_path_var, wraplength=900)
+        self._create_info_row(info_card, 5, "Codex auth", self.settings_codex_auth_path_var, wraplength=900)
+        self._create_info_row(info_card, 6, "当前工作目录", self.settings_project_root_var, wraplength=900)
+        self._create_info_row(info_card, 7, "平台", self.settings_platform_var, wraplength=900)
+
     def _build_test_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -1255,8 +1399,25 @@ class CodexSwitchApp:
         self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_mcp_tab()
+        self.refresh_settings_tab()
         self.refresh_test_tab()
-        self.status_var.set("已刷新全局配置、配置库、项目配置、MCP配置、文档配置和模型测试。")
+        self.status_var.set("已刷新全局配置、配置库、项目配置、MCP配置、文档配置、设置和模型测试。")
+
+    def refresh_settings_tab(self) -> None:
+        self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
+        self.settings_version_var.set(__version__)
+        self.settings_python_var.set(sys.version.split()[0])
+        self.settings_tk_var.set(f"Tcl/Tk {self.root.tk.call('info', 'patchlevel')}")
+        try:
+            ttkbootstrap_version = package_version("ttkbootstrap")
+        except PackageNotFoundError:
+            ttkbootstrap_version = "未安装"
+        self.settings_ttkbootstrap_var.set(ttkbootstrap_version)
+        self.settings_storage_path_var.set(str(self.store.storage_path))
+        self.settings_codex_config_path_var.set(str(self.manager.config_path))
+        self.settings_codex_auth_path_var.set(str(self.manager.auth_path))
+        self.settings_project_root_var.set(str(self.project_root))
+        self.settings_platform_var.set(platform.platform())
 
     def _schedule_sign_in_status_refresh(self) -> None:
         if not self.root.winfo_exists():
@@ -1717,7 +1878,22 @@ class CodexSwitchApp:
             self.applied_global_mcp_server_names,
             self.global_mcp_opt_out,
             self.agents_doc_text,
+            self.model_batch_concurrency,
+            model_batch_caches_to_payload(
+                {
+                    profile_id: cache
+                    for profile_id, cache in self.model_batch_cache_by_profile.items()
+                    if self._profile_by_id(profile_id) is not None
+                }
+            ),
         )
+
+    def save_settings(self) -> None:
+        self.model_batch_concurrency = clamp_model_batch_concurrency(self.model_batch_concurrency_var.get())
+        self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
+        self.persist_state()
+        self.settings_hint_var.set(f"已保存设置：模型批量测试最多 {self.model_batch_concurrency} 个并发请求。")
+        self.status_var.set("已保存设置。")
 
     def on_close(self) -> None:
         _release_single_instance()
@@ -2167,10 +2343,6 @@ class CodexSwitchApp:
         profile = self._profile_by_id(profile_id)
         if profile is None:
             return
-        old_models = model_batch_targets(profile)
-        new_models = model_batch_targets(replace(profile, health=result))
-        if old_models != new_models and profile_id != self.model_batch_running_profile_id:
-            self.model_batch_cache_by_profile.pop(profile_id, None)
         profile.health = result
         self.persist_state()
         self.refresh_global_tab()
@@ -2384,6 +2556,7 @@ class CodexSwitchApp:
             return
         wire_api = self.chat_wire_choice_var.get().strip() or profile.wire_api
         payload_text = self.chat_request_body_text.strip() or None
+        max_workers = self.model_batch_concurrency
         self.model_batch_profile_id = profile.id
         self.model_batch_running_profile_id = profile.id
         cache = self._create_model_batch_cache(profile)
@@ -2401,6 +2574,7 @@ class CodexSwitchApp:
                 payload_text,
                 lambda model: self.root.after(0, self._apply_model_batch_result, profile.id, model, "running", ""),
                 lambda model, status, detail: self.root.after(0, self._apply_model_batch_result, profile.id, model, status, detail),
+                max_workers=max_workers,
             )
             self.root.after(0, self._mark_model_batch_complete, profile.id)
 
@@ -2413,6 +2587,7 @@ class CodexSwitchApp:
         if profile is None:
             return
         self.model_batch_cache_by_profile.pop(profile_id, None)
+        self.persist_state()
         self._start_model_batch_test(profile)
 
     def _open_model_batch_dialog(self, profile: Profile, cache: ModelBatchCache) -> None:
@@ -2479,6 +2654,7 @@ class CodexSwitchApp:
         cache.tested_at = now_iso()
         self.model_batch_busy = False
         self.model_batch_running_profile_id = None
+        self.persist_state()
         self._sync_model_batch_button(self.get_selected_profile())
         self._render_model_batch_dialog(cache)
         self._refresh_model_batch_health_display(profile_id)
