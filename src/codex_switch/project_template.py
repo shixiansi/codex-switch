@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import shutil
+import sys
+
+from codex_switch.codex_config import (
+    PROJECT_ENV_KEY,
+    dumps_toml,
+    render_project_repo_config,
+    render_project_runtime_config,
+    timestamp_label,
+)
+from codex_switch.models import Profile
+from codex_switch.resources import asset_path
+
+
+CODEX_SCRIPT_DIRNAME = "codex_scripts"
+GITIGNORE_MANAGED_BEGIN = "# >>> codex-switch managed ignores >>>"
+GITIGNORE_MANAGED_END = "# <<< codex-switch managed ignores <<<"
+MANAGED_GITIGNORE_RULES = (
+    f"{CODEX_SCRIPT_DIRNAME}/",
+)
+MANAGED_TEMPLATE_FILES = (
+    "AGENTS.md",
+    f"{CODEX_SCRIPT_DIRNAME}/start-codex.ps1",
+    f"{CODEX_SCRIPT_DIRNAME}/start-codex.cmd",
+    f"{CODEX_SCRIPT_DIRNAME}/codex-profile.cmd",
+    ".codex/config.toml",
+    ".codex/local.env",
+    ".codex/local.env.example",
+    ".codex/home/config.toml",
+    ".codex/home/AGENTS.md",
+)
+GENERATED_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
+BACKUP_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
+
+
+def load_default_agents_doc_text() -> str:
+    return asset_path("AGENTS.md").read_text(encoding="utf-8")
+
+
+def upsert_managed_gitignore_block(existing_text: str) -> str:
+    normalized = existing_text.replace("\r\n", "\n")
+    managed_block = "\n".join(
+        (
+            GITIGNORE_MANAGED_BEGIN,
+            *MANAGED_GITIGNORE_RULES,
+            GITIGNORE_MANAGED_END,
+        )
+    )
+    start = normalized.find(GITIGNORE_MANAGED_BEGIN)
+    end = normalized.find(GITIGNORE_MANAGED_END)
+    if start != -1 and end != -1 and end >= start:
+        end += len(GITIGNORE_MANAGED_END)
+        prefix = normalized[:start].rstrip("\n")
+        suffix = normalized[end:].lstrip("\n")
+        parts = [part for part in (prefix, managed_block, suffix) if part]
+        return "\n\n".join(parts).rstrip("\n") + "\n"
+
+    base = normalized.rstrip("\n")
+    parts = [part for part in (base, managed_block) if part]
+    return "\n\n".join(parts).rstrip("\n") + "\n"
+
+
+@dataclass
+class ProjectTemplateResult:
+    generated_paths: list[Path]
+    backup_dir: Path
+    project_root: Path
+    start_script_path: Path
+
+
+@dataclass
+class ProjectTemplateStatus:
+    generated_paths: list[Path]
+    backup_dir: Path | None
+    project_root: Path
+    start_script_path: Path
+
+
+class ProjectTemplateService:
+    def generate(
+        self,
+        project_root: Path,
+        profile: Profile,
+        *,
+        global_mcp_toml: str = "",
+        project_mcp_toml: str = "",
+        agents_doc_text: str | None = None,
+    ) -> ProjectTemplateResult:
+        project_root = project_root.resolve()
+        codex_dir = project_root / ".codex"
+        backup_root = codex_dir / "template-backups"
+
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        backup_root.mkdir(parents=True, exist_ok=True)
+
+        backup_dir = self._backup_managed_files(project_root, backup_root)
+        files = self._render_files(
+            project_root,
+            profile,
+            global_mcp_toml=global_mcp_toml,
+            project_mcp_toml=project_mcp_toml,
+            agents_doc_text=agents_doc_text,
+        )
+
+        generated_paths: list[Path] = []
+        for relative_path, content in files.items():
+            target = project_root / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            generated_paths.append(target)
+
+        return ProjectTemplateResult(
+            generated_paths=generated_paths,
+            backup_dir=backup_dir,
+            project_root=project_root,
+            start_script_path=project_root / CODEX_SCRIPT_DIRNAME / "start-codex.ps1",
+        )
+
+    def inspect(self, project_root: Path) -> ProjectTemplateStatus:
+        project_root = project_root.resolve()
+        backup_root = project_root / ".codex" / "template-backups"
+        backup_dir = None
+        if backup_root.exists():
+            backup_dirs = sorted(
+                (path for path in backup_root.iterdir() if path.is_dir()),
+                key=lambda path: path.name,
+                reverse=True,
+            )
+            if backup_dirs:
+                backup_dir = backup_dirs[0]
+
+        generated_paths = [
+            project_root / relative_path
+            for relative_path in MANAGED_TEMPLATE_FILES
+            if (project_root / relative_path).exists()
+        ]
+        gitignore_path = project_root / ".gitignore"
+        if self._has_managed_gitignore_block(gitignore_path):
+            generated_paths.append(gitignore_path)
+        return ProjectTemplateStatus(
+            generated_paths=generated_paths,
+            backup_dir=backup_dir,
+            project_root=project_root,
+            start_script_path=project_root / CODEX_SCRIPT_DIRNAME / "start-codex.ps1",
+        )
+
+    def _backup_managed_files(self, project_root: Path, backup_root: Path) -> Path:
+        backup_dir = backup_root / timestamp_label()
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        for relative_path in BACKUP_TEMPLATE_FILES:
+            source = project_root / relative_path
+            if not source.exists():
+                continue
+            destination = backup_dir / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+        return backup_dir
+
+    def _render_files(
+        self,
+        project_root: Path,
+        profile: Profile,
+        *,
+        global_mcp_toml: str = "",
+        project_mcp_toml: str = "",
+        agents_doc_text: str | None = None,
+    ) -> dict[str, str]:
+        effective_project_mcp_toml = project_mcp_toml or global_mcp_toml
+        agents_content = self._render_agents_file(agents_doc_text)
+        return {
+            "AGENTS.md": agents_content,
+            f"{CODEX_SCRIPT_DIRNAME}/start-codex.ps1": self._render_start_script(),
+            f"{CODEX_SCRIPT_DIRNAME}/start-codex.cmd": self._render_cmd_start_script(),
+            f"{CODEX_SCRIPT_DIRNAME}/codex-profile.cmd": self._render_profile_launcher(),
+            ".gitignore": self._render_gitignore(project_root),
+            ".codex/config.toml": dumps_toml(
+                render_project_repo_config(
+                    project_mcp_toml=effective_project_mcp_toml,
+                    project_root=project_root,
+                )
+            ),
+            ".codex/local.env": self._render_local_env(profile.api_key),
+            ".codex/local.env.example": self._render_local_env_example(),
+            ".codex/home/config.toml": dumps_toml(
+                render_project_runtime_config(
+                    profile,
+                    global_mcp_toml=global_mcp_toml,
+                    project_root=project_root,
+                )
+            ),
+            ".codex/home/AGENTS.md": agents_content,
+        }
+
+    def _render_agents_file(self, agents_doc_text: str | None = None) -> str:
+        if agents_doc_text is not None:
+            return agents_doc_text
+        return load_default_agents_doc_text()
+
+    def _render_gitignore(self, project_root: Path) -> str:
+        gitignore_path = project_root / ".gitignore"
+        existing_text = ""
+        if gitignore_path.exists():
+            existing_text = gitignore_path.read_text(encoding="utf-8")
+        return upsert_managed_gitignore_block(existing_text)
+
+    def _has_managed_gitignore_block(self, gitignore_path: Path) -> bool:
+        if not gitignore_path.exists():
+            return False
+        try:
+            content = gitignore_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return GITIGNORE_MANAGED_BEGIN in content and GITIGNORE_MANAGED_END in content
+
+    def _template_asset_path(self, relative_path: str) -> Path:
+        return asset_path(relative_path)
+
+    def _render_start_script(self) -> str:
+        return """$ErrorActionPreference = 'Stop'
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptDir
+$envFile = Join-Path $projectRoot '.codex\\local.env'
+$codexHome = Join-Path $projectRoot '.codex\\home'
+$userDataDir = Join-Path $env:LOCALAPPDATA 'Code-codex'
+$settingsDir = Join-Path $userDataDir 'User'
+$settingsPath = Join-Path $settingsDir 'settings.json'
+
+if (-not (Test-Path -LiteralPath $envFile)) {
+  throw "Missing $envFile. Copy .codex\\local.env.example to .codex\\local.env first."
+}
+
+if (-not (Test-Path -LiteralPath (Join-Path $codexHome 'config.toml'))) {
+  throw "Missing $codexHome\\config.toml."
+}
+
+$codeCli = Get-Command code.cmd -ErrorAction SilentlyContinue
+if (-not $codeCli) {
+  $codeCli = Get-Command code -ErrorAction SilentlyContinue | Where-Object { $_.Source -like '*.cmd' } | Select-Object -First 1
+}
+if (-not $codeCli) {
+  throw "VS Code CLI 'code.cmd' was not found. Make sure the VS Code shell command is installed."
+}
+
+New-Item -ItemType Directory -Force -Path $settingsDir | Out-Null
+
+$settings = [pscustomobject]@{}
+if (Test-Path -LiteralPath $settingsPath) {
+  $raw = Get-Content -LiteralPath $settingsPath -Raw
+  $raw = $raw.TrimStart([char]0xFEFF)
+  if ($raw.Trim()) {
+    try {
+      $settings = $raw | ConvertFrom-Json
+    } catch {
+      $settings = [pscustomobject]@{}
+    }
+  }
+}
+
+if ($settings.PSObject.Properties['chatgpt.cliExecutable']) {
+  $settings.PSObject.Properties.Remove('chatgpt.cliExecutable')
+}
+
+$json = $settings | ConvertTo-Json -Depth 20
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($settingsPath, $json, $utf8NoBom)
+
+Get-Content -LiteralPath $envFile | ForEach-Object {
+  if ($_ -match '^\\s*([^#=]+?)\\s*=\\s*(.*)\\s*$') {
+    [Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), 'Process')
+  }
+}
+
+[Environment]::SetEnvironmentVariable('CODEX_HOME', $codexHome, 'Process')
+
+Start-Process -FilePath $codeCli.Source -ArgumentList @(
+  $projectRoot,
+  '--new-window',
+  '--user-data-dir', $userDataDir
+)
+"""
+
+    def _render_cmd_start_script(self) -> str:
+        return """@echo off
+setlocal EnableExtensions
+
+for %%I in ("%~dp0..") do set "PROJECT_ROOT=%%~fI"
+set "LAUNCHER=%PROJECT_ROOT%\\codex_scripts\\codex-profile.cmd"
+
+if not exist "%LAUNCHER%" (
+  echo Missing "%LAUNCHER%". Generate the project template first. 1^>^&2
+  exit /b 1
+)
+
+call "%LAUNCHER%" %*
+exit /b %errorlevel%
+"""
+
+    def _render_local_env(self, api_key: str) -> str:
+        return f"{PROJECT_ENV_KEY}={api_key.strip()}\n"
+
+    def _render_local_env_example(self) -> str:
+        return (
+            "# Copy this file to local.env and fill in your real key.\n"
+            "# This file is ignored by git via .gitignore.\n\n"
+            f"{PROJECT_ENV_KEY}=sk-your-key-here\n"
+        )
+
+    def _render_profile_launcher(self) -> str:
+        return """@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+
+for %%I in ("%~dp0..") do set "PROJECT_ROOT=%%~fI"
+set "ENV_FILE=%PROJECT_ROOT%\\.codex\\local.env"
+set "CODEX_HOME=%PROJECT_ROOT%\\.codex\\home"
+set "CONFIG_FILE=%CODEX_HOME%\\config.toml"
+
+if not exist "%ENV_FILE%" (
+  echo Missing "%ENV_FILE%". Copy .codex\\local.env.example to .codex\\local.env first. 1^>^&2
+  exit /b 1
+)
+
+if not exist "%CONFIG_FILE%" (
+  echo Missing "%CONFIG_FILE%". 1^>^&2
+  exit /b 1
+)
+
+for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
+  if not "%%~A"=="" set "%%~A=%%~B"
+)
+
+for /f "delims=" %%I in ('where.exe codex 2^>nul') do (
+  if /i not "%%~fI"=="%~f0" (
+    set "CODEX_EXE=%%~fI"
+    goto run
+  )
+)
+
+echo Unable to locate the real codex executable from PATH. 1^>^&2
+exit /b 1
+
+:run
+cd /d "%PROJECT_ROOT%"
+call "%CODEX_EXE%" %*
+exit /b %errorlevel%
+"""

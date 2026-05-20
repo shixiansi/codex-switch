@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,10 +12,51 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "CodexSwitch"
+SPEC_PATH = ROOT / "CodexSwitch.spec"
 
 
 def run(command: list[str]) -> None:
-    subprocess.run(command, cwd=ROOT, check=True)
+    subprocess.run(command, cwd=ROOT, check=True, env=build_env())
+
+
+def build_env() -> dict[str, str]:
+    env = dict(os.environ)
+    base_prefix = Path(sys.base_prefix)
+    expected_dirs = {
+        "TCL_LIBRARY": (base_prefix / "tcl" / "tcl8.6", base_prefix / "tcl" / "tcl8"),
+        "TK_LIBRARY": (base_prefix / "tcl" / "tk8.6",),
+    }
+
+    for env_key, candidates in expected_dirs.items():
+        current_value = env.get(env_key, "").strip()
+        if current_value and Path(current_value).exists():
+            continue
+
+        env.pop(env_key, None)
+        for candidate in candidates:
+            if candidate.exists():
+                env[env_key] = str(candidate)
+                break
+
+    return env
+
+
+def ensure_tkinter_available() -> None:
+    subprocess.run([sys.executable, "-c", "import _tkinter, tkinter"], cwd=ROOT, check=True, env=build_env())
+
+
+def assert_no_missing_tkinter_warning(warn_path: Path) -> None:
+    if not warn_path.exists():
+        return
+    warn_text = warn_path.read_text(encoding="utf-8", errors="replace")
+    if (
+        "missing module named tkinter" in warn_text
+        or "missing module named _tkinter" in warn_text
+        or "tkinter installation is broken" in warn_text
+    ):
+        raise RuntimeError(
+            f"PyInstaller reported tkinter as missing. Refusing to package a broken build.\nSee: {warn_path}"
+        )
 
 
 def clean_path(path: Path) -> None:
@@ -49,12 +91,14 @@ def build(target: str, output_name: str) -> Path:
     spec_dir = ROOT / "build" / "pyinstaller-spec"
     staging_dir = ROOT / "build" / "release-staging" / output_name
     artifacts_dir = ROOT / "artifacts"
+    warn_path = pyinstaller_work / APP_NAME / f"warn-{APP_NAME}.txt"
 
     for path in (pyinstaller_dist, pyinstaller_work, staging_dir):
         clean_path(path)
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     spec_dir.mkdir(parents=True, exist_ok=True)
+    ensure_tkinter_available()
 
     run(
         [
@@ -63,19 +107,16 @@ def build(target: str, output_name: str) -> Path:
             "PyInstaller",
             "--noconfirm",
             "--clean",
-            "--onefile",
-            "--windowed",
-            "--name",
-            APP_NAME,
             "--distpath",
             str(pyinstaller_dist),
             "--workpath",
             str(pyinstaller_work),
             "--specpath",
             str(spec_dir),
-            "main.py",
+            str(SPEC_PATH),
         ]
     )
+    assert_no_missing_tkinter_warning(warn_path)
 
     built_outputs = [path for path in pyinstaller_dist.iterdir() if path.name.startswith(APP_NAME)]
     if not built_outputs:

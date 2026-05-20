@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from urllib import error, parse, request
 import json
+from dataclasses import dataclass
+from typing import Any
+from urllib import error, parse, request
 
-from app_models import Profile, parse_model_names
+from codex_switch.models import Profile, parse_model_names
+
+
+SUPPORTED_WIRE_APIS = ("responses", "chat_completions")
 
 
 @dataclass
@@ -20,13 +24,20 @@ def _normalize_base_url(base_url: str) -> str:
     return base_url.strip().rstrip("/")
 
 
+def _normalize_wire_api(wire_api: str | None) -> str:
+    normalized = (wire_api or "responses").strip() or "responses"
+    if normalized not in SUPPORTED_WIRE_APIS:
+        raise ValueError(f"不支持的接口标准：{normalized}")
+    return normalized
+
+
 def _build_endpoint(base_url: str, wire_api: str) -> str:
     base = _normalize_base_url(base_url)
     parsed = parse.urlparse(base)
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("API 地址格式不正确，请输入形如 https://example.com 的地址。")
 
-    if wire_api == "responses":
+    if _normalize_wire_api(wire_api) == "responses":
         return f"{base}/responses" if base.endswith("/v1") else f"{base}/v1/responses"
     return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
@@ -46,7 +57,14 @@ class ChatTester:
     def __init__(self, timeout: int = 30) -> None:
         self.timeout = timeout
 
-    def send_message(self, profile: Profile, prompt: str, model_override: str | None = None) -> ChatResult:
+    def send_message(
+        self,
+        profile: Profile,
+        prompt: str,
+        model_override: str | None = None,
+        wire_api_override: str | None = None,
+        payload_override_text: str | None = None,
+    ) -> ChatResult:
         prompt = prompt.strip()
         if not prompt:
             return ChatResult(ok=False, text="请输入测试消息。")
@@ -54,12 +72,13 @@ class ChatTester:
             return ChatResult(ok=False, text="当前配置缺少 API Key。")
 
         try:
-            endpoint = _build_endpoint(profile.base_url, profile.wire_api)
+            wire_api = _normalize_wire_api(wire_api_override or profile.wire_api)
+            endpoint = _build_endpoint(profile.base_url, wire_api)
             model = _pick_model(profile, model_override)
+            payload = self._build_payload(wire_api, model, prompt, payload_override_text)
         except ValueError as exc:
             return ChatResult(ok=False, text=str(exc))
 
-        payload = self._build_payload(profile, model, prompt)
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
             url=endpoint,
@@ -77,9 +96,16 @@ class ChatTester:
             with request.urlopen(req, timeout=self.timeout) as response:
                 text = response.read().decode("utf-8", errors="replace")
                 parsed = json.loads(text)
+                if not isinstance(parsed, dict):
+                    return ChatResult(
+                        ok=False,
+                        text="接口返回了 JSON，但根节点不是对象。",
+                        endpoint=endpoint,
+                        model=model,
+                    )
                 return ChatResult(
                     ok=True,
-                    text=self._extract_text(profile, parsed),
+                    text=self._extract_text(wire_api, parsed),
                     endpoint=endpoint,
                     model=model,
                 )
@@ -121,21 +147,60 @@ class ChatTester:
                 model=model,
             )
 
-    def _build_payload(self, profile: Profile, model: str, prompt: str) -> dict:
-        if profile.wire_api == "responses":
+    def build_payload_template(self, wire_api: str) -> dict[str, Any]:
+        if _normalize_wire_api(wire_api) == "responses":
             return {
-                "model": model,
-                "input": prompt,
+                "model": "{{model}}",
+                "input": "{{prompt}}",
                 "max_output_tokens": 512,
             }
         return {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "model": "{{model}}",
+            "messages": [{"role": "user", "content": "{{prompt}}"}],
             "max_tokens": 512,
         }
 
-    def _extract_text(self, profile: Profile, payload: dict) -> str:
-        if profile.wire_api == "responses":
+    def _build_payload(
+        self,
+        wire_api: str,
+        model: str,
+        prompt: str,
+        payload_override_text: str | None = None,
+    ) -> dict[str, Any]:
+        if payload_override_text and payload_override_text.strip():
+            try:
+                payload_template = json.loads(payload_override_text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"请求体 JSON 无效：第 {exc.lineno} 行第 {exc.colno} 列附近存在语法错误。"
+                ) from exc
+            if not isinstance(payload_template, dict):
+                raise ValueError("请求体必须是 JSON 对象。")
+        else:
+            payload_template = self.build_payload_template(wire_api)
+        return self._apply_payload_placeholders(payload_template, model, prompt)
+
+    def _apply_payload_placeholders(self, payload: Any, model: str, prompt: str) -> Any:
+        if isinstance(payload, dict):
+            return {
+                key: self._apply_payload_placeholders(value, model, prompt)
+                for key, value in payload.items()
+            }
+        if isinstance(payload, list):
+            return [self._apply_payload_placeholders(item, model, prompt) for item in payload]
+        if isinstance(payload, str):
+            return payload.replace("{{model}}", model).replace("{{prompt}}", prompt)
+        return payload
+
+    def _format_unextracted_response(self, payload: dict[str, Any]) -> str:
+        return "接口已返回响应，但没有提取到文本内容。完整返回结果：\n" + json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    def _extract_text(self, wire_api: str, payload: dict[str, Any]) -> str:
+        if _normalize_wire_api(wire_api) == "responses":
             output_text = payload.get("output_text")
             if isinstance(output_text, str) and output_text.strip():
                 return output_text.strip()
@@ -152,7 +217,7 @@ class ChatTester:
                         fragments.append(text_value.strip())
             if fragments:
                 return "\n".join(fragments)
-            return "接口已返回响应，但没有提取到文本内容。"
+            return self._format_unextracted_response(payload)
 
         choices = payload.get("choices")
         if isinstance(choices, list) and choices:
@@ -160,4 +225,4 @@ class ChatTester:
             content = message.get("content")
             if isinstance(content, str) and content.strip():
                 return content.strip()
-        return "接口已返回响应，但没有提取到文本内容。"
+        return self._format_unextracted_response(payload)

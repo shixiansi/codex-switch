@@ -13,7 +13,14 @@
 ## 本地运行
 
 ```powershell
+python -m pip install -r requirements.txt
 python main.py
+```
+
+## 本地测试
+
+```powershell
+python -m unittest discover -q -s tests
 ```
 
 ## 本地打包 Windows exe
@@ -29,6 +36,13 @@ python main.py
 - Linux runner 里工作流会自动安装 `python3-tk`
 - macOS 包默认是未签名包，首次打开可能会被系统拦截，需要手动放行
 - 当前项目主要面向桌面端 Tk 应用，跨平台包能构建，不代表每个平台都已经做过完整人工验收
+
+## 项目结构
+
+- `src/codex_switch/`：应用源码包
+- `src/codex_switch/ui/`：Tk/ttkbootstrap 界面、弹窗、主题与顶部菜单
+- `src/codex_switch/assets/`：打包所需的默认 MCP 和项目模板资源
+- `tests/`：单元测试
 
 ## 配置存储位置
 

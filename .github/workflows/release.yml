@@ -51,7 +51,7 @@ jobs:
         run: python -c "import tkinter; print('tkinter ok')"
 
       - name: Run tests
-        run: python -m unittest -v test_codex_switch.py
+        run: python -m unittest discover -v -s tests
 
       - name: Build release archive
         run: python scripts/package_release.py --target "${{ matrix.target }}" --output-name "${{ matrix.artifact_name }}"

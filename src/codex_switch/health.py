@@ -6,7 +6,7 @@ import json
 import socket
 import ssl
 
-from app_models import HealthResult, Profile, now_iso
+from codex_switch.models import HealthResult, Profile, now_iso
 
 
 def normalize_base_url(base_url: str) -> str:

@@ -4,5 +4,29 @@ __pycache__/
 build/
 dist/
 *.spec
+!CodexSwitch.spec
 artifacts/
 .test-temp/
+
+# Local runtime and agent state
+.codex/
+.serena/
+.recovered/
+.pmnote/
+pmnote/
+/AGENTS.md
+
+# Local secrets and logs
+.env
+*.env
+*.local
+*.log
+*.jsonl
+*-trace.txt
+hang-trace.txt
+startup-trace.txt
+.tmp_*
+
+# >>> codex-switch managed ignores >>>
+codex_scripts/
+# <<< codex-switch managed ignores <<<
