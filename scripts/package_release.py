@@ -88,7 +88,6 @@ def package_directory(staging_dir: Path, output_path: Path, target: str) -> None
 def build(target: str, output_name: str) -> Path:
     pyinstaller_dist = ROOT / "build" / "pyinstaller-dist" / target
     pyinstaller_work = ROOT / "build" / "pyinstaller-work" / target
-    spec_dir = ROOT / "build" / "pyinstaller-spec"
     staging_dir = ROOT / "build" / "release-staging" / output_name
     artifacts_dir = ROOT / "artifacts"
     warn_path = pyinstaller_work / APP_NAME / f"warn-{APP_NAME}.txt"
@@ -97,7 +96,6 @@ def build(target: str, output_name: str) -> Path:
         clean_path(path)
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    spec_dir.mkdir(parents=True, exist_ok=True)
     ensure_tkinter_available()
 
     run(
@@ -111,8 +109,6 @@ def build(target: str, output_name: str) -> Path:
             str(pyinstaller_dist),
             "--workpath",
             str(pyinstaller_work),
-            "--specpath",
-            str(spec_dir),
             str(SPEC_PATH),
         ]
     )
