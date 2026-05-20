@@ -249,6 +249,107 @@ class ModelBatchTestDialog(tk.Toplevel):
         return PALETTE["neutral_soft"], PALETTE["neutral_text"]
 
 
+class SuccessfulModelsDialog(tk.Toplevel):
+    def __init__(self, master: tk.Misc, *, profile_name: str, models: list[str], copy_command) -> None:
+        super().__init__(master)
+        self.title("成功模型")
+        self.geometry("640x460")
+        self.minsize(520, 360)
+        self.configure(bg=PALETTE["app_bg"])
+        self.copy_command = copy_command
+        self.hint_var = tk.StringVar(value="点击模型便签即可复制名称。")
+
+        card = tk.Frame(
+            self,
+            bg=PALETTE["card_bg"],
+            highlightbackground=PALETTE["card_border"],
+            highlightthickness=1,
+            padx=20,
+            pady=18,
+        )
+        card.pack(fill="both", expand=True, padx=18, pady=18)
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(2, weight=1)
+
+        header = tk.Frame(card, bg=PALETTE["card_bg"])
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        tk.Label(header, text="成功模型", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, sticky="w")
+        make_button(header, text="关闭", variant="secondary", command=self.destroy).grid(row=0, column=1, sticky="e")
+        tk.Label(
+            header,
+            text=f"当前 API：{profile_name}",
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["muted"],
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        tk.Label(card, textvariable=self.hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky="w", pady=(12, 8))
+
+        list_wrap = tk.Frame(card, bg=PALETTE["card_bg"])
+        list_wrap.grid(row=2, column=0, sticky="nsew")
+        list_wrap.columnconfigure(0, weight=1)
+        list_wrap.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(list_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(list_wrap, orient="vertical", command=self.canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.tags = tk.Frame(self.canvas, bg=PALETTE["card_bg"])
+        self.tags_id = self.canvas.create_window((0, 0), window=self.tags, anchor="nw")
+
+        def sync_scroll_region(_event: tk.Event) -> None:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+        def sync_tag_width(event: tk.Event) -> None:
+            self.canvas.itemconfigure(self.tags_id, width=event.width)
+
+        self.tags.bind("<Configure>", sync_scroll_region)
+        self.canvas.bind("<Configure>", sync_tag_width)
+        self._render_tags(models)
+        self.transient(master)
+
+    def _render_tags(self, models: list[str]) -> None:
+        if not models:
+            tk.Label(
+                self.tags,
+                text="暂无成功模型。",
+                bg=PALETTE["card_bg"],
+                fg=PALETTE["muted"],
+                font=("Microsoft YaHei UI", 10),
+            ).grid(row=0, column=0, sticky="w", pady=6)
+            return
+
+        column_count = 3
+        for column in range(column_count):
+            self.tags.columnconfigure(column, weight=1)
+        for index, model in enumerate(models):
+            tag = tk.Label(
+                self.tags,
+                text=model,
+                bg=PALETTE["success_soft"],
+                fg=PALETTE["success"],
+                activebackground=PALETTE["selection_bg"],
+                activeforeground=PALETTE["success"],
+                font=("Microsoft YaHei UI", 10, "bold"),
+                relief="solid",
+                borderwidth=1,
+                padx=12,
+                pady=8,
+                cursor="hand2",
+                justify="left",
+                wraplength=180,
+            )
+            tag.grid(row=index // column_count, column=index % column_count, sticky="ew", padx=6, pady=6)
+            tag.bind("<Button-1>", lambda _event, name=model: self._copy_model(name))
+
+    def _copy_model(self, model: str) -> None:
+        self.copy_command(model)
+        self.hint_var.set(f"已复制：{model}")
+
+
 class ProfileDialog(tk.Toplevel):
     def __init__(self, master: tk.Misc, profile: Profile | None = None) -> None:
         super().__init__(master)

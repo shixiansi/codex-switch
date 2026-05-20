@@ -37,7 +37,15 @@ from codex_switch.storage import (
     ProfileStore,
     clamp_model_batch_concurrency,
 )
-from codex_switch.ui.dialogs import ChatSettingsDialog, McpConfigDialog, McpServerDialog, ModelBatchTestDialog, ProfileDialog, ProjectDialog
+from codex_switch.ui.dialogs import (
+    ChatSettingsDialog,
+    McpConfigDialog,
+    McpServerDialog,
+    ModelBatchTestDialog,
+    ProfileDialog,
+    ProjectDialog,
+    SuccessfulModelsDialog,
+)
 from codex_switch.ui.styles import (
     BOOTSTRAP_THEME,
     BootstrapWindow,
@@ -1100,7 +1108,7 @@ class CodexSwitchApp:
         self._create_dual_info_row(detail, 4, "最近检测", self.test_detail_checked_var, "最近 endpoint", self.test_detail_endpoint_var)
         self._create_info_row(detail, 5, "API 地址", self.test_detail_api_var, wraplength=520)
         self._create_info_row(detail, 6, "结果详情", self.test_detail_result_var, wraplength=520)
-        self._create_info_row(detail, 7, "成功模型", self.test_detail_success_models_var, wraplength=520)
+        self._create_success_models_row(detail, 7)
         self._create_info_row(detail, 8, "备注", self.test_detail_notes_var, wraplength=520)
 
         chat = self._make_card(right)
@@ -1160,6 +1168,29 @@ class CodexSwitchApp:
     def _create_info_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, wraplength: int = 320) -> None:
         tk.Label(parent, text=label, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=4)
         tk.Label(parent, textvariable=variable, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=wraplength).grid(row=row, column=1, columnspan=3, sticky="w", pady=4)
+
+    def _create_success_models_row(self, parent: tk.Misc, row: int) -> None:
+        tk.Label(parent, text="成功模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=4)
+        value_row = tk.Frame(parent, bg=PALETTE["card_bg"])
+        value_row.grid(row=row, column=1, columnspan=3, sticky="ew", pady=4)
+        value_row.columnconfigure(0, weight=1)
+        tk.Label(
+            value_row,
+            textvariable=self.test_detail_success_models_var,
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["text"],
+            font=self.body_font,
+            justify="left",
+            wraplength=430,
+        ).grid(row=0, column=0, sticky="w")
+        self.success_models_button = make_button(
+            value_row,
+            text="查看成功模型",
+            variant="secondary",
+            command=self.show_success_models,
+        )
+        self.success_models_button.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        self.success_models_button.state(["disabled"])
 
     def _create_link_info_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, command, wraplength: int = 320) -> tk.Label:
         tk.Label(parent, text=label, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=4)
@@ -1766,6 +1797,7 @@ class CodexSwitchApp:
             self.test_detail_notes_var.set("暂无备注")
             self.test_detail_result_var.set("未检测")
             self.test_detail_success_models_var.set("未批量测试")
+            self._sync_success_models_button(None)
             self.test_detail_badge.configure(bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
             self.updating_health_override = True
             self.health_override_var.set(HEALTH_OVERRIDE_DISPLAY[""])
@@ -1791,6 +1823,7 @@ class CodexSwitchApp:
         self.test_detail_notes_var.set(profile.notes or "暂无备注")
         self.test_detail_result_var.set(profile.health.detail or "未检测")
         self.test_detail_success_models_var.set(self._model_batch_health_summary(profile))
+        self._sync_success_models_button(profile)
         badge_fg, badge_bg = STATUS_COLORS.get(profile.effective_health_status, STATUS_COLORS["unknown"])
         self.test_detail_badge.configure(bg=badge_bg, fg=badge_fg)
         self.updating_health_override = True
@@ -1831,6 +1864,18 @@ class CodexSwitchApp:
             return "无成功模型"
         return compact_text(", ".join(success_models), 140)
 
+    def _successful_models_for_profile(self, profile: Profile | None) -> list[str]:
+        return successful_model_batch_models(self._model_batch_cache(profile))
+
+    def _sync_success_models_button(self, profile: Profile | None) -> None:
+        button = getattr(self, "success_models_button", None)
+        if button is None:
+            return
+        if self._successful_models_for_profile(profile):
+            button.state(["!disabled"])
+        else:
+            button.state(["disabled"])
+
     def _reset_model_batch_for_profile(self, profile: Profile | None) -> None:
         profile_id = profile.id if profile else None
         self.model_batch_profile_id = profile_id
@@ -1849,7 +1894,9 @@ class CodexSwitchApp:
 
     def _refresh_model_batch_health_display(self, profile_id: str) -> None:
         if self.selected_profile_id == profile_id:
-            self.test_detail_success_models_var.set(self._model_batch_health_summary(self._profile_by_id(profile_id)))
+            profile = self._profile_by_id(profile_id)
+            self.test_detail_success_models_var.set(self._model_batch_health_summary(profile))
+            self._sync_success_models_button(profile)
 
     def find_matching_profile(self, current: CurrentCodexConfig) -> Profile | None:
         for profile in self.profiles:
@@ -2548,6 +2595,21 @@ class CodexSwitchApp:
             self._open_model_batch_dialog(profile, cached)
             return
         self._start_model_batch_test(profile)
+
+    def show_success_models(self) -> None:
+        profile = self.get_selected_profile()
+        models = self._successful_models_for_profile(profile)
+        if profile is None or not models:
+            messagebox.showinfo("提示", "当前 API 暂无成功模型。", parent=self.root)
+            return
+        dialog = SuccessfulModelsDialog(
+            self.root,
+            profile_name=profile.name,
+            models=models,
+            copy_command=self.copy_to_clipboard,
+        )
+        dialog.focus_set()
+        dialog.lift()
 
     def _start_model_batch_test(self, profile: Profile) -> None:
         models = self._batch_model_options(profile)
