@@ -2426,6 +2426,10 @@ class CodexSwitchApp:
             f"模型：{self.chat_model_choice_var.get() or '-'}    接口：{self.chat_wire_choice_var.get() or '-'}"
         )
 
+    def _has_chat_model_choice(self) -> bool:
+        selected_model = self.chat_model_choice_var.get().strip()
+        return bool(selected_model and selected_model != "-")
+
     def _refresh_chat_request_body_template(self, _event: object | None = None) -> None:
         wire_api = self.chat_wire_choice_var.get().strip() or SUPPORTED_WIRE_APIS[0]
         try:
@@ -2461,6 +2465,10 @@ class CodexSwitchApp:
         self.chat_wire_choice_var.set(dialog.result["wire_api"] or SUPPORTED_WIRE_APIS[0])
         self.chat_request_body_text = dialog.result["payload_text"]
         self._refresh_chat_settings_summary()
+        if self.chat_profile_id and self._has_chat_model_choice() and not self.chat_busy:
+            self.chat_send_button.state(["!disabled"])
+        else:
+            self.chat_send_button.state(["disabled"])
         self.status_var.set("已更新聊天测试设置。")
 
     def _reset_chat_target(self, profile: Profile | None) -> None:
@@ -2478,8 +2486,8 @@ class CodexSwitchApp:
 
         options = self._chat_model_options(profile)
         keep_history = self.chat_profile_id == profile.id
-        current_choice = self.chat_model_choice_var.get()
-        next_choice = current_choice if current_choice in options else options[0]
+        current_choice = self.chat_model_choice_var.get().strip()
+        next_choice = current_choice if keep_history and current_choice and current_choice != "-" else options[0]
         current_wire = self.chat_wire_choice_var.get().strip()
         default_wire = profile.wire_api if profile.wire_api in SUPPORTED_WIRE_APIS else SUPPORTED_WIRE_APIS[0]
         next_wire = current_wire if keep_history and current_wire in SUPPORTED_WIRE_APIS else default_wire
@@ -2493,11 +2501,10 @@ class CodexSwitchApp:
             self._refresh_chat_request_body_template()
         else:
             self._refresh_chat_settings_summary()
-        if options == ["-"]:
-            self.chat_send_button.state(["disabled"])
+        if self._has_chat_model_choice() and not self.chat_busy:
+            self.chat_send_button.state(["!disabled"])
         else:
-            if not self.chat_busy:
-                self.chat_send_button.state(["!disabled"])
+            self.chat_send_button.state(["disabled"])
         if self.chat_busy:
             self.chat_settings_button.state(["disabled"])
         else:
@@ -2747,15 +2754,14 @@ class CodexSwitchApp:
             self.chat_settings_button.state(["disabled"])
         else:
             profile = self.get_selected_profile()
-            options = self._chat_model_options(profile) if profile else ["-"]
             if profile:
                 self.chat_settings_button.state(["!disabled"])
             else:
                 self.chat_settings_button.state(["disabled"])
-            if options == ["-"]:
-                self.chat_send_button.state(["disabled"])
-            elif self.chat_profile_id:
+            if self.chat_profile_id and self._has_chat_model_choice():
                 self.chat_send_button.state(["!disabled"])
+            else:
+                self.chat_send_button.state(["disabled"])
 
     def copy_to_clipboard(self, value: str) -> None:
         self.root.clipboard_clear()

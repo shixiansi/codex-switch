@@ -33,7 +33,8 @@ class ChatSettingsDialog(tk.Toplevel):
         self.payload_templates = payload_templates
 
         values = model_values or ["-"]
-        self.model_var = tk.StringVar(value=selected_model if selected_model in values else values[0])
+        selected_model = selected_model.strip()
+        self.model_var = tk.StringVar(value=selected_model if selected_model and selected_model != "-" else values[0])
         self.wire_var = tk.StringVar(value=selected_wire if selected_wire in wire_values else wire_values[0])
 
         card = tk.Frame(
@@ -56,14 +57,14 @@ class ChatSettingsDialog(tk.Toplevel):
         )
         tk.Label(
             card,
-            text="这里的模型、接口标准和请求体只影响当前聊天测试与模型批量测试。",
+            text="这里的模型、接口标准和请求体只影响当前聊天测试与模型批量测试；模型可从列表选择，也可以直接输入。",
             bg=PALETTE["card_bg"],
             fg=PALETTE["muted"],
             font=("Microsoft YaHei UI", 9),
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 14))
 
         tk.Label(card, text="聊天模型", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=6)
-        self.model_combo = ttk.Combobox(card, textvariable=self.model_var, values=tuple(values), state="readonly", width=42)
+        self.model_combo = ttk.Combobox(card, textvariable=self.model_var, values=tuple(values), state="normal", width=42)
         self.model_combo.grid(row=2, column=1, sticky="ew", pady=6)
 
         tk.Label(card, text="接口标准", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=6)
