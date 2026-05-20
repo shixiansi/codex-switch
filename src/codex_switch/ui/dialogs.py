@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox
 from codex_switch.codex_config import dumps_toml, parse_mcp_servers_toml, render_mcp_servers_toml
 from codex_switch.models import Profile, ProjectRecord
 from codex_switch.ui.styles import PALETTE, make_button, ttk
-from codex_switch.ui.utils import is_http_url
+from codex_switch.ui.utils import compact_text, is_http_url
 
 
 class ChatSettingsDialog(tk.Toplevel):
@@ -328,7 +328,7 @@ class SuccessfulModelsDialog(tk.Toplevel):
         for index, model in enumerate(models):
             tag = tk.Label(
                 self.tags,
-                text=model,
+                text=compact_text(model, 28),
                 bg=PALETTE["success_soft"],
                 fg=PALETTE["success"],
                 activebackground=PALETTE["selection_bg"],
@@ -340,7 +340,8 @@ class SuccessfulModelsDialog(tk.Toplevel):
                 pady=8,
                 cursor="hand2",
                 justify="left",
-                wraplength=180,
+                anchor="w",
+                width=28,
             )
             tag.grid(row=index // column_count, column=index % column_count, sticky="ew", padx=6, pady=6)
             tag.bind("<Button-1>", lambda _event, name=model: self._copy_model(name))
