@@ -141,6 +141,7 @@ class ModelBatchTestDialog(tk.Toplevel):
     GRID_GAP = 10
     DEFAULT_GRID_COLUMNS = 3
     MAX_GRID_COLUMNS = 5
+    MODEL_NAME_CHARS = 18
     DETAIL_PREVIEW_LINES = 3
     DETAIL_PREVIEW_WIDTH = 42
     DETAIL_WRAP_LENGTH = 260
@@ -244,11 +245,12 @@ class ModelBatchTestDialog(tk.Toplevel):
             top.columnconfigure(0, weight=1)
             tk.Label(
                 top,
-                text=compact_text(model, 26),
+                text=compact_text(model, self.MODEL_NAME_CHARS),
                 bg=PALETTE["status_bg"],
                 fg=PALETTE["text"],
                 font=("Microsoft YaHei UI", 10, "bold"),
                 anchor="w",
+                width=self.MODEL_NAME_CHARS,
             ).grid(row=0, column=0, sticky="w")
 
             meta = tk.Frame(top, bg=PALETTE["status_bg"])
