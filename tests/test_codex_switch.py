@@ -205,8 +205,8 @@ class UiFilterTests(unittest.TestCase):
             "done": ModelBatchCache(
                 models=["m1", "m2"],
                 results={
-                    "m1": ModelBatchResult(status="success", detail="ok"),
-                    "m2": ModelBatchResult(status="error", detail="bad"),
+                    "m1": ModelBatchResult(status="success", detail="ok", duration_ms=120),
+                    "m2": ModelBatchResult(status="error", detail="bad", duration_ms=30_000),
                 },
                 completed=True,
                 tested_at="2026-05-20T12:00:00",
@@ -226,6 +226,8 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(restored["done"].completed)
         self.assertEqual(restored["done"].results["m1"].status, "success")
         self.assertEqual(restored["done"].results["m2"].detail, "bad")
+        self.assertEqual(restored["done"].results["m1"].duration_ms, 120)
+        self.assertEqual(restored["done"].results["m2"].duration_ms, 30_000)
 
     def test_run_model_batch_requests_uses_three_concurrent_requests(self) -> None:
         class FakeChatTester:
@@ -249,7 +251,7 @@ class UiFilterTests(unittest.TestCase):
         models = [f"model-{index}" for index in range(8)]
         tester = FakeChatTester()
         started: list[str] = []
-        results: list[tuple[str, str, str]] = []
+        results: list[tuple[str, str, str, int]] = []
 
         run_model_batch_requests(
             tester,
@@ -258,12 +260,13 @@ class UiFilterTests(unittest.TestCase):
             "responses",
             None,
             started.append,
-            lambda model, status, detail: results.append((model, status, detail)),
+            lambda model, status, detail, duration_ms: results.append((model, status, detail, duration_ms)),
         )
 
         self.assertEqual(set(started), set(models))
-        self.assertEqual({model for model, _, _ in results}, set(models))
-        self.assertTrue(all(status == "success" for _, status, _ in results))
+        self.assertEqual({model for model, _, _, _ in results}, set(models))
+        self.assertTrue(all(status == "success" for _, status, _, _ in results))
+        self.assertTrue(all(duration_ms >= 0 for _, _, _, duration_ms in results))
         self.assertEqual(tester.max_active, 3)
 
 

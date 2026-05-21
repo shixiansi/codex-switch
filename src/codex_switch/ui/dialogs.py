@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import textwrap
 import tkinter as tk
 import tomllib
 from tkinter import filedialog, messagebox
@@ -135,6 +136,11 @@ class ModelBatchTestDialog(tk.Toplevel):
         "success": "成功",
         "error": "失败",
     }
+    ROW_HEIGHT = 116
+    DETAIL_PREVIEW_LINES = 3
+    DETAIL_PREVIEW_WIDTH = 84
+    DETAIL_WRAP_LENGTH = 500
+    SLOW_DURATION_MS = 10_000
 
     def __init__(self, master: tk.Misc, *, profile_name: str, models: list[str], retest_command) -> None:
         super().__init__(master)
@@ -143,6 +149,7 @@ class ModelBatchTestDialog(tk.Toplevel):
         self.minsize(620, 420)
         self.configure(bg=PALETTE["app_bg"])
         self.status_labels: dict[str, tk.Label] = {}
+        self.duration_labels: dict[str, tk.Label] = {}
         self.detail_labels: dict[str, tk.Label] = {}
         self.summary_var = tk.StringVar(value=f"待测试 {len(models)} 个模型")
 
@@ -197,7 +204,7 @@ class ModelBatchTestDialog(tk.Toplevel):
 
         self.rows.bind("<Configure>", sync_scroll_region)
         self.canvas.bind("<Configure>", sync_row_width)
-        self.rows.columnconfigure(1, weight=1)
+        self.rows.columnconfigure(0, weight=1)
         self.render_models(models)
         self.transient(master)
 
@@ -205,14 +212,75 @@ class ModelBatchTestDialog(tk.Toplevel):
         for child in self.rows.winfo_children():
             child.destroy()
         self.status_labels = {}
+        self.duration_labels = {}
         self.detail_labels = {}
         for index, model in enumerate(models):
-            tk.Label(self.rows, text=model, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold"), anchor="w").grid(row=index, column=0, sticky="w", padx=(0, 12), pady=6)
-            detail = tk.Label(self.rows, text="等待测试", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9), anchor="w", justify="left", wraplength=420)
-            detail.grid(row=index, column=1, sticky="ew", pady=6)
-            status = tk.Label(self.rows, text="等待", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"], font=("Microsoft YaHei UI", 9, "bold"), padx=10, pady=4, width=8)
-            status.grid(row=index, column=2, sticky="e", padx=(12, 0), pady=6)
+            block = tk.Frame(
+                self.rows,
+                bg=PALETTE["status_bg"],
+                highlightbackground=PALETTE["card_border"],
+                highlightthickness=1,
+                height=self.ROW_HEIGHT,
+            )
+            block.grid(row=index, column=0, sticky="ew", pady=(0, 10))
+            block.grid_propagate(False)
+
+            content = tk.Frame(block, bg=PALETTE["status_bg"])
+            content.pack(fill="both", expand=True, padx=12, pady=10)
+            content.rowconfigure(1, weight=1)
+            content.columnconfigure(0, weight=1)
+
+            top = tk.Frame(content, bg=PALETTE["status_bg"])
+            top.grid(row=0, column=0, sticky="ew")
+            top.columnconfigure(0, weight=1)
+            tk.Label(
+                top,
+                text=compact_text(model, 48),
+                bg=PALETTE["status_bg"],
+                fg=PALETTE["text"],
+                font=("Microsoft YaHei UI", 10, "bold"),
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+
+            meta = tk.Frame(top, bg=PALETTE["status_bg"])
+            meta.grid(row=0, column=1, sticky="e", padx=(12, 0))
+            duration = tk.Label(
+                meta,
+                text="待测",
+                bg=PALETTE["neutral_soft"],
+                fg=PALETTE["neutral_text"],
+                font=("Microsoft YaHei UI", 9, "bold"),
+                padx=8,
+                pady=3,
+                width=9,
+            )
+            duration.grid(row=0, column=0, sticky="e", padx=(0, 6))
+            status = tk.Label(
+                meta,
+                text="等待",
+                bg=PALETTE["neutral_soft"],
+                fg=PALETTE["neutral_text"],
+                font=("Microsoft YaHei UI", 9, "bold"),
+                padx=8,
+                pady=3,
+                width=7,
+            )
+            status.grid(row=0, column=1, sticky="e")
+
+            detail = tk.Label(
+                content,
+                text="等待测试",
+                bg=PALETTE["status_bg"],
+                fg=PALETTE["muted"],
+                font=("Microsoft YaHei UI", 9),
+                anchor="nw",
+                justify="left",
+                wraplength=self.DETAIL_WRAP_LENGTH,
+                height=self.DETAIL_PREVIEW_LINES,
+            )
+            detail.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
             self.detail_labels[model] = detail
+            self.duration_labels[model] = duration
             self.status_labels[model] = status
 
     def set_retest_enabled(self, enabled: bool) -> None:
@@ -221,17 +289,26 @@ class ModelBatchTestDialog(tk.Toplevel):
         else:
             self.retest_button.state(["disabled"])
 
-    def set_status(self, model: str, status: str, detail: str = "") -> None:
+    def set_status(self, model: str, status: str, detail: str = "", duration_ms: int | None = None) -> None:
         label = self.status_labels.get(model)
+        duration_label = self.duration_labels.get(model)
         detail_label = self.detail_labels.get(model)
-        if label is None or detail_label is None:
+        if label is None or duration_label is None or detail_label is None:
             return
-        bg, fg = self._status_colors(status)
+        bg, fg = self._result_colors(status, duration_ms)
         label.configure(text=self.STATUS_TEXT.get(status, status), bg=bg, fg=fg)
+        duration_label.configure(text=self._duration_text(status, duration_ms), bg=bg, fg=fg)
         if detail:
-            detail_label.configure(text=detail, fg=PALETTE["text"] if status == "success" else PALETTE["danger"])
+            detail_label.configure(
+                text=self._detail_preview(detail),
+                fg=PALETTE["text"] if status == "success" else PALETTE["danger"],
+            )
         elif status == "running":
             detail_label.configure(text="正在发送 ping 请求...", fg=PALETTE["muted"])
+        elif status == "success":
+            detail_label.configure(text="无返回内容", fg=PALETTE["muted"])
+        else:
+            detail_label.configure(text="等待测试", fg=PALETTE["muted"])
 
     def set_summary(self, *, total: int, success_count: int, error_count: int, running: bool) -> None:
         finished = success_count + error_count
@@ -240,11 +317,40 @@ class ModelBatchTestDialog(tk.Toplevel):
         else:
             self.summary_var.set(f"测试完成：成功 {success_count}，失败 {error_count}，共 {total} 个模型")
 
-    def _status_colors(self, status: str) -> tuple[str, str]:
-        if status == "success":
-            return PALETTE["success_soft"], PALETTE["success"]
+    def _detail_preview(self, detail: str) -> str:
+        lines = detail.strip().splitlines() or ["等待测试"]
+        preview: list[str] = []
+        overflow = False
+        for line_index, raw_line in enumerate(lines):
+            wrapped = textwrap.wrap(raw_line.strip(), width=self.DETAIL_PREVIEW_WIDTH) or [""]
+            for part in wrapped:
+                if len(preview) >= self.DETAIL_PREVIEW_LINES:
+                    overflow = True
+                    break
+                preview.append(part)
+            if overflow:
+                break
+            if line_index < len(lines) - 1 and len(preview) >= self.DETAIL_PREVIEW_LINES:
+                overflow = True
+                break
+        if overflow and preview:
+            preview[-1] = f"{preview[-1][: self.DETAIL_PREVIEW_WIDTH - 3]}..."
+        return "\n".join(preview)
+
+    def _duration_text(self, status: str, duration_ms: int | None) -> str:
+        if duration_ms is None:
+            return "请求中" if status == "running" else "待测"
+        if duration_ms < 1000:
+            return f"{duration_ms} ms"
+        return f"{duration_ms / 1000:.1f} 秒"
+
+    def _result_colors(self, status: str, duration_ms: int | None) -> tuple[str, str]:
         if status == "error":
             return PALETTE["danger_soft"], PALETTE["danger"]
+        if status == "success":
+            if duration_ms is not None and duration_ms >= self.SLOW_DURATION_MS:
+                return PALETTE["warning_soft"], PALETTE["warning"]
+            return PALETTE["success_soft"], PALETTE["success"]
         if status == "running":
             return PALETTE["warning_soft"], PALETTE["warning"]
         return PALETTE["neutral_soft"], PALETTE["neutral_text"]

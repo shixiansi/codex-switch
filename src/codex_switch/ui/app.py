@@ -4,6 +4,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
+from time import perf_counter
 import ctypes
 from ctypes import wintypes
 import json
@@ -72,6 +73,7 @@ MODEL_BATCH_PROMPT = "ping"
 class ModelBatchResult:
     status: str = "pending"
     detail: str = ""
+    duration_ms: int | None = None
 
 
 @dataclass
@@ -141,9 +143,17 @@ def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:
             status = str(result_payload.get("status", "pending") or "pending")
             if status not in {"pending", "running", "success", "error"}:
                 status = "pending"
+            raw_duration_ms = result_payload.get("duration_ms")
+            try:
+                duration_ms = int(raw_duration_ms) if raw_duration_ms is not None else None
+            except (TypeError, ValueError):
+                duration_ms = None
+            if duration_ms is not None and duration_ms < 0:
+                duration_ms = None
             results[model] = ModelBatchResult(
                 status=status,
                 detail=str(result_payload.get("detail", "") or ""),
+                duration_ms=duration_ms,
             )
 
         caches[str(profile_id)] = ModelBatchCache(
@@ -163,15 +173,17 @@ def model_batch_caches_to_payload(caches: dict[str, ModelBatchCache]) -> dict[st
         models = [str(model).strip() for model in cache.models if str(model).strip()]
         if not models:
             continue
+        results_payload: dict[str, dict] = {}
+        for model in models:
+            result = cache.results.get(model, ModelBatchResult())
+            results_payload[model] = {
+                "status": result.status,
+                "detail": result.detail,
+                "duration_ms": result.duration_ms,
+            }
         payload[str(profile_id)] = {
             "models": models,
-            "results": {
-                model: {
-                    "status": cache.results.get(model, ModelBatchResult()).status,
-                    "detail": cache.results.get(model, ModelBatchResult()).detail,
-                }
-                for model in models
-            },
+            "results": results_payload,
             "completed": True,
             "tested_at": cache.tested_at,
         }
@@ -194,7 +206,8 @@ def run_model_batch_requests(
 
     worker_count = max(1, min(max_workers, len(models)))
 
-    def test_model(model: str) -> tuple[str, str, str]:
+    def test_model(model: str) -> tuple[str, str, str, int]:
+        started = perf_counter()
         try:
             result = chat_tester.send_message(
                 profile,
@@ -210,7 +223,8 @@ def run_model_batch_requests(
         except Exception:
             status = "error"
             detail = "测试异常"
-        return model, status, detail
+        duration_ms = int((perf_counter() - started) * 1000)
+        return model, status, detail, duration_ms
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         pending_models = iter(models)
@@ -232,10 +246,10 @@ def run_model_batch_requests(
             for future in done:
                 model = future_by_model.pop(future)
                 try:
-                    result_model, status, detail = future.result()
+                    result_model, status, detail, duration_ms = future.result()
                 except Exception:
-                    result_model, status, detail = model, "error", "测试异常"
-                on_result(result_model, status, detail)
+                    result_model, status, detail, duration_ms = model, "error", "测试异常", 0
+                on_result(result_model, status, detail, duration_ms)
                 submit_next()
 
 
@@ -2642,7 +2656,7 @@ class CodexSwitchApp:
                 wire_api,
                 payload_text,
                 lambda model: self.root.after(0, self._apply_model_batch_result, profile.id, model, "running", ""),
-                lambda model, status, detail: self.root.after(0, self._apply_model_batch_result, profile.id, model, status, detail),
+                lambda model, status, detail, duration_ms: self.root.after(0, self._apply_model_batch_result, profile.id, model, status, detail, duration_ms),
                 max_workers=max_workers,
             )
             self.root.after(0, self._mark_model_batch_complete, profile.id)
@@ -2688,7 +2702,7 @@ class CodexSwitchApp:
         self.model_batch_dialog.render_models(ordered_models)
         for model in ordered_models:
             result = cache.results.get(model, ModelBatchResult())
-            self.model_batch_dialog.set_status(model, result.status, result.detail)
+            self.model_batch_dialog.set_status(model, result.status, result.detail, result.duration_ms)
         self._refresh_model_batch_dialog_summary(running=not cache.completed)
         self.model_batch_dialog.set_retest_enabled(cache.completed and not self.model_batch_busy)
 
@@ -2701,15 +2715,15 @@ class CodexSwitchApp:
             self.model_batch_dialog = None
             self.model_batch_dialog_profile_id = None
 
-    def _apply_model_batch_result(self, profile_id: str, model: str, status: str, detail: str = "") -> None:
+    def _apply_model_batch_result(self, profile_id: str, model: str, status: str, detail: str = "", duration_ms: int | None = None) -> None:
         if profile_id != self.model_batch_running_profile_id:
             return
         cache = self.model_batch_cache_by_profile.get(profile_id)
         if cache is None:
             return
-        cache.results[model] = ModelBatchResult(status=status, detail=detail)
+        cache.results[model] = ModelBatchResult(status=status, detail=detail, duration_ms=duration_ms)
         if self.model_batch_dialog is not None and self.model_batch_dialog.winfo_exists() and self.model_batch_dialog_profile_id == profile_id:
-            self.model_batch_dialog.set_status(model, status, detail)
+            self.model_batch_dialog.set_status(model, status, detail, duration_ms)
             self._refresh_model_batch_dialog_summary(running=True)
         self._refresh_model_batch_health_display(profile_id)
 
