@@ -136,21 +136,28 @@ class ModelBatchTestDialog(tk.Toplevel):
         "success": "成功",
         "error": "失败",
     }
-    ROW_HEIGHT = 116
+    BLOCK_WIDTH = 300
+    BLOCK_HEIGHT = 128
+    GRID_GAP = 10
+    DEFAULT_GRID_COLUMNS = 3
+    MAX_GRID_COLUMNS = 5
     DETAIL_PREVIEW_LINES = 3
-    DETAIL_PREVIEW_WIDTH = 84
-    DETAIL_WRAP_LENGTH = 500
+    DETAIL_PREVIEW_WIDTH = 42
+    DETAIL_WRAP_LENGTH = 260
     SLOW_DURATION_MS = 10_000
 
     def __init__(self, master: tk.Misc, *, profile_name: str, models: list[str], retest_command) -> None:
         super().__init__(master)
         self.title("模型批量测试")
-        self.geometry("720x560")
-        self.minsize(620, 420)
+        self.geometry("1040x640")
+        self.minsize(760, 480)
         self.configure(bg=PALETTE["app_bg"])
         self.status_labels: dict[str, tk.Label] = {}
         self.duration_labels: dict[str, tk.Label] = {}
         self.detail_labels: dict[str, tk.Label] = {}
+        self.result_blocks: dict[str, tk.Frame] = {}
+        self.rendered_models: list[str] = []
+        self.grid_columns = self.DEFAULT_GRID_COLUMNS
         self.summary_var = tk.StringVar(value=f"待测试 {len(models)} 个模型")
 
         card = tk.Frame(
@@ -201,10 +208,10 @@ class ModelBatchTestDialog(tk.Toplevel):
 
         def sync_row_width(event: tk.Event) -> None:
             self.canvas.itemconfigure(self.rows_id, width=event.width)
+            self._layout_result_blocks(event.width)
 
         self.rows.bind("<Configure>", sync_scroll_region)
         self.canvas.bind("<Configure>", sync_row_width)
-        self.rows.columnconfigure(0, weight=1)
         self.render_models(models)
         self.transient(master)
 
@@ -214,15 +221,17 @@ class ModelBatchTestDialog(tk.Toplevel):
         self.status_labels = {}
         self.duration_labels = {}
         self.detail_labels = {}
-        for index, model in enumerate(models):
+        self.result_blocks = {}
+        self.rendered_models = list(models)
+        for model in models:
             block = tk.Frame(
                 self.rows,
                 bg=PALETTE["status_bg"],
                 highlightbackground=PALETTE["card_border"],
                 highlightthickness=1,
-                height=self.ROW_HEIGHT,
+                width=self.BLOCK_WIDTH,
+                height=self.BLOCK_HEIGHT,
             )
-            block.grid(row=index, column=0, sticky="ew", pady=(0, 10))
             block.grid_propagate(False)
 
             content = tk.Frame(block, bg=PALETTE["status_bg"])
@@ -235,7 +244,7 @@ class ModelBatchTestDialog(tk.Toplevel):
             top.columnconfigure(0, weight=1)
             tk.Label(
                 top,
-                text=compact_text(model, 48),
+                text=compact_text(model, 26),
                 bg=PALETTE["status_bg"],
                 fg=PALETTE["text"],
                 font=("Microsoft YaHei UI", 10, "bold"),
@@ -252,7 +261,7 @@ class ModelBatchTestDialog(tk.Toplevel):
                 font=("Microsoft YaHei UI", 9, "bold"),
                 padx=8,
                 pady=3,
-                width=9,
+                width=8,
             )
             duration.grid(row=0, column=0, sticky="e", padx=(0, 6))
             status = tk.Label(
@@ -263,7 +272,7 @@ class ModelBatchTestDialog(tk.Toplevel):
                 font=("Microsoft YaHei UI", 9, "bold"),
                 padx=8,
                 pady=3,
-                width=7,
+                width=5,
             )
             status.grid(row=0, column=1, sticky="e")
 
@@ -282,6 +291,29 @@ class ModelBatchTestDialog(tk.Toplevel):
             self.detail_labels[model] = detail
             self.duration_labels[model] = duration
             self.status_labels[model] = status
+            self.result_blocks[model] = block
+        self._layout_result_blocks(self.canvas.winfo_width())
+
+    def _grid_columns_for_width(self, width: int) -> int:
+        if width <= 1:
+            return self.DEFAULT_GRID_COLUMNS
+        columns = max(1, (width + self.GRID_GAP) // (self.BLOCK_WIDTH + self.GRID_GAP))
+        return min(self.MAX_GRID_COLUMNS, columns)
+
+    def _layout_result_blocks(self, width: int) -> None:
+        columns = self._grid_columns_for_width(width)
+        if columns == self.grid_columns and all(block.winfo_manager() for block in self.result_blocks.values()):
+            return
+        self.grid_columns = columns
+        for column in range(self.MAX_GRID_COLUMNS):
+            self.rows.columnconfigure(column, weight=0, minsize=0)
+        for index, model in enumerate(self.rendered_models):
+            block = self.result_blocks.get(model)
+            if block is None:
+                continue
+            column = index % columns
+            padx = (0, self.GRID_GAP if column < columns - 1 else 0)
+            block.grid(row=index // columns, column=column, sticky="nw", padx=padx, pady=(0, self.GRID_GAP))
 
     def set_retest_enabled(self, enabled: bool) -> None:
         if enabled:
