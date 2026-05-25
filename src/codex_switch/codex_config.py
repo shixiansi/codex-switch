@@ -339,8 +339,12 @@ def render_global_auth(profile: Profile) -> dict[str, str]:
     }
 
 
-def render_project_base_config(*, project_mcp_toml: str = "") -> dict:
-    return deepcopy(PROJECT_BASE_CONFIG)
+def render_project_base_config(*, project_mcp_toml: str = "", model: str | None = None) -> dict:
+    config = deepcopy(PROJECT_BASE_CONFIG)
+    if model:
+        config["model"] = model
+        config["review_model"] = model
+    return config
 
 
 def render_project_runtime_config(
@@ -372,10 +376,14 @@ def render_project_runtime_config(
 
 def render_project_repo_config(
     *,
+    profile: Profile | None = None,
     project_mcp_toml: str = "",
     project_root: str | Path | None = None,
 ) -> dict:
-    config = render_project_base_config(project_mcp_toml=project_mcp_toml)
+    config = render_project_base_config(
+        project_mcp_toml=project_mcp_toml,
+        model=profile.model if profile else None,
+    )
     merge_mcp_servers(
         config,
         managed_mcp_servers=scope_mcp_servers_to_project(

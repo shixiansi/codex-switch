@@ -85,13 +85,24 @@ class ProjectTemplateStatus:
 class ProjectTemplateService:
     def sync_api_binding(self, project_root: Path, profile: Profile) -> list[Path]:
         project_root = project_root.resolve()
-        config_path = project_root / ".codex" / "home" / "config.toml"
+        repo_config_path = project_root / ".codex" / "config.toml"
+        runtime_config_path = project_root / ".codex" / "home" / "config.toml"
         env_path = project_root / ".codex" / "local.env"
         updated_paths: list[Path] = []
 
-        if config_path.exists():
-            with config_path.open("rb") as handle:
+        if repo_config_path.exists():
+            with repo_config_path.open("rb") as handle:
                 config = tomllib.load(handle)
+            config["model"] = profile.model
+            config["review_model"] = profile.model
+            repo_config_path.write_text(dumps_toml(config), encoding="utf-8")
+            updated_paths.append(repo_config_path)
+
+        if runtime_config_path.exists():
+            with runtime_config_path.open("rb") as handle:
+                config = tomllib.load(handle)
+            config["model"] = profile.model
+            config["review_model"] = profile.model
             providers = config.setdefault("model_providers", {})
             provider = providers.setdefault(PROJECT_PROVIDER_ID, {})
             provider.setdefault("name", profile.provider_name)
@@ -99,10 +110,10 @@ class ProjectTemplateService:
             provider["wire_api"] = profile.wire_api
             provider["env_key"] = PROJECT_ENV_KEY
             provider.pop("requires_openai_auth", None)
-            config_path.write_text(dumps_toml(config), encoding="utf-8")
-            updated_paths.append(config_path)
+            runtime_config_path.write_text(dumps_toml(config), encoding="utf-8")
+            updated_paths.append(runtime_config_path)
 
-        if config_path.exists() or env_path.exists():
+        if repo_config_path.exists() or runtime_config_path.exists() or env_path.exists():
             env_path.parent.mkdir(parents=True, exist_ok=True)
             existing_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
             env_path.write_text(self._render_local_env_with_key(existing_env, profile.api_key), encoding="utf-8")
@@ -210,6 +221,7 @@ class ProjectTemplateService:
             ".gitignore": self._render_gitignore(project_root),
             ".codex/config.toml": dumps_toml(
                 render_project_repo_config(
+                    profile=profile,
                     project_mcp_toml=effective_project_mcp_toml,
                     project_root=project_root,
                 )

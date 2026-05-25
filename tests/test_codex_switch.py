@@ -390,6 +390,13 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertIn(f"{CODEX_SCRIPT_DIRNAME}/", gitignore_text)
             self.assertIn(GITIGNORE_MANAGED_END, gitignore_text)
 
+            repo_config_data = tomllib.loads((temp_dir / ".codex" / "config.toml").read_text(encoding="utf-8"))
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            self.assertEqual(repo_config_data["model"], profile.model)
+            self.assertEqual(repo_config_data["review_model"], profile.model)
+            self.assertEqual(runtime_config_data["model"], profile.model)
+            self.assertEqual(runtime_config_data["review_model"], profile.model)
+
             backup_gitignore = result.backup_dir / ".gitignore"
             self.assertTrue(backup_gitignore.exists())
             self.assertEqual(backup_gitignore.read_text(encoding="utf-8"), "node_modules/\n")
@@ -424,7 +431,7 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertEqual((temp_dir / "AGENTS.md").read_text(encoding="utf-8"), "# Custom Agents\n")
             self.assertEqual((temp_dir / ".codex" / "home" / "AGENTS.md").read_text(encoding="utf-8"), "# Custom Agents\n")
 
-    def test_sync_api_binding_updates_api_and_key_only(self) -> None:
+    def test_sync_api_binding_updates_repo_runtime_models_api_and_key(self) -> None:
         with workspace_tempdir() as temp_dir:
             service = ProjectTemplateService()
             initial_profile = Profile.create(
@@ -450,12 +457,15 @@ class ProjectTemplateServiceTests(unittest.TestCase):
 
             self.assertEqual(
                 {path.relative_to(temp_dir).as_posix() for path in updated_paths},
-                {".codex/home/config.toml", ".codex/local.env"},
+                {".codex/config.toml", ".codex/home/config.toml", ".codex/local.env"},
             )
-            config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
-            provider = config_data["model_providers"][PROJECT_PROVIDER_ID]
-            self.assertEqual(config_data["model"], "old-model")
-            self.assertEqual(config_data["review_model"], "old-model")
+            repo_config_data = tomllib.loads((temp_dir / ".codex" / "config.toml").read_text(encoding="utf-8"))
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            provider = runtime_config_data["model_providers"][PROJECT_PROVIDER_ID]
+            self.assertEqual(repo_config_data["model"], "new-model")
+            self.assertEqual(repo_config_data["review_model"], "new-model")
+            self.assertEqual(runtime_config_data["model"], "new-model")
+            self.assertEqual(runtime_config_data["review_model"], "new-model")
             self.assertEqual(provider["base_url"], "https://new.example.com/v1")
             self.assertEqual(provider["wire_api"], "chat_completions")
             self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)

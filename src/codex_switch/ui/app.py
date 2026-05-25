@@ -426,6 +426,8 @@ class CodexSwitchApp:
         self.current_key_var = tk.StringVar(value="-")
         self.current_mcp_var = tk.StringVar(value="-")
         self.global_mcp_var = tk.StringVar(value="-")
+        self.global_profile_choice_var = tk.StringVar(value="")
+        self.global_profile_summary_var = tk.StringVar(value="尚未选择全局 API 配置。")
         self.current_match_var = tk.StringVar(value="未匹配")
         self.global_total_var = tk.StringVar(value="0")
         self.global_healthy_var = tk.StringVar(value="0")
@@ -658,6 +660,36 @@ class CodexSwitchApp:
         tk.Label(right, textvariable=self.current_mcp_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font, justify="left", wraplength=360).grid(row=3, column=0, sticky="w", pady=(10, 12))
         self.current_status_badge = make_status_badge(right, textvariable=self.current_match_var)
         self.current_status_badge.grid(row=4, column=0, sticky="w")
+
+        tk.Label(right, text="全局 API 设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=5, column=0, sticky="w", pady=(18, 8))
+        global_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
+        global_profile_row.grid(row=6, column=0, sticky="ew")
+        global_profile_row.columnconfigure(0, weight=1)
+        self.global_profile_combo = ttk.Combobox(
+            global_profile_row,
+            textvariable=self.global_profile_choice_var,
+            state="readonly",
+            width=40,
+        )
+        self.global_profile_combo.grid(row=0, column=0, sticky="ew")
+        self.global_profile_combo.bind("<<ComboboxSelected>>", self._on_global_profile_choice_changed)
+        tk.Label(
+            right,
+            textvariable=self.global_profile_summary_var,
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            justify="left",
+            wraplength=360,
+        ).grid(row=7, column=0, sticky="w", pady=(8, 0))
+
+        global_api_actions = tk.Frame(right, bg=PALETTE["card_bg"])
+        global_api_actions.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        for column in range(3):
+            global_api_actions.columnconfigure(column, weight=1)
+        make_button(global_api_actions, text="新增 API", variant="secondary", command=self.add_profile).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(global_api_actions, text="编辑 API", variant="secondary", command=self.edit_profile).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(global_api_actions, text="写入全局配置", variant="primary", command=self.apply_global_profile).grid(row=0, column=2, sticky="ew")
 
         mcp_card = self._make_card(content)
         mcp_card.grid(row=0, column=1, sticky="nsew")
@@ -1235,6 +1267,33 @@ class CodexSwitchApp:
     def _profile_by_id(self, profile_id: str | None) -> Profile | None:
         return next((item for item in self.profiles if item.id == profile_id), None)
 
+    def _global_profile_choice_label(self, profile: Profile) -> str:
+        return f"{profile.name} | {profile.model or '-'} | {compact_text(profile.base_url, 42)}"
+
+    def _profile_from_global_choice(self) -> Profile | None:
+        choice = self.global_profile_choice_var.get().strip()
+        for profile in self.profiles:
+            if self._global_profile_choice_label(profile) == choice:
+                return profile
+        return self.get_selected_profile()
+
+    def _sync_global_profile_choice(self) -> None:
+        if not hasattr(self, "global_profile_combo"):
+            return
+        labels = tuple(self._global_profile_choice_label(profile) for profile in self.profiles)
+        self.global_profile_combo.configure(values=labels, state="readonly" if labels else "disabled")
+        profile = self.get_selected_profile()
+        if not profile:
+            self.global_profile_choice_var.set("")
+            self.global_profile_summary_var.set("尚未选择全局 API 配置。")
+            return
+        self.global_profile_choice_var.set(self._global_profile_choice_label(profile))
+        self.global_profile_summary_var.set(
+            f"将写入：{profile.provider_name} / {profile.wire_api}\n"
+            f"模型：{profile.model or '-'}\n"
+            f"API：{profile.base_url}"
+        )
+
     def _project_by_id(self, project_id: str | None) -> ProjectRecord | None:
         return next((item for item in self.projects if item.id == project_id), None)
 
@@ -1377,9 +1436,22 @@ class CodexSwitchApp:
         selection = self.profile_tree.selection()
         if selection:
             self.selected_profile_id = selection[0]
+            self._sync_global_profile_choice()
             self._sync_test_tree_selection()
             self._refresh_library_detail()
             self._refresh_test_detail()
+
+    def _on_global_profile_choice_changed(self, _event: object | None = None) -> None:
+        profile = self._profile_from_global_choice()
+        if not profile:
+            return
+        self.selected_profile_id = profile.id
+        self.persist_state()
+        self._sync_profile_tree_selection()
+        self._sync_test_tree_selection()
+        self._refresh_library_detail()
+        self._refresh_test_detail()
+        self._sync_global_profile_choice()
 
     def _on_project_selection_changed(self, _event: object | None = None) -> None:
         if self.suppress_selection_events:
@@ -1400,6 +1472,7 @@ class CodexSwitchApp:
         selection = self.test_api_tree.selection()
         if selection:
             self.selected_profile_id = selection[0]
+            self._sync_global_profile_choice()
             self._sync_profile_tree_selection()
             self._refresh_library_detail()
             self._refresh_test_detail()
@@ -1500,6 +1573,7 @@ class CodexSwitchApp:
         self.current_models_var.set("\n".join(model_lines) if model_lines else "当前配置里没有模型信息。")
         self.current_mcp_var.set(self._mcp_summary(self._effective_global_mcp_toml()) if self.current_config.mcp_server_names else "当前配置未启用托管 MCP")
         self.global_mcp_var.set(self._mcp_summary(self._effective_global_mcp_toml()))
+        self._sync_global_profile_choice()
 
         if matched:
             self.current_match_var.set("已匹配本地配置库")
@@ -1547,6 +1621,7 @@ class CodexSwitchApp:
             self.library_hint_var.set(f"共显示 {len(visible_profiles)} 套配置，健康配置 {visible_healthy} 套。")
         else:
             self.library_hint_var.set(f"共 {len(self.profiles)} 套配置，健康配置 {visible_healthy} 套。")
+        self._sync_global_profile_choice()
         self._refresh_library_detail()
 
     def _refresh_library_detail(self) -> None:
@@ -2278,11 +2353,7 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已删除项目：{project.name}")
 
-    def apply_selected_profile(self) -> None:
-        profile = self.get_selected_profile()
-        if not profile:
-            messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
-            return
+    def _apply_profile_to_global_config(self, profile: Profile) -> Path | None:
         effective_global_mcp = self._effective_global_mcp_toml()
         try:
             backup_dir = self.manager.apply_profile(
@@ -2293,10 +2364,34 @@ class CodexSwitchApp:
         except Exception as exc:
             messagebox.showerror("切换失败", f"写入 Codex 配置失败：\n{exc}", parent=self.root)
             self.status_var.set("切换失败")
-            return
+            return None
         self.applied_global_mcp_server_names = self._safe_mcp_server_names(effective_global_mcp)
+        self.selected_profile_id = profile.id
         self.persist_state()
         self.refresh_global_tab()
+        self.refresh_library_tab()
+        self.refresh_test_tab()
+        return backup_dir
+
+    def apply_global_profile(self) -> None:
+        profile = self._profile_from_global_choice()
+        if not profile:
+            messagebox.showinfo("提示", "请先新增或选择一套全局 API 配置。", parent=self.root)
+            return
+        backup_dir = self._apply_profile_to_global_config(profile)
+        if backup_dir is None:
+            return
+        self.status_var.set(f"已写入全局 Codex 配置：{profile.name}")
+        messagebox.showinfo("写入成功", f"已写入全局 Codex 配置“{profile.name}”。\n\n备份位置：\n{backup_dir}", parent=self.root)
+
+    def apply_selected_profile(self) -> None:
+        profile = self.get_selected_profile()
+        if not profile:
+            messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
+            return
+        backup_dir = self._apply_profile_to_global_config(profile)
+        if backup_dir is None:
+            return
         self.status_var.set(f"已切换到 {profile.name}，并已备份原配置。")
         messagebox.showinfo("切换成功", f"已切换到配置“{profile.name}”。\n\n备份位置：\n{backup_dir}", parent=self.root)
 
