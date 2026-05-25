@@ -22,7 +22,7 @@ for path in (SRC, ROOT):
 
 from codex_switch import main
 from codex_switch.chat import ChatResult, ChatTester
-from codex_switch.codex_config import CodexConfigManager, scope_mcp_servers_to_project
+from codex_switch.codex_config import CodexConfigManager, PROJECT_ENV_KEY, PROJECT_PROVIDER_ID, scope_mcp_servers_to_project
 from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import HealthResult, Profile
 from codex_switch.project_template import (
@@ -423,6 +423,44 @@ class ProjectTemplateServiceTests(unittest.TestCase):
 
             self.assertEqual((temp_dir / "AGENTS.md").read_text(encoding="utf-8"), "# Custom Agents\n")
             self.assertEqual((temp_dir / ".codex" / "home" / "AGENTS.md").read_text(encoding="utf-8"), "# Custom Agents\n")
+
+    def test_sync_api_binding_updates_api_and_key_only(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            initial_profile = Profile.create(
+                "api-a",
+                "https://old.example.com",
+                "sk-old",
+                model="old-model",
+                wire_api="responses",
+            )
+            service.generate(temp_dir, initial_profile)
+            env_path = temp_dir / ".codex" / "local.env"
+            env_path.write_text(f"{PROJECT_ENV_KEY}=sk-old\nEXTRA=value\n", encoding="utf-8")
+
+            updated_profile = Profile.create(
+                "api-b",
+                "https://new.example.com/v1/",
+                "sk-new",
+                model="new-model",
+                wire_api="chat_completions",
+            )
+
+            updated_paths = service.sync_api_binding(temp_dir, updated_profile)
+
+            self.assertEqual(
+                {path.relative_to(temp_dir).as_posix() for path in updated_paths},
+                {".codex/home/config.toml", ".codex/local.env"},
+            )
+            config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            provider = config_data["model_providers"][PROJECT_PROVIDER_ID]
+            self.assertEqual(config_data["model"], "old-model")
+            self.assertEqual(config_data["review_model"], "old-model")
+            self.assertEqual(provider["base_url"], "https://new.example.com/v1")
+            self.assertEqual(provider["wire_api"], "chat_completions")
+            self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)
+            self.assertNotIn("requires_openai_auth", provider)
+            self.assertEqual(env_path.read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}=sk-new\nEXTRA=value\n")
 
 
 class McpEditorPrefillTests(unittest.TestCase):

@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import sys
+import tomllib
 
 from codex_switch.codex_config import (
     PROJECT_ENV_KEY,
+    PROJECT_PROVIDER_ID,
     dumps_toml,
     render_project_repo_config,
     render_project_runtime_config,
@@ -81,6 +83,33 @@ class ProjectTemplateStatus:
 
 
 class ProjectTemplateService:
+    def sync_api_binding(self, project_root: Path, profile: Profile) -> list[Path]:
+        project_root = project_root.resolve()
+        config_path = project_root / ".codex" / "home" / "config.toml"
+        env_path = project_root / ".codex" / "local.env"
+        updated_paths: list[Path] = []
+
+        if config_path.exists():
+            with config_path.open("rb") as handle:
+                config = tomllib.load(handle)
+            providers = config.setdefault("model_providers", {})
+            provider = providers.setdefault(PROJECT_PROVIDER_ID, {})
+            provider.setdefault("name", profile.provider_name)
+            provider["base_url"] = profile.base_url.rstrip("/")
+            provider["wire_api"] = profile.wire_api
+            provider["env_key"] = PROJECT_ENV_KEY
+            provider.pop("requires_openai_auth", None)
+            config_path.write_text(dumps_toml(config), encoding="utf-8")
+            updated_paths.append(config_path)
+
+        if config_path.exists() or env_path.exists():
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            existing_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+            env_path.write_text(self._render_local_env_with_key(existing_env, profile.api_key), encoding="utf-8")
+            updated_paths.append(env_path)
+
+        return updated_paths
+
     def generate(
         self,
         project_root: Path,
@@ -304,6 +333,24 @@ exit /b %errorlevel%
 
     def _render_local_env(self, api_key: str) -> str:
         return f"{PROJECT_ENV_KEY}={api_key.strip()}\n"
+
+    def _render_local_env_with_key(self, existing_text: str, api_key: str) -> str:
+        lines = existing_text.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+        rendered: list[str] = []
+        updated = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in line:
+                key, _value = line.split("=", 1)
+                if key.strip() == PROJECT_ENV_KEY:
+                    rendered.append(self._render_local_env(api_key).rstrip("\n"))
+                    updated = True
+                    continue
+            rendered.append(line)
+
+        if not updated:
+            rendered.append(self._render_local_env(api_key).rstrip("\n"))
+        return "\n".join(rendered).rstrip("\n") + "\n"
 
     def _render_local_env_example(self) -> str:
         return (

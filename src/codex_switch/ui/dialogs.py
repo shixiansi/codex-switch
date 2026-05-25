@@ -74,6 +74,7 @@ class ChatSettingsDialog(tk.Toplevel):
         wire_row.columnconfigure(0, weight=1)
         self.wire_combo = ttk.Combobox(wire_row, textvariable=self.wire_var, values=wire_values, state="readonly", width=24)
         self.wire_combo.grid(row=0, column=0, sticky="w")
+        self.wire_combo.bind("<<ComboboxSelected>>", self._reset_payload)
         make_button(wire_row, text="重置请求体", variant="secondary", command=self._reset_payload).grid(row=0, column=1, sticky="e")
 
         tk.Label(card, text="请求体 JSON", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=4, column=0, sticky="nw", pady=(10, 0))
@@ -105,7 +106,7 @@ class ChatSettingsDialog(tk.Toplevel):
         self.transient(master)
         self.grab_set()
 
-    def _reset_payload(self) -> None:
+    def _reset_payload(self, _event: object | None = None) -> None:
         template = self.payload_templates.get(self.wire_var.get().strip(), "")
         self.payload_text.delete("1.0", "end")
         self.payload_text.insert("1.0", template)

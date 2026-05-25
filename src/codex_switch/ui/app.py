@@ -2216,6 +2216,23 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已新增项目：{project.name}")
 
+    def _sync_project_api_binding(self, project: ProjectRecord) -> bool:
+        profile = self._profile_by_id(project.profile_id)
+        if profile is None:
+            messagebox.showerror("无法同步", "当前项目绑定的配置已经不存在。", parent=self.root)
+            return False
+        try:
+            updated_paths = self.project_template_service.sync_api_binding(Path(project.project_dir), profile)
+        except Exception as exc:
+            messagebox.showerror("同步失败", f"项目记录已保存，但同步项目 API 配置失败：\n{exc}", parent=self.root)
+            self.status_var.set("项目 API 配置同步失败")
+            return False
+        if updated_paths:
+            self.status_var.set(f"已同步项目 API 配置：{project.name}")
+        else:
+            self.status_var.set(f"已更新项目：{project.name}")
+        return True
+
     def edit_project(self) -> None:
         project = self.get_selected_project()
         if not project:
@@ -2237,10 +2254,14 @@ class CodexSwitchApp:
             run_command=dialog.result["run_command"],
             updated_at=now_iso(),
         )
+        api_binding_changed = updated.profile_id != project.profile_id or updated.project_dir != project.project_dir
         self.projects = [updated if item.id == updated.id else item for item in self.projects]
         self.selected_project_id = updated.id
         self.persist_state()
         self.refresh_project_tab()
+        if api_binding_changed and self._sync_project_api_binding(updated):
+            self.refresh_project_tab()
+            return
         self.status_var.set(f"已更新项目：{updated.name}")
 
     def delete_project(self) -> None:
