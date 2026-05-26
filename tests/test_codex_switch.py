@@ -86,6 +86,9 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(selected_profile_id, profile.id)
             self.assertEqual(len(profiles), 1)
             self.assertEqual(profiles[0].name, "主线路")
+            self.assertEqual(profiles[0].api_keys, ["sk-demo"])
+            self.assertEqual(profiles[0].api_key, "sk-demo")
+            self.assertEqual(profiles[0].active_api_key_index, 0)
             self.assertEqual(profiles[0].health.status, "healthy")
             self.assertEqual(profiles[0].manual_health_status, "error")
             self.assertEqual(profiles[0].effective_health_status, "error")
@@ -109,7 +112,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 5)
+            self.assertEqual(payload["version"], 6)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_model_batch_settings(self) -> None:
@@ -132,6 +135,55 @@ class ProfileStoreTests(unittest.TestCase):
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["settings"]["model_batch_concurrency"], 5)
             self.assertEqual(payload["settings"]["model_batch_cache_by_profile"], cache_payload)
+
+    def test_store_loads_legacy_single_api_key_profile(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            store.storage_path.write_text(
+                json.dumps(
+                    {
+                        "version": 5,
+                        "profiles": [
+                            {
+                                "id": "profile-1",
+                                "name": "legacy",
+                                "base_url": "https://example.com",
+                                "api_key": "sk-legacy",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profiles = store.load()[0]
+
+            self.assertEqual(len(profiles), 1)
+            self.assertEqual(profiles[0].api_keys, ["sk-legacy"])
+            self.assertEqual(profiles[0].api_key, "sk-legacy")
+            self.assertEqual(profiles[0].active_api_key_index, 0)
+
+    def test_store_roundtrip_keeps_active_api_key(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            profile = Profile.create(
+                "multi-key",
+                "https://example.com",
+                "sk-first",
+                api_keys=["sk-first", "sk-active"],
+                active_api_key_index=1,
+            )
+
+            store.save([profile], profile.id)
+            profiles = store.load()[0]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(profiles[0].api_keys, ["sk-first", "sk-active"])
+            self.assertEqual(profiles[0].api_key, "sk-active")
+            self.assertEqual(profiles[0].active_api_key_index, 1)
+            self.assertEqual(payload["profiles"][0]["api_key"], "sk-active")
+            self.assertEqual(payload["profiles"][0]["api_keys"], ["sk-first", "sk-active"])
+            self.assertEqual(payload["profiles"][0]["active_api_key_index"], 1)
 
     def test_store_loads_legacy_payload_with_model_batch_defaults(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -280,6 +332,8 @@ class CodexConfigManagerTests(unittest.TestCase):
                 base_url="https://gateway.example.com",
                 api_key="sk-123456",
                 model="gpt-5.4",
+                api_keys=["sk-123456", "sk-active"],
+                active_api_key_index=1,
             )
 
             backup_dir = manager.apply_profile(profile)
@@ -296,11 +350,11 @@ class CodexConfigManagerTests(unittest.TestCase):
 
             auth_data = json.loads(manager.auth_path.read_text(encoding="utf-8"))
             self.assertEqual(auth_data["auth_mode"], "apikey")
-            self.assertEqual(auth_data["OPENAI_API_KEY"], "sk-123456")
+            self.assertEqual(auth_data["OPENAI_API_KEY"], "sk-active")
 
             current = manager.read_current_config()
             self.assertEqual(current.base_url, "https://gateway.example.com")
-            self.assertEqual(current.api_key, "sk-123456")
+            self.assertEqual(current.api_key, "sk-active")
 
     def test_scope_mcp_servers_to_project_updates_serena_and_filesystem(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -373,7 +427,13 @@ class ProjectTemplateServiceTests(unittest.TestCase):
         with workspace_tempdir() as temp_dir:
             (temp_dir / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
             service = ProjectTemplateService()
-            profile = Profile.create("项目模板", "https://gateway.example.com", "sk-template")
+            profile = Profile.create(
+                "项目模板",
+                "https://gateway.example.com",
+                "sk-template",
+                api_keys=["sk-template", "sk-template-active"],
+                active_api_key_index=1,
+            )
 
             result = service.generate(temp_dir, profile)
 
@@ -396,6 +456,10 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertEqual(repo_config_data["review_model"], profile.model)
             self.assertEqual(runtime_config_data["model"], profile.model)
             self.assertEqual(runtime_config_data["review_model"], profile.model)
+            self.assertEqual(
+                (temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"),
+                f"{PROJECT_ENV_KEY}=sk-template-active\n",
+            )
 
             backup_gitignore = result.backup_dir / ".gitignore"
             self.assertTrue(backup_gitignore.exists())
@@ -451,6 +515,8 @@ class ProjectTemplateServiceTests(unittest.TestCase):
                 "sk-new",
                 model="new-model",
                 wire_api="chat_completions",
+                api_keys=["sk-new", "sk-new-active"],
+                active_api_key_index=1,
             )
 
             updated_paths = service.sync_api_binding(temp_dir, updated_profile)
@@ -470,7 +536,7 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertEqual(provider["wire_api"], "chat_completions")
             self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)
             self.assertNotIn("requires_openai_auth", provider)
-            self.assertEqual(env_path.read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}=sk-new\nEXTRA=value\n")
+            self.assertEqual(env_path.read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}=sk-new-active\nEXTRA=value\n")
 
 
 class McpEditorPrefillTests(unittest.TestCase):
@@ -530,7 +596,13 @@ class HealthCheckerTests(unittest.TestCase):
         self.addCleanup(thread.join, 1)
         self.addCleanup(server.shutdown)
 
-        profile = Profile.create("本地", f"http://127.0.0.1:{server.server_port}", "sk-ok")
+        profile = Profile.create(
+            "本地",
+            f"http://127.0.0.1:{server.server_port}",
+            "sk-bad",
+            api_keys=["sk-bad", "sk-ok"],
+            active_api_key_index=1,
+        )
         checker = HealthChecker(timeout=5)
 
         result = checker.check(profile)
@@ -631,9 +703,11 @@ class ChatTesterTests(unittest.TestCase):
         profile = Profile.create(
             "chat",
             f"http://127.0.0.1:{server.server_port}",
-            "sk-chat",
+            "sk-wrong",
             model="gpt-5.4",
             wire_api="responses",
+            api_keys=["sk-wrong", "sk-chat"],
+            active_api_key_index=1,
         )
 
         result = tester.send_message(profile, "ping", model_override="gpt-4o-mini")

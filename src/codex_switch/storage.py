@@ -113,7 +113,7 @@ class ProfileStore:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
         payload = {
-            "version": 5,
+            "version": 6,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,

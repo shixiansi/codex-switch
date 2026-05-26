@@ -439,6 +439,7 @@ class CodexSwitchApp:
         self.library_selected_provider_var = tk.StringVar(value="-")
         self.library_selected_model_var = tk.StringVar(value="-")
         self.library_selected_api_var = tk.StringVar(value="-")
+        self.library_selected_key_var = tk.StringVar(value="-")
         self.library_selected_wire_var = tk.StringVar(value="-")
         self.library_selected_sign_in_status_var = tk.StringVar(value="-")
         self.library_selected_sign_in_url_var = tk.StringVar(value="-")
@@ -452,6 +453,7 @@ class CodexSwitchApp:
         self.project_selected_profile_var = tk.StringVar(value="-")
         self.project_selected_provider_var = tk.StringVar(value="-")
         self.project_selected_model_var = tk.StringVar(value="-")
+        self.project_selected_key_var = tk.StringVar(value="-")
         self.project_backup_var = tk.StringVar(value="-")
         self.project_generated_var = tk.StringVar(value="-")
         self.project_script_var = tk.StringVar(value="-")
@@ -790,13 +792,14 @@ class CodexSwitchApp:
         detail.columnconfigure(3, weight=1)
         self._create_dual_info_row(detail, 0, "提供方", self.library_selected_provider_var, "默认模型", self.library_selected_model_var)
         self.library_api_link_label = self._create_link_info_row(detail, 1, "API 地址", self.library_selected_api_var, self._open_selected_api_url, wraplength=460)
-        self._create_dual_info_row(detail, 2, "Wire API", self.library_selected_wire_var, "签到状态", self.library_selected_sign_in_status_var)
-        self.library_sign_in_link_label = self._create_link_info_row(detail, 3, "签到地址", self.library_selected_sign_in_url_var, self._open_selected_sign_in_url, wraplength=460)
-        self._create_info_row(detail, 4, "备注", self.library_selected_notes_var, wraplength=460)
+        self._create_dual_info_row(detail, 2, "活动 Key", self.library_selected_key_var, "Wire API", self.library_selected_wire_var)
+        self._create_info_row(detail, 3, "签到状态", self.library_selected_sign_in_status_var, wraplength=460)
+        self.library_sign_in_link_label = self._create_link_info_row(detail, 4, "签到地址", self.library_selected_sign_in_url_var, self._open_selected_sign_in_url, wraplength=460)
+        self._create_info_row(detail, 5, "备注", self.library_selected_notes_var, wraplength=460)
 
-        tk.Label(detail, text="返回模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="nw", padx=(0, 14), pady=(12, 4))
+        tk.Label(detail, text="返回模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=6, column=0, sticky="nw", padx=(0, 14), pady=(12, 4))
         models_wrap = tk.Frame(detail, bg=PALETTE["card_bg"])
-        models_wrap.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=(12, 4))
+        models_wrap.grid(row=6, column=1, columnspan=3, sticky="nsew", pady=(12, 4))
         models_wrap.columnconfigure(0, weight=1)
         models_wrap.rowconfigure(0, weight=1)
         self.library_models_text = tk.Text(
@@ -879,13 +882,14 @@ class CodexSwitchApp:
         self._create_info_row(detail, 1, "项目目录", self.project_selected_dir_var, wraplength=440)
         self._create_info_row(detail, 2, "绑定 API", self.project_selected_profile_var, wraplength=440)
         self._create_dual_info_row(detail, 3, "提供方", self.project_selected_provider_var, "模型", self.project_selected_model_var)
-        self._create_dual_info_row(detail, 4, "最近备份", self.project_backup_var, "最近生成", self.project_generated_var)
-        self._create_info_row(detail, 5, "运行脚本", self.project_script_var, wraplength=440)
-        self._create_info_row(detail, 6, "运行命令", self.project_run_var, wraplength=440)
-        self._create_info_row(detail, 7, "项目 MCP", self.project_mcp_var, wraplength=440)
+        self._create_info_row(detail, 4, "活动 Key", self.project_selected_key_var, wraplength=440)
+        self._create_dual_info_row(detail, 5, "最近备份", self.project_backup_var, "最近生成", self.project_generated_var)
+        self._create_info_row(detail, 6, "运行脚本", self.project_script_var, wraplength=440)
+        self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
+        self._create_info_row(detail, 8, "项目 MCP", self.project_mcp_var, wraplength=440)
 
         buttons = tk.Frame(detail, bg=PALETTE["card_bg"])
-        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        buttons.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         for column in range(3):
             buttons.columnconfigure(column, weight=1)
         make_button(buttons, text="编辑项目 MCP", variant="secondary", command=self.edit_project_mcp).grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
@@ -1267,6 +1271,13 @@ class CodexSwitchApp:
     def _profile_by_id(self, profile_id: str | None) -> Profile | None:
         return next((item for item in self.profiles if item.id == profile_id), None)
 
+    def _profile_key_summary(self, profile: Profile) -> str:
+        summary = hidden_secret(profile.api_key)
+        key_count = len(profile.api_keys)
+        if key_count > 1:
+            return f"{summary}（Key {profile.effective_active_api_key_index + 1}/{key_count}）"
+        return summary
+
     def _global_profile_choice_label(self, profile: Profile) -> str:
         return f"{profile.name} | {profile.model or '-'} | {compact_text(profile.base_url, 42)}"
 
@@ -1291,7 +1302,8 @@ class CodexSwitchApp:
         self.global_profile_summary_var.set(
             f"将写入：{profile.provider_name} / {profile.wire_api}\n"
             f"模型：{profile.model or '-'}\n"
-            f"API：{profile.base_url}"
+            f"API：{profile.base_url}\n"
+            f"活动 Key：{self._profile_key_summary(profile)}"
         )
 
     def _project_by_id(self, project_id: str | None) -> ProjectRecord | None:
@@ -1631,6 +1643,7 @@ class CodexSwitchApp:
             self.library_selected_provider_var.set("-")
             self.library_selected_model_var.set("-")
             self.library_selected_api_var.set("-")
+            self.library_selected_key_var.set("-")
             self.library_selected_wire_var.set("-")
             self.library_selected_sign_in_status_var.set("-")
             self.library_selected_sign_in_url_var.set("-")
@@ -1645,6 +1658,7 @@ class CodexSwitchApp:
         self.library_selected_provider_var.set(profile.provider_name)
         self.library_selected_model_var.set(profile.model or "-")
         self.library_selected_api_var.set(profile.base_url)
+        self.library_selected_key_var.set(self._profile_key_summary(profile))
         self.library_selected_wire_var.set(profile.wire_api)
         self.library_selected_sign_in_status_var.set(profile.sign_in_status)
         self.library_selected_sign_in_url_var.set(profile.sign_in_url or "-")
@@ -1745,6 +1759,7 @@ class CodexSwitchApp:
             self.project_selected_profile_var.set("-")
             self.project_selected_provider_var.set("-")
             self.project_selected_model_var.set("-")
+            self.project_selected_key_var.set("-")
             self.project_backup_var.set("-")
             self.project_generated_var.set("-")
             self.project_script_var.set("-")
@@ -1764,10 +1779,12 @@ class CodexSwitchApp:
             self.project_selected_profile_var.set(profile.name)
             self.project_selected_provider_var.set(profile.provider_name)
             self.project_selected_model_var.set(profile.model or "-")
+            self.project_selected_key_var.set(self._profile_key_summary(profile))
         else:
             self.project_selected_profile_var.set("绑定配置已删除")
             self.project_selected_provider_var.set("-")
             self.project_selected_model_var.set("-")
+            self.project_selected_key_var.set("-")
 
         project_root = Path(project.project_dir)
         if not project_root.exists():
@@ -1902,7 +1919,7 @@ class CodexSwitchApp:
         self.test_detail_provider_var.set(profile.provider_name)
         self.test_detail_model_var.set(profile.model or "-")
         self.test_detail_api_var.set(profile.base_url)
-        self.test_detail_key_var.set(hidden_secret(profile.api_key))
+        self.test_detail_key_var.set(self._profile_key_summary(profile))
         self.test_detail_wire_var.set(profile.wire_api)
         self.test_detail_endpoint_var.set(profile.health.endpoint or "-")
         checked_text = profile.health.checked_at or "-"
@@ -2229,7 +2246,8 @@ class CodexSwitchApp:
             profile,
             name=dialog.result["name"],
             base_url=dialog.result["base_url"],
-            api_key=dialog.result["api_key"],
+            api_keys=dialog.result["api_keys"],
+            active_api_key_index=dialog.result["active_api_key_index"],
             model=dialog.result["model"],
             provider_name=dialog.result["provider_name"],
             wire_api=dialog.result["wire_api"],

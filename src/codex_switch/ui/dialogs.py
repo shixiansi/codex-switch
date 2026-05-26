@@ -505,13 +505,15 @@ class ProfileDialog(tk.Toplevel):
         self.last_signed_date = defaults.last_signed_date
         self.name_var = tk.StringVar(value=defaults.name)
         self.base_url_var = tk.StringVar(value=defaults.base_url)
-        self.api_key_var = tk.StringVar(value=defaults.api_key)
         self.model_var = tk.StringVar(value=defaults.model)
         self.provider_name_var = tk.StringVar(value=defaults.provider_name)
         self.wire_api_var = tk.StringVar(value=defaults.wire_api)
         self.requires_sign_in_var = tk.BooleanVar(value=defaults.requires_sign_in)
         self.sign_in_url_var = tk.StringVar(value=defaults.sign_in_url)
         self.show_key_var = tk.BooleanVar(value=False)
+        self.active_api_key_var = tk.IntVar(value=defaults.effective_active_api_key_index)
+        self.api_key_vars: list[tk.StringVar] = []
+        self.api_key_entries: list[ttk.Entry] = []
 
         card = tk.Frame(
             self,
@@ -540,31 +542,52 @@ class ProfileDialog(tk.Toplevel):
         fields = [
             ("名称", self.name_var),
             ("API 地址", self.base_url_var),
-            ("API Key", self.api_key_var),
             ("默认模型", self.model_var),
             ("提供方名称", self.provider_name_var),
             ("Wire API", self.wire_api_var),
         ]
         self.entries: dict[str, ttk.Entry] = {}
         for index, (label, variable) in enumerate(fields, start=2):
+            row = index if index < 4 else index + 1
             tk.Label(
                 card,
                 text=label,
                 bg=PALETTE["card_bg"],
                 fg=PALETTE["text"],
                 font=("Microsoft YaHei UI", 10, "bold"),
-            ).grid(row=index, column=0, sticky="w", pady=6)
-            show = "*" if label == "API Key" and not self.show_key_var.get() else ""
-            entry = ttk.Entry(card, textvariable=variable, width=48, show=show)
-            entry.grid(row=index, column=1, sticky="ew", pady=6)
+            ).grid(row=row, column=0, sticky="w", pady=6)
+            entry = ttk.Entry(card, textvariable=variable, width=48)
+            entry.grid(row=row, column=1, sticky="ew", pady=6)
             self.entries[label] = entry
 
-        ttk.Checkbutton(card, text="显示 Key", variable=self.show_key_var, command=self._toggle_key_visibility).grid(
-            row=4,
-            column=2,
-            padx=(8, 0),
+        tk.Label(
+            card,
+            text="API Key",
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).grid(row=4, column=0, sticky="nw", pady=6)
+        self.api_keys_frame = tk.Frame(card, bg=PALETTE["card_bg"])
+        self.api_keys_frame.grid(row=4, column=1, sticky="ew", pady=6)
+        self.api_keys_frame.columnconfigure(0, weight=1)
+        key_actions = ttk.Frame(card)
+        key_actions.grid(row=4, column=2, sticky="nw", padx=(8, 0), pady=4)
+        make_button(
+            key_actions,
+            text="增加 API Key",
+            variant="secondary",
+            command=self._add_api_key_row,
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Checkbutton(key_actions, text="显示 Key", variable=self.show_key_var, command=self._toggle_key_visibility).grid(
+            row=1,
+            column=0,
             sticky="w",
+            pady=(8, 0),
         )
+        for key in defaults.api_keys or [defaults.api_key]:
+            self._add_api_key_row(key)
+        if not self.api_key_vars:
+            self._add_api_key_row()
         ttk.Checkbutton(card, text="需要签到", variable=self.requires_sign_in_var, command=self._toggle_sign_in_fields).grid(
             row=8,
             column=0,
@@ -614,8 +637,37 @@ class ProfileDialog(tk.Toplevel):
         self.grab_set()
         self.entries["名称"].focus_set()
 
+    def _api_key_show_char(self) -> str:
+        return "" if self.show_key_var.get() else "*"
+
+    def _add_api_key_row(self, value: str = "") -> None:
+        index = len(self.api_key_vars)
+        variable = tk.StringVar(value=value)
+        self.api_key_vars.append(variable)
+
+        row = tk.Frame(self.api_keys_frame, bg=PALETTE["card_bg"])
+        row.grid(row=index, column=0, sticky="ew", pady=(0, 6))
+        row.columnconfigure(2, weight=1)
+        ttk.Radiobutton(row, variable=self.active_api_key_var, value=index).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        tk.Label(
+            row,
+            text=f"Key {index + 1}",
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["muted"],
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=1, sticky="w", padx=(6, 8))
+        entry = ttk.Entry(row, textvariable=variable, width=38, show=self._api_key_show_char())
+        entry.grid(row=0, column=2, sticky="ew")
+        self.api_key_entries.append(entry)
+
     def _toggle_key_visibility(self) -> None:
-        self.entries["API Key"].configure(show="" if self.show_key_var.get() else "*")
+        show = self._api_key_show_char()
+        for entry in self.api_key_entries:
+            entry.configure(show=show)
 
     def _toggle_sign_in_fields(self) -> None:
         state = "normal" if self.requires_sign_in_var.get() else "disabled"
@@ -624,7 +676,18 @@ class ProfileDialog(tk.Toplevel):
     def _on_submit(self) -> None:
         name = self.name_var.get().strip()
         base_url = self.base_url_var.get().strip()
-        api_key = self.api_key_var.get().strip()
+        raw_api_keys = [variable.get().strip() for variable in self.api_key_vars]
+        api_keys: list[str] = []
+        active_api_key_index = 0
+        active_row = self.active_api_key_var.get()
+        active_row_has_key = False
+        for row_index, key in enumerate(raw_api_keys):
+            if not key:
+                continue
+            if row_index == active_row:
+                active_api_key_index = len(api_keys)
+                active_row_has_key = True
+            api_keys.append(key)
         model = self.model_var.get().strip()
         requires_sign_in = self.requires_sign_in_var.get()
         sign_in_url = self.sign_in_url_var.get().strip()
@@ -635,8 +698,11 @@ class ProfileDialog(tk.Toplevel):
         if not is_http_url(base_url):
             messagebox.showerror("校验失败", "API 地址必须以 http:// 或 https:// 开头。", parent=self)
             return
-        if not api_key:
+        if not api_keys:
             messagebox.showerror("校验失败", "请输入 API Key。", parent=self)
+            return
+        if not active_row_has_key:
+            messagebox.showerror("校验失败", "请选择一个已填写的活动 API Key。", parent=self)
             return
         if not model:
             messagebox.showerror("校验失败", "请至少填写一个默认模型。", parent=self)
@@ -648,7 +714,9 @@ class ProfileDialog(tk.Toplevel):
         self.result = {
             "name": name,
             "base_url": base_url.rstrip("/"),
-            "api_key": api_key,
+            "api_key": api_keys[active_api_key_index],
+            "api_keys": api_keys,
+            "active_api_key_index": active_api_key_index,
             "model": model,
             "provider_name": self.provider_name_var.get().strip() or "OpenAI",
             "wire_api": self.wire_api_var.get().strip() or "responses",

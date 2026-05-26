@@ -55,6 +55,31 @@ def parse_model_names(value: str | None) -> list[str]:
     return models
 
 
+def normalize_api_keys(values: list[str] | tuple[str, ...] | None, fallback: str = "") -> list[str]:
+    api_keys: list[str] = []
+    source = values if isinstance(values, (list, tuple)) else []
+    for value in source:
+        if value is None:
+            continue
+        key = str(value).strip()
+        if key:
+            api_keys.append(key)
+    fallback_key = fallback.strip()
+    if not api_keys and fallback_key:
+        api_keys.append(fallback_key)
+    return api_keys
+
+
+def normalize_api_key_index(api_keys: list[str], value: int | str | None) -> int:
+    try:
+        index = int(value or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if not api_keys:
+        return 0
+    return max(0, min(index, len(api_keys) - 1))
+
+
 @dataclass
 class HealthResult:
     status: str = "unknown"
@@ -88,7 +113,8 @@ class Profile:
     id: str
     name: str
     base_url: str
-    api_key: str
+    api_keys: list[str] = field(default_factory=list)
+    active_api_key_index: int = 0
     model: str = "gpt-5.4"
     provider_name: str = "OpenAI"
     wire_api: str = "responses"
@@ -114,12 +140,16 @@ class Profile:
         sign_in_url: str = "",
         last_signed_date: str | None = None,
         notes: str = "",
+        api_keys: list[str] | None = None,
+        active_api_key_index: int = 0,
     ) -> "Profile":
+        normalized_keys = normalize_api_keys(api_keys, api_key)
         return cls(
             id=str(uuid.uuid4()),
             name=name.strip(),
             base_url=base_url.strip(),
-            api_key=api_key.strip(),
+            api_keys=normalized_keys,
+            active_api_key_index=normalize_api_key_index(normalized_keys, active_api_key_index),
             model=model.strip() or "gpt-5.4",
             provider_name=provider_name.strip() or "OpenAI",
             wire_api=wire_api.strip() or "responses",
@@ -132,11 +162,13 @@ class Profile:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Profile":
+        api_keys = normalize_api_keys(data.get("api_keys"), str(data.get("api_key", "") or ""))
         return cls(
             id=data["id"],
             name=data["name"],
             base_url=data["base_url"],
-            api_key=data["api_key"],
+            api_keys=api_keys,
+            active_api_key_index=normalize_api_key_index(api_keys, data.get("active_api_key_index")),
             model=data.get("model", "gpt-5.4"),
             provider_name=data.get("provider_name", "OpenAI"),
             wire_api=data.get("wire_api", "responses"),
@@ -152,7 +184,20 @@ class Profile:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["health"] = self.health.to_dict()
+        payload["api_keys"] = list(self.api_keys)
+        payload["active_api_key_index"] = self.effective_active_api_key_index
+        payload["api_key"] = self.api_key
         return payload
+
+    @property
+    def effective_active_api_key_index(self) -> int:
+        return normalize_api_key_index(self.api_keys, self.active_api_key_index)
+
+    @property
+    def api_key(self) -> str:
+        if not self.api_keys:
+            return ""
+        return self.api_keys[self.effective_active_api_key_index]
 
     @property
     def effective_health_status(self) -> str:
