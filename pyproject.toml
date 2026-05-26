@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-switch"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local desktop tool for switching Codex API profiles."
 requires-python = ">=3.11"
 dependencies = [

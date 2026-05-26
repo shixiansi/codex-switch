@@ -1,4 +1,4 @@
-﻿name: Build Release Packages
+name: Build Release Packages
 
 on:
   workflow_dispatch:
@@ -68,15 +68,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout tag metadata
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
           merge-multiple: true
 
+      - name: Read annotated tag notes
+        shell: bash
+        run: |
+          git fetch --force --tags
+          git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}" > release-notes.md
+          fi
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release-artifacts/*
-          generate_release_notes: true
+          body_path: release-notes.md
 

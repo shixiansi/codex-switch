@@ -18,6 +18,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 ### 全局配置
 
 - 显示当前 Codex 正在使用的 provider、base URL、wire API、模型、API Key 掩码和 MCP 状态。
+- 在全局页可从配置库下拉选择 API，并预览将写入的 provider、wire API、模型、API 地址和活动 Key。
 - 将选中的配置写入用户级 `~/.codex/config.toml` 和 `~/.codex/auth.json`。
 - 写入前会备份已有 Codex 配置到 `~/.codex/switch-backups/`。
 - 支持注入全局托管 MCP，也支持清空并显式禁用默认 MCP 注入。
@@ -26,6 +27,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 
 - 新增、编辑、删除多套 API 配置。
 - 配置字段包括名称、provider、base URL、API Key、模型、接口标准、OpenAI 鉴权开关、签到信息和备注。
+- 同一套 API 配置可保存多个 API Key，并通过活动 Key 单选决定全局写入、健康检测、聊天测试和项目模板使用哪个 Key。
 - 支持 `responses` 与 `chat_completions` 两种聊天接口标准。
 - 支持健康检测、手动状态覆盖和隐藏异常 API。
 - 健康检测会探测 `/v1/models` 或 `/models`，并保存最近返回的模型列表。
@@ -44,6 +46,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
   - `codex_scripts/codex-profile.cmd`
 - 生成前会备份已存在的托管文件到 `.codex/template-backups/`。
 - 支持项目级 MCP 覆盖；未设置时会回退到全局 MCP。
+- 修改项目绑定 API 后，会同步更新已生成项目的模型、API 地址、wire API 和 `.codex/local.env` 中的活动 Key。
 - 支持“运行项目”、“VS Code 运行”和“CMD 运行”。
 - 可配置项目运行命令，例如 `npm run dev`、`pnpm dev`、`python main.py`。
 
@@ -67,9 +70,10 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 
 - 左侧 API 列表复用配置库的“隐藏异常”状态。
 - 右侧显示选中 API 的健康检测详情、返回模型、成功模型和聊天测试区域。
-- 聊天设置使用弹窗配置，可临时选择模型、接口标准和请求体 JSON。
+- 聊天设置使用弹窗配置，可临时选择或手动输入模型、切换接口标准，并编辑请求体 JSON 模板。
 - 未做批量测试时，聊天模型来源于最近健康检测返回的模型列表。
 - 完成模型批量测试后，聊天模型只允许选择成功请求的模型。
+- 可打开“成功模型”弹窗查看并复制最近批量测试成功的模型名称。
 - 批量测试会对每个模型发送轻量 `ping` 请求，默认最多 3 个并发，可在设置页调整到 1-5。
 - 批量测试完成后会缓存到本地，跨重启保留，直到手动重新测试该 API。
 - 如果接口返回 JSON 但无法提取文本，会显示完整返回结果，方便排查兼容性。
@@ -144,7 +148,7 @@ Windows 本地打包：
 
 ### 项目级模板
 
-项目模板生成后，会在目标项目下创建 `.codex/` 和 `codex_scripts/`。其中 `.codex/local.env` 包含当前项目的 API Key，应保持本地私有；生成器会维护 `.gitignore` 托管块，默认忽略 `codex_scripts/`。
+项目模板生成后，会在目标项目下创建 `.codex/` 和 `codex_scripts/`。其中 `.codex/local.env` 包含当前项目绑定配置的活动 API Key，应保持本地私有；生成器会维护 `.gitignore` 托管块，默认忽略 `codex_scripts/`。
 
 ## 项目结构
 
