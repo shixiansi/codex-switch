@@ -572,17 +572,18 @@ class ProfileDialog(tk.Toplevel):
         self.api_keys_frame.columnconfigure(0, weight=1)
         key_actions = ttk.Frame(card)
         key_actions.grid(row=4, column=2, sticky="nw", padx=(8, 0), pady=4)
+        key_actions.columnconfigure(1, weight=1)
         make_button(
             key_actions,
-            text="增加 API Key",
+            text="+",
             variant="secondary",
             command=self._add_api_key_row,
         ).grid(row=0, column=0, sticky="ew")
         ttk.Checkbutton(key_actions, text="显示 Key", variable=self.show_key_var, command=self._toggle_key_visibility).grid(
-            row=1,
-            column=0,
+            row=0,
+            column=1,
             sticky="w",
-            pady=(8, 0),
+            padx=(8, 0),
         )
         for key in defaults.api_keys or [defaults.api_key]:
             self._add_api_key_row(key)
