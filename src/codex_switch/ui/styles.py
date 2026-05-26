@@ -62,6 +62,7 @@ HEALTH_OVERRIDE_VALUE_BY_DISPLAY = {
 BOOTSTRAP_THEME = "flatly"
 BUTTON_STYLE = {
     "primary": "Accent.TButton",
+    "small_primary": "SmallAccent.TButton",
     "secondary": "Subtle.TButton",
     "danger": "Danger.TButton",
 }
@@ -73,12 +74,15 @@ def make_button(
     variant: str = "secondary",
     text: str | None = None,
     textvariable: tk.StringVar | None = None,
+    width: int | None = None,
 ) -> ttk.Button:
     options = {"command": command}
     if text is not None:
         options["text"] = text
     if textvariable is not None:
         options["textvariable"] = textvariable
+    if width is not None:
+        options["width"] = width
 
     options["style"] = BUTTON_STYLE.get(variant, BUTTON_STYLE["secondary"])
     return ttk.Button(parent, **options)
@@ -120,6 +124,18 @@ def configure_theme_styles(style: ttk.Style, body_font: tkfont.Font, small_font:
     )
     style.map(
         "Accent.TButton",
+        background=[("disabled", "#CBD5E1"), ("active", PALETTE["accent_hover"])],
+        foreground=[("disabled", PALETTE["muted"]), ("!disabled", "#FFFFFF")],
+    )
+    style.configure(
+        "SmallAccent.TButton",
+        background=PALETTE["accent"],
+        foreground="#FFFFFF",
+        borderwidth=0,
+        padding=(6, 3),
+    )
+    style.map(
+        "SmallAccent.TButton",
         background=[("disabled", "#CBD5E1"), ("active", PALETTE["accent_hover"])],
         foreground=[("disabled", PALETTE["muted"]), ("!disabled", "#FFFFFF")],
     )

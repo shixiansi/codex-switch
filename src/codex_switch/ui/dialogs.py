@@ -576,8 +576,9 @@ class ProfileDialog(tk.Toplevel):
         make_button(
             key_actions,
             text="+",
-            variant="secondary",
+            variant="small_primary",
             command=self._add_api_key_row,
+            width=3,
         ).grid(row=0, column=0, sticky="ew")
         ttk.Checkbutton(key_actions, text="显示 Key", variable=self.show_key_var, command=self._toggle_key_visibility).grid(
             row=0,
