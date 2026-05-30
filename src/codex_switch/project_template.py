@@ -24,6 +24,10 @@ from codex_switch.resources import asset_path
 
 
 CODEX_SCRIPT_DIRNAME = "codex_scripts"
+CLAUDE_BASE_URL_ENV_KEY = "ANTHROPIC_BASE_URL"
+CLAUDE_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY"
+CLAUDE_MODEL_ENV_KEY = "ANTHROPIC_MODEL"
+CLAUDE_FALLBACK_MODEL_ENV_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
 GITIGNORE_MANAGED_BEGIN = "# >>> codex-switch managed ignores >>>"
 GITIGNORE_MANAGED_END = "# <<< codex-switch managed ignores <<<"
 MANAGED_GITIGNORE_RULES = (
@@ -128,6 +132,16 @@ class ProjectTemplateService:
             updated_paths.append(env_path)
 
         return updated_paths
+
+    def sync_claude_binding(self, project_root: Path, profile: Profile) -> list[Path]:
+        project_root = project_root.resolve()
+        settings_path = project_root / ".claude" / "settings.local.json"
+        payload = self._load_claude_settings_payload(settings_path)
+        payload = self._render_claude_settings_payload(profile, payload)
+
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return [settings_path]
 
     def generate(
         self,
@@ -315,13 +329,37 @@ class ProjectTemplateService:
         return files
 
     def _render_claude_settings(self, profile: Profile) -> str:
-        payload = {
-            "env": {
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": profile.claude_display_model,
-                "ANTHROPIC_MODEL": profile.claude_display_fallback_model,
-            }
-        }
+        payload = self._render_claude_settings_payload(profile)
         return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+    def _load_claude_settings_payload(self, settings_path: Path) -> dict:
+        if not settings_path.exists():
+            return {}
+        raw = settings_path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return {}
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("settings.local.json 必须是 JSON 对象。")
+        return payload
+
+    def _render_claude_settings_payload(self, profile: Profile, payload: dict | None = None) -> dict:
+        rendered = dict(payload or {})
+        env = rendered.get("env")
+        if not isinstance(env, dict):
+            env = {}
+        else:
+            env = dict(env)
+        env.update(
+            {
+                CLAUDE_BASE_URL_ENV_KEY: profile.base_url.rstrip("/"),
+                CLAUDE_API_KEY_ENV_KEY: profile.api_key,
+                CLAUDE_MODEL_ENV_KEY: profile.claude_display_model,
+                CLAUDE_FALLBACK_MODEL_ENV_KEY: profile.claude_display_fallback_model,
+            }
+        )
+        rendered["env"] = env
+        return rendered
 
     def select_project_mcp_toml(
         self,

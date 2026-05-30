@@ -36,6 +36,10 @@ from codex_switch.models import (
     today_iso,
 )
 from codex_switch.project_template import (
+    CLAUDE_API_KEY_ENV_KEY,
+    CLAUDE_BASE_URL_ENV_KEY,
+    CLAUDE_FALLBACK_MODEL_ENV_KEY,
+    CLAUDE_MODEL_ENV_KEY,
     CODEX_SCRIPT_DIRNAME,
     GITIGNORE_MANAGED_BEGIN,
     GITIGNORE_MANAGED_END,
@@ -681,8 +685,10 @@ args = ["-y", "server", "/tmp"]
 
             self.assertEqual(repo_config_data["model"], "codex-special")
             self.assertEqual(runtime_config_data["model"], "codex-special")
-            self.assertEqual(claude_settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "sonnet-special")
-            self.assertEqual(claude_settings["env"]["ANTHROPIC_MODEL"], "haiku-special")
+            self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], "https://claude.example.com")
+            self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-claude")
+            self.assertEqual(claude_settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-special")
+            self.assertEqual(claude_settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-special")
 
     def test_generate_claude_template_does_not_write_codex_config(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -710,8 +716,10 @@ command = "tool"
             self.assertEqual((temp_dir / "CLAUDE.md").read_text(encoding="utf-8"), "# Claude\n")
             self.assertEqual(json.loads((temp_dir / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["custom"]["command"], "tool")
             claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
-            self.assertEqual(claude_settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "sonnet-template")
-            self.assertEqual(claude_settings["env"]["ANTHROPIC_MODEL"], "haiku-template")
+            self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], "https://claude.example.com")
+            self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-claude")
+            self.assertEqual(claude_settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-template")
+            self.assertEqual(claude_settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-template")
 
     def test_sync_api_binding_updates_repo_runtime_models_api_and_key(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -755,6 +763,46 @@ command = "tool"
             self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)
             self.assertNotIn("requires_openai_auth", provider)
             self.assertEqual(env_path.read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}=sk-new-active\nEXTRA=value\n")
+
+    def test_sync_claude_binding_updates_settings_env_and_preserves_existing_fields(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            settings_path = temp_dir / ".claude" / "settings.local.json"
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(
+                json.dumps(
+                    {
+                        "permissions": {"allow": ["Bash(ls)"]},
+                        "env": {
+                            "EXTRA": "value",
+                            CLAUDE_BASE_URL_ENV_KEY: "https://old.example.com",
+                            CLAUDE_API_KEY_ENV_KEY: "sk-old",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            updated_profile = Profile.create(
+                "claude-new",
+                "https://new-claude.example.com/v1/",
+                "sk-new",
+                vendor=VENDOR_CLAUDE,
+                claude_model="sonnet-new",
+                claude_fallback_model="haiku-new",
+                api_keys=["sk-new", "sk-active"],
+                active_api_key_index=1,
+            )
+
+            updated_paths = service.sync_claude_binding(temp_dir, updated_profile)
+
+            self.assertEqual({path.relative_to(temp_dir).as_posix() for path in updated_paths}, {".claude/settings.local.json"})
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(settings["permissions"], {"allow": ["Bash(ls)"]})
+            self.assertEqual(settings["env"]["EXTRA"], "value")
+            self.assertEqual(settings["env"][CLAUDE_BASE_URL_ENV_KEY], "https://new-claude.example.com/v1")
+            self.assertEqual(settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-active")
+            self.assertEqual(settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-new")
+            self.assertEqual(settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-new")
 
 
 class McpEditorPrefillTests(unittest.TestCase):

@@ -468,6 +468,8 @@ class CodexSwitchApp:
         self.library_selected_notes_var = tk.StringVar(value="暂无备注")
         self.library_models_summary_var = tk.StringVar(value="最近检测尚未返回模型列表。")
         self.hide_error_button_var = tk.StringVar(value="")
+        self.library_profile_view = VENDOR_CODEX
+        self.library_scope_tabs: dict[str, tk.Label] = {}
 
         self.project_hint_var = tk.StringVar(value="还没有添加项目。")
         self.project_selected_name_var = tk.StringVar(value="未选择项目")
@@ -753,23 +755,47 @@ class CodexSwitchApp:
         left = self._make_card(content)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(1, weight=1)
+        left.rowconfigure(2, weight=1)
         tk.Label(left, text="配置库", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
         tk.Label(left, textvariable=self.library_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="e")
 
+        library_tabs = tk.Frame(left, bg=PALETTE["card_bg"])
+        library_tabs.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        for column, (profile_view, label) in enumerate(
+            (
+                (VENDOR_CODEX, "Codex 配置"),
+                (VENDOR_CLAUDE, "Claude 配置"),
+            )
+        ):
+            tab = tk.Label(
+                library_tabs,
+                text=label,
+                bg=PALETTE["card_bg"],
+                fg=PALETTE["text"],
+                font=("Microsoft YaHei UI", 10, "bold"),
+                padx=16,
+                pady=8,
+                bd=0,
+                highlightthickness=1,
+                highlightbackground=PALETTE["card_border"],
+                cursor="hand2",
+            )
+            tab.grid(row=0, column=column, sticky="ew", padx=(0, 8))
+            tab.bind("<Button-1>", lambda _event, view=profile_view: self._set_library_profile_view(view))
+            self.library_scope_tabs[profile_view] = tab
+        library_tabs.columnconfigure(2, weight=1)
+
         tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        tree_wrap.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         tree_wrap.columnconfigure(0, weight=1)
         tree_wrap.rowconfigure(0, weight=1)
-        self.profile_tree = ttk.Treeview(tree_wrap, columns=("name", "vendor", "base_url", "model", "sign_in", "health"), show="tree headings")
-        self.profile_tree.heading("#0", text="分组", anchor="w")
+        self.profile_tree = ttk.Treeview(tree_wrap, columns=("name", "vendor", "base_url", "model", "sign_in", "health"), show="headings")
         self.profile_tree.heading("name", text="配置名", anchor="w")
         self.profile_tree.heading("vendor", text="供应商", anchor="center")
         self.profile_tree.heading("base_url", text="API 地址", anchor="w")
         self.profile_tree.heading("model", text="默认模型", anchor="center")
         self.profile_tree.heading("sign_in", text="API签到状态", anchor="center")
         self.profile_tree.heading("health", text="状态", anchor="center")
-        self.profile_tree.column("#0", width=90, anchor="w", stretch=False)
         self.profile_tree.column("name", width=150, anchor="w")
         self.profile_tree.column("vendor", width=72, anchor="center", stretch=False)
         self.profile_tree.column("base_url", width=220, anchor="w")
@@ -784,7 +810,7 @@ class CodexSwitchApp:
         self.profile_tree.configure(yscrollcommand=profile_scroll.set)
 
         actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
         make_button(actions, text="新增", variant="primary", command=self.add_profile).grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
@@ -932,6 +958,7 @@ class CodexSwitchApp:
                 ("生成 Codex 模板", "primary", self.generate_project_template),
                 ("修改 config.toml", "secondary", self.edit_project_codex_config),
                 ("VS Code 运行", "secondary", self.run_project_vscode),
+                ("CMD 打开 Codex", "secondary", self.run_project_cmd),
             ),
         )
         self._create_project_action_group(
@@ -942,6 +969,7 @@ class CodexSwitchApp:
                 ("生成 Claude 模板", "primary", self.generate_claude_template),
                 ("修改 settings.local.json", "secondary", self.edit_project_claude_settings),
                 ("VS Code 打开", "secondary", self.open_project_vscode),
+                ("CMD 打开 Claude", "secondary", self.open_project_claude_cmd),
             ),
         )
         self._create_project_action_group(
@@ -951,7 +979,6 @@ class CodexSwitchApp:
             (
                 ("运行项目", "primary", self.run_project),
                 ("打开项目文件夹", "secondary", self.open_project_folder),
-                ("CMD 打开", "secondary", self.open_project_cmd),
             ),
         )
 
@@ -1417,11 +1444,28 @@ class CodexSwitchApp:
             return item_id.split(":", 1)[1]
         return item_id
 
+    def _sync_library_scope_tabs(self) -> None:
+        for profile_view, tab in self.library_scope_tabs.items():
+            if profile_view == self.library_profile_view:
+                tab.configure(bg=PALETTE["accent"], fg="#FFFFFF", highlightbackground=PALETTE["accent"])
+            else:
+                tab.configure(bg=PALETTE["card_bg"], fg=PALETTE["text"], highlightbackground=PALETTE["card_border"])
+
+    def _set_library_profile_view(self, profile_view: str) -> None:
+        if profile_view not in {VENDOR_CODEX, VENDOR_CLAUDE}:
+            return
+        if self.library_profile_view == profile_view:
+            self._sync_library_scope_tabs()
+            return
+        self.library_profile_view = profile_view
+        self.refresh_library_tab()
+
     def _sync_profile_tree_selection(self) -> None:
         if not self.selected_profile_id or not self._profile_by_id(self.selected_profile_id):
             return
         item_id = None
         for candidate in (
+            f"{self.library_profile_view}:{self.selected_profile_id}",
             f"{VENDOR_CODEX}:{self.selected_profile_id}",
             f"{VENDOR_CLAUDE}:{self.selected_profile_id}",
             self.selected_profile_id,
@@ -1733,41 +1777,41 @@ class CodexSwitchApp:
 
     def refresh_library_tab(self) -> None:
         self.hide_error_button_var.set("显示异常" if self.hide_error_profiles else "隐藏异常")
+        self._sync_library_scope_tabs()
         selected_id = self.selected_profile_id
 
         visible_profiles = visible_profiles_for_filter(self.profiles, self.hide_error_profiles)
-        if selected_id and not any(profile.id == selected_id for profile in visible_profiles):
-            selected_id = visible_profiles[0].id if visible_profiles else None
+        if self.library_profile_view == VENDOR_CLAUDE:
+            scope_label = "Claude"
+            scope_profiles = [profile for profile in visible_profiles if profile_supports_claude(profile)]
+        else:
+            scope_label = "Codex"
+            scope_profiles = [profile for profile in visible_profiles if profile_supports_codex(profile)]
+
+        if selected_id and not any(profile.id == selected_id for profile in scope_profiles):
+            selected_id = scope_profiles[0].id if scope_profiles else None
             self.selected_profile_id = selected_id
 
         self.suppress_selection_events = True
         try:
             for item in self.profile_tree.get_children():
                 self.profile_tree.delete(item)
-            groups = (
-                (VENDOR_CODEX, "Codex 配置", [profile for profile in visible_profiles if profile_supports_codex(profile)]),
-                (VENDOR_CLAUDE, "Claude 配置", [profile for profile in visible_profiles if profile_supports_claude(profile)]),
-            )
-            for group_id, group_label, group_profiles in groups:
-                parent_iid = f"__group_{group_id}__"
-                self.profile_tree.insert("", "end", iid=parent_iid, text=group_label, open=True, values=("", "", "", "", "", ""))
-                for profile in sorted(group_profiles, key=profile_library_sort_key):
-                    model = profile.codex_display_model if group_id == VENDOR_CODEX else profile.claude_display_model
-                    self.profile_tree.insert(
-                        parent_iid,
-                        "end",
-                        iid=self._profile_tree_iid(group_id, profile),
-                        text="",
-                        values=(
-                            profile.name,
-                            profile.vendor_label,
-                            compact_text(profile.base_url, 42),
-                            compact_text(model or "-", 18),
-                            profile.sign_in_status,
-                            self._health_status_text(profile),
-                        ),
-                        tags=(profile.effective_health_status,),
-                    )
+            for profile in sorted(scope_profiles, key=profile_library_sort_key):
+                model = profile.codex_display_model if self.library_profile_view == VENDOR_CODEX else profile.claude_display_model
+                self.profile_tree.insert(
+                    "",
+                    "end",
+                    iid=self._profile_tree_iid(self.library_profile_view, profile),
+                    values=(
+                        profile.name,
+                        profile.vendor_label,
+                        compact_text(profile.base_url, 42),
+                        compact_text(model or "-", 18),
+                        profile.sign_in_status,
+                        self._health_status_text(profile),
+                    ),
+                    tags=(profile.effective_health_status,),
+                )
             self.profile_tree.tag_configure("healthy", foreground=PALETTE["success"])
             self.profile_tree.tag_configure("degraded", foreground=PALETTE["warning"])
             self.profile_tree.tag_configure("error", foreground=PALETTE["danger"])
@@ -1775,11 +1819,12 @@ class CodexSwitchApp:
         finally:
             self.suppress_selection_events = False
 
-        visible_healthy = sum(1 for profile in visible_profiles if profile.effective_health_status == "healthy")
+        visible_healthy = sum(1 for profile in scope_profiles if profile.effective_health_status == "healthy")
         if self.hide_error_profiles:
-            self.library_hint_var.set(f"共显示 {len(visible_profiles)} 套配置，健康配置 {visible_healthy} 套。")
+            self.library_hint_var.set(f"{scope_label} 显示 {len(scope_profiles)} 套配置，健康配置 {visible_healthy} 套。")
         else:
-            self.library_hint_var.set(f"共 {len(self.profiles)} 套配置，健康配置 {visible_healthy} 套。")
+            self.library_hint_var.set(f"{scope_label} 共 {len(scope_profiles)} 套配置，健康配置 {visible_healthy} 套。")
+        self._sync_profile_tree_selection()
         self._sync_global_profile_choice()
         self._refresh_library_detail()
 
@@ -2456,19 +2501,40 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已新增项目：{project.name}")
 
-    def _sync_project_api_binding(self, project: ProjectRecord) -> bool:
-        profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
-        if profile is None:
-            messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
-            return False
-        try:
-            updated_paths = self.project_template_service.sync_api_binding(Path(project.project_dir), profile)
-        except Exception as exc:
-            messagebox.showerror("同步失败", f"项目记录已保存，但同步项目 API 配置失败：\n{exc}", parent=self.root)
-            self.status_var.set("项目 API 配置同步失败")
-            return False
+    def _sync_project_api_binding(
+        self,
+        project: ProjectRecord,
+        *,
+        sync_codex: bool = True,
+        sync_claude: bool = True,
+    ) -> bool:
+        updated_paths: list[Path] = []
+        if sync_codex:
+            codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
+            if codex_profile is None:
+                messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
+                return False
+            try:
+                updated_paths.extend(self.project_template_service.sync_api_binding(Path(project.project_dir), codex_profile))
+            except Exception as exc:
+                messagebox.showerror("同步失败", f"项目记录已保存，但同步 Codex API 配置失败：\n{exc}", parent=self.root)
+                self.status_var.set("Codex API 配置同步失败")
+                return False
+
+        if sync_claude:
+            claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+            if claude_profile is None:
+                messagebox.showerror("无法同步", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
+                return False
+            try:
+                updated_paths.extend(self.project_template_service.sync_claude_binding(Path(project.project_dir), claude_profile))
+            except Exception as exc:
+                messagebox.showerror("同步失败", f"项目记录已保存，但同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
+                self.status_var.set("Claude settings.local.json 同步失败")
+                return False
+
         if updated_paths:
-            self.status_var.set(f"已同步项目 API 配置：{project.name}")
+            self.status_var.set(f"已同步项目配置：{project.name}")
         else:
             self.status_var.set(f"已更新项目：{project.name}")
         return True
@@ -2507,12 +2573,21 @@ class CodexSwitchApp:
             or updated.codex_profile_id != project.codex_profile_id
             or updated.project_dir != project.project_dir
         )
+        claude_binding_changed = (
+            updated.claude_profile_id != project.claude_profile_id
+            or updated.project_dir != project.project_dir
+        )
         self.projects = [updated if item.id == updated.id else item for item in self.projects]
         self.selected_project_id = updated.id
         self.persist_state()
         self.refresh_project_tab()
-        if api_binding_changed and self._sync_project_api_binding(updated):
-            self.refresh_project_tab()
+        if api_binding_changed or claude_binding_changed:
+            if self._sync_project_api_binding(
+                updated,
+                sync_codex=api_binding_changed,
+                sync_claude=claude_binding_changed,
+            ):
+                self.refresh_project_tab()
             return
         self.status_var.set(f"已更新项目：{updated.name}")
 
@@ -2730,21 +2805,21 @@ class CodexSwitchApp:
             return
         self.status_var.set(f"已用 VS Code 打开项目：{project.name}")
 
-    def open_project_cmd(self) -> None:
+    def open_project_claude_cmd(self) -> None:
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
         try:
             subprocess.Popen(
-                ["cmd.exe", "/k"],
+                ["cmd.exe", "/k", "claude"],
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
         except Exception as exc:
-            messagebox.showerror("启动失败", f"打开项目 CMD 失败：\n{exc}", parent=self.root)
+            messagebox.showerror("启动失败", f"打开 Claude CMD 失败：\n{exc}", parent=self.root)
             return
-        self.status_var.set(f"已打开项目 CMD：{project.name}")
+        self.status_var.set(f"已打开 Claude CMD：{project.name}")
 
     def run_project(self) -> None:
         project = self.get_selected_project()
