@@ -2864,6 +2864,11 @@ class CodexSwitchApp:
         if not profile_supports_claude(profile):
             messagebox.showerror("启动失败", "项目绑定的配置不支持 Claude。", parent=self.root)
             return
+        try:
+            self.project_template_service.sync_claude_binding(Path(project.project_dir), profile)
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
+            return
         env = apply_claude_profile_env(os.environ.copy(), profile)
         try:
             subprocess.Popen(

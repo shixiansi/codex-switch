@@ -62,9 +62,9 @@ def claude_env_from_profile(profile: Profile) -> dict[str, str]:
 
 
 def apply_claude_profile_env(env: dict[str, str], profile: Profile) -> dict[str, str]:
-    rendered = dict(env)
+    auth_token_key = CLAUDE_AUTH_TOKEN_ENV_KEY.casefold()
+    rendered = {key: value for key, value in env.items() if key.casefold() != auth_token_key}
     rendered.update(claude_env_from_profile(profile))
-    rendered.pop(CLAUDE_AUTH_TOKEN_ENV_KEY, None)
     return rendered
 
 

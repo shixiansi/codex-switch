@@ -806,6 +806,7 @@ command = "tool"
                         "env": {
                             "EXTRA": "value",
                             CLAUDE_AUTH_TOKEN_ENV_KEY: "token-old",
+                            "Anthropic_Auth_Token": "token-mixed",
                             CLAUDE_BASE_URL_ENV_KEY: "https://old.example.com",
                             CLAUDE_API_KEY_ENV_KEY: "sk-old",
                         },
@@ -830,7 +831,9 @@ command = "tool"
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(settings["permissions"], {"allow": ["Bash(ls)"]})
             self.assertEqual(settings["env"]["EXTRA"], "value")
-            self.assertNotIn(CLAUDE_AUTH_TOKEN_ENV_KEY, settings["env"])
+            self.assertFalse(
+                any(key.casefold() == CLAUDE_AUTH_TOKEN_ENV_KEY.casefold() for key in settings["env"])
+            )
             self.assertEqual(settings["env"][CLAUDE_BASE_URL_ENV_KEY], "https://new-claude.example.com/v1")
             self.assertEqual(settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-active")
             self.assertEqual(settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-new")
@@ -860,13 +863,13 @@ command = "tool"
         applied_env = apply_claude_profile_env(
             {
                 "EXTRA": "value",
-                CLAUDE_AUTH_TOKEN_ENV_KEY: "token-old",
+                "Anthropic_Auth_Token": "token-old",
             },
             profile,
         )
 
         self.assertEqual(applied_env["EXTRA"], "value")
-        self.assertNotIn(CLAUDE_AUTH_TOKEN_ENV_KEY, applied_env)
+        self.assertFalse(any(key.casefold() == CLAUDE_AUTH_TOKEN_ENV_KEY.casefold() for key in applied_env))
         self.assertEqual(applied_env[CLAUDE_API_KEY_ENV_KEY], "sk-active")
 
 
