@@ -51,6 +51,15 @@ GENERATED_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
 BACKUP_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
 
 
+def claude_env_from_profile(profile: Profile) -> dict[str, str]:
+    return {
+        CLAUDE_BASE_URL_ENV_KEY: profile.base_url.rstrip("/"),
+        CLAUDE_API_KEY_ENV_KEY: profile.api_key,
+        CLAUDE_MODEL_ENV_KEY: profile.claude_display_model,
+        CLAUDE_FALLBACK_MODEL_ENV_KEY: profile.claude_display_fallback_model,
+    }
+
+
 def load_default_agents_doc_text() -> str:
     return asset_path("AGENTS.md").read_text(encoding="utf-8")
 
@@ -350,14 +359,7 @@ class ProjectTemplateService:
             env = {}
         else:
             env = dict(env)
-        env.update(
-            {
-                CLAUDE_BASE_URL_ENV_KEY: profile.base_url.rstrip("/"),
-                CLAUDE_API_KEY_ENV_KEY: profile.api_key,
-                CLAUDE_MODEL_ENV_KEY: profile.claude_display_model,
-                CLAUDE_FALLBACK_MODEL_ENV_KEY: profile.claude_display_fallback_model,
-            }
-        )
+        env.update(claude_env_from_profile(profile))
         rendered["env"] = env
         return rendered
 

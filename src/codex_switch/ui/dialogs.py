@@ -506,14 +506,20 @@ class SuccessfulModelsDialog(tk.Toplevel):
 
 
 class ProfileDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, profile: Profile | None = None) -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        profile: Profile | None = None,
+        initial_vendor: str | None = None,
+    ) -> None:
         super().__init__(master)
         self.title("配置编辑")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
         self.result: dict | None = None
 
-        defaults = profile or Profile.create(name="", base_url="", api_key="")
+        default_vendor = initial_vendor if initial_vendor in PROFILE_VENDOR_CHOICES else VENDOR_GENERIC
+        defaults = profile or Profile.create(name="", base_url="", api_key="", vendor=default_vendor)
         self.last_signed_date = defaults.last_signed_date
         self.name_var = tk.StringVar(value=defaults.name)
         self.base_url_var = tk.StringVar(value=defaults.base_url)

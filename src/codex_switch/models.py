@@ -11,7 +11,8 @@ import uuid
 VENDOR_CODEX = "codex"
 VENDOR_CLAUDE = "claude"
 VENDOR_GENERIC = "通用"
-PROFILE_VENDOR_CHOICES = (VENDOR_CODEX, VENDOR_CLAUDE, VENDOR_GENERIC)
+VENDOR_OTHER = "其他"
+PROFILE_VENDOR_CHOICES = (VENDOR_CODEX, VENDOR_CLAUDE, VENDOR_GENERIC, VENDOR_OTHER)
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CLAUDE_FALLBACK_MODEL = "haiku"
@@ -95,6 +96,8 @@ def normalize_profile_vendor(value: str | None) -> str:
         return vendor
     if vendor in ("generic", "common", "general", VENDOR_GENERIC.lower()):
         return VENDOR_GENERIC
+    if vendor in ("other", "others", VENDOR_OTHER.lower()):
+        return VENDOR_OTHER
     return VENDOR_GENERIC
 
 
@@ -301,6 +304,8 @@ class Profile:
             return "Codex"
         if self.vendor == VENDOR_CLAUDE:
             return "Claude"
+        if self.vendor == VENDOR_OTHER:
+            return VENDOR_OTHER
         return VENDOR_GENERIC
 
 

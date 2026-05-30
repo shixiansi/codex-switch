@@ -33,6 +33,10 @@ from codex_switch.models import (
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
+    VENDOR_OTHER,
+    normalize_profile_vendor,
+    profile_supports_claude,
+    profile_supports_codex,
     today_iso,
 )
 from codex_switch.project_template import (
@@ -44,9 +48,11 @@ from codex_switch.project_template import (
     GITIGNORE_MANAGED_BEGIN,
     GITIGNORE_MANAGED_END,
     ProjectTemplateService,
+    claude_env_from_profile,
 )
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY, ProfileStore, clamp_model_batch_concurrency
 from codex_switch.ui.app import (
+    LIBRARY_VIEW_ALL,
     ModelBatchCache,
     ModelBatchResult,
     model_batch_caches_from_payload,
@@ -54,6 +60,7 @@ from codex_switch.ui.app import (
     model_batch_targets,
     ordered_model_batch_models,
     profile_library_sort_key,
+    profiles_for_library_view,
     run_model_batch_requests,
     successful_model_batch_models,
     visible_profiles_for_filter,
@@ -313,6 +320,15 @@ class ProfileStoreTests(unittest.TestCase):
 
 
 class UiFilterTests(unittest.TestCase):
+    def test_other_vendor_is_not_a_codex_or_claude_binding(self) -> None:
+        profile = Profile.create("other", "https://other.example.com", "sk-other", vendor=VENDOR_OTHER)
+
+        self.assertEqual(normalize_profile_vendor("other"), VENDOR_OTHER)
+        self.assertEqual(profile.vendor, VENDOR_OTHER)
+        self.assertEqual(profile.vendor_label, "其他")
+        self.assertFalse(profile_supports_codex(profile))
+        self.assertFalse(profile_supports_claude(profile))
+
     def test_visible_profiles_for_filter_hides_error_profiles(self) -> None:
         healthy = Profile.create("healthy", "https://healthy.example.com", "sk-healthy")
         healthy.health = HealthResult(status="healthy")
@@ -326,6 +342,18 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual(visible_profiles_for_filter(profiles, False), profiles)
         self.assertEqual(visible_profiles_for_filter(profiles, True), [healthy])
+
+    def test_profiles_for_library_view_filters_all_codex_claude_and_other(self) -> None:
+        codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        generic = Profile.create("generic", "https://generic.example.com", "sk-generic", vendor=VENDOR_GENERIC)
+        other = Profile.create("other", "https://other.example.com", "sk-other", vendor=VENDOR_OTHER)
+        profiles = [codex, claude, generic, other]
+
+        self.assertEqual(profiles_for_library_view(profiles, LIBRARY_VIEW_ALL), profiles)
+        self.assertEqual(profiles_for_library_view(profiles, VENDOR_CODEX), [codex, generic])
+        self.assertEqual(profiles_for_library_view(profiles, VENDOR_CLAUDE), [claude, generic])
+        self.assertEqual(profiles_for_library_view(profiles, VENDOR_OTHER), [other])
 
     def test_profile_library_sort_key_prioritizes_unsigned_profiles(self) -> None:
         signed = Profile.create(
@@ -803,6 +831,28 @@ command = "tool"
             self.assertEqual(settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-active")
             self.assertEqual(settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-new")
             self.assertEqual(settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-new")
+
+    def test_claude_env_from_profile_uses_active_project_binding_values(self) -> None:
+        profile = Profile.create(
+            "claude-env",
+            "https://claude.example.com/v1/",
+            "sk-old",
+            vendor=VENDOR_CLAUDE,
+            claude_model="sonnet-env",
+            claude_fallback_model="haiku-env",
+            api_keys=["sk-old", "sk-active"],
+            active_api_key_index=1,
+        )
+
+        self.assertEqual(
+            claude_env_from_profile(profile),
+            {
+                CLAUDE_BASE_URL_ENV_KEY: "https://claude.example.com/v1",
+                CLAUDE_API_KEY_ENV_KEY: "sk-active",
+                CLAUDE_MODEL_ENV_KEY: "sonnet-env",
+                CLAUDE_FALLBACK_MODEL_ENV_KEY: "haiku-env",
+            },
+        )
 
 
 class McpEditorPrefillTests(unittest.TestCase):

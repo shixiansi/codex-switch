@@ -37,13 +37,20 @@ from codex_switch.models import (
     ProjectRecord,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
+    VENDOR_GENERIC,
+    VENDOR_OTHER,
     now_iso,
     profile_supports_claude,
     profile_supports_codex,
     project_dir_key,
     today_iso,
 )
-from codex_switch.project_template import CODEX_SCRIPT_DIRNAME, ProjectTemplateService, load_default_agents_doc_text
+from codex_switch.project_template import (
+    CODEX_SCRIPT_DIRNAME,
+    ProjectTemplateService,
+    claude_env_from_profile,
+    load_default_agents_doc_text,
+)
 from codex_switch.storage import (
     DEFAULT_MODEL_BATCH_CONCURRENCY,
     MODEL_BATCH_CONCURRENCY_MAX,
@@ -80,6 +87,16 @@ from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, proj
 _SINGLE_INSTANCE_HANDLE = None
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 MODEL_BATCH_PROMPT = "ping"
+LIBRARY_VIEW_ALL = "all"
+LIBRARY_PROFILE_VIEW_TABS = (
+    (LIBRARY_VIEW_ALL, "全部"),
+    (VENDOR_CODEX, "Codex 配置"),
+    (VENDOR_CLAUDE, "Claude 配置"),
+    (VENDOR_OTHER, "其他"),
+)
+LIBRARY_PROFILE_VIEW_VALUES = {view for view, _label in LIBRARY_PROFILE_VIEW_TABS}
+LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
+LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
 
 
 @dataclass
@@ -101,6 +118,18 @@ def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bo
     if not hide_error_profiles:
         return list(profiles)
     return [profile for profile in profiles if profile.effective_health_status != "error"]
+
+
+def profiles_for_library_view(profiles: list[Profile], profile_view: str) -> list[Profile]:
+    if profile_view == LIBRARY_VIEW_ALL:
+        return list(profiles)
+    if profile_view == VENDOR_CODEX:
+        return [profile for profile in profiles if profile_supports_codex(profile)]
+    if profile_view == VENDOR_CLAUDE:
+        return [profile for profile in profiles if profile_supports_claude(profile)]
+    if profile_view == VENDOR_OTHER:
+        return [profile for profile in profiles if profile.vendor == VENDOR_OTHER]
+    return []
 
 
 def profile_library_sort_key(profile: Profile) -> tuple[int, str, str]:
@@ -468,7 +497,7 @@ class CodexSwitchApp:
         self.library_selected_notes_var = tk.StringVar(value="暂无备注")
         self.library_models_summary_var = tk.StringVar(value="最近检测尚未返回模型列表。")
         self.hide_error_button_var = tk.StringVar(value="")
-        self.library_profile_view = VENDOR_CODEX
+        self.library_profile_view = LIBRARY_VIEW_ALL
         self.library_scope_tabs: dict[str, tk.Label] = {}
 
         self.project_hint_var = tk.StringVar(value="还没有添加项目。")
@@ -761,12 +790,7 @@ class CodexSwitchApp:
 
         library_tabs = tk.Frame(left, bg=PALETTE["card_bg"])
         library_tabs.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        for column, (profile_view, label) in enumerate(
-            (
-                (VENDOR_CODEX, "Codex 配置"),
-                (VENDOR_CLAUDE, "Claude 配置"),
-            )
-        ):
+        for column, (profile_view, label) in enumerate(LIBRARY_PROFILE_VIEW_TABS):
             tab = tk.Label(
                 library_tabs,
                 text=label,
@@ -783,7 +807,7 @@ class CodexSwitchApp:
             tab.grid(row=0, column=column, sticky="ew", padx=(0, 8))
             tab.bind("<Button-1>", lambda _event, view=profile_view: self._set_library_profile_view(view))
             self.library_scope_tabs[profile_view] = tab
-        library_tabs.columnconfigure(2, weight=1)
+        library_tabs.columnconfigure(len(LIBRARY_PROFILE_VIEW_TABS), weight=1)
 
         tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
         tree_wrap.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
@@ -1386,10 +1410,25 @@ class CodexSwitchApp:
             return f"Codex：{profile.codex_display_model}"
         if profile.vendor == VENDOR_CLAUDE:
             return f"Claude：{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}"
+        if profile.vendor == VENDOR_OTHER:
+            return "-"
         return (
             f"Codex：{profile.codex_display_model}\n"
             f"Claude：{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}"
         )
+
+    def _profile_library_model_summary(self, profile: Profile) -> str:
+        if self.library_profile_view == VENDOR_CODEX:
+            return profile.codex_display_model
+        if self.library_profile_view == VENDOR_CLAUDE:
+            return profile.claude_display_model
+        if profile.vendor == VENDOR_CODEX:
+            return profile.codex_display_model
+        if profile.vendor == VENDOR_CLAUDE:
+            return profile.claude_display_model
+        if profile.vendor == VENDOR_GENERIC:
+            return f"{profile.codex_display_model} / {profile.claude_display_model}"
+        return "-"
 
     def _global_profile_choice_label(self, profile: Profile) -> str:
         return f"{profile.name} | {profile.codex_display_model or '-'} | {compact_text(profile.base_url, 42)}"
@@ -1452,7 +1491,7 @@ class CodexSwitchApp:
                 tab.configure(bg=PALETTE["card_bg"], fg=PALETTE["text"], highlightbackground=PALETTE["card_border"])
 
     def _set_library_profile_view(self, profile_view: str) -> None:
-        if profile_view not in {VENDOR_CODEX, VENDOR_CLAUDE}:
+        if profile_view not in LIBRARY_PROFILE_VIEW_VALUES:
             return
         if self.library_profile_view == profile_view:
             self._sync_library_scope_tabs()
@@ -1464,15 +1503,19 @@ class CodexSwitchApp:
         if not self.selected_profile_id or not self._profile_by_id(self.selected_profile_id):
             return
         item_id = None
-        for candidate in (
-            f"{self.library_profile_view}:{self.selected_profile_id}",
-            f"{VENDOR_CODEX}:{self.selected_profile_id}",
-            f"{VENDOR_CLAUDE}:{self.selected_profile_id}",
-            self.selected_profile_id,
+        for profile_view in (
+            self.library_profile_view,
+            LIBRARY_VIEW_ALL,
+            VENDOR_CODEX,
+            VENDOR_CLAUDE,
+            VENDOR_OTHER,
         ):
+            candidate = f"{profile_view}:{self.selected_profile_id}"
             if self.profile_tree.exists(candidate):
                 item_id = candidate
                 break
+        if item_id is None and self.profile_tree.exists(self.selected_profile_id):
+            item_id = self.selected_profile_id
         if item_id is None:
             return
         if self.profile_tree.selection() == (item_id,):
@@ -1781,12 +1824,12 @@ class CodexSwitchApp:
         selected_id = self.selected_profile_id
 
         visible_profiles = visible_profiles_for_filter(self.profiles, self.hide_error_profiles)
-        if self.library_profile_view == VENDOR_CLAUDE:
-            scope_label = "Claude"
-            scope_profiles = [profile for profile in visible_profiles if profile_supports_claude(profile)]
-        else:
-            scope_label = "Codex"
-            scope_profiles = [profile for profile in visible_profiles if profile_supports_codex(profile)]
+        scope_profiles = profiles_for_library_view(visible_profiles, self.library_profile_view)
+        scope_label = dict(LIBRARY_PROFILE_VIEW_TABS).get(self.library_profile_view, "配置")
+        display_columns = (
+            LIBRARY_TREE_COLUMNS_WITH_VENDOR if self.library_profile_view == LIBRARY_VIEW_ALL else LIBRARY_TREE_COLUMNS
+        )
+        self.profile_tree.configure(displaycolumns=display_columns)
 
         if selected_id and not any(profile.id == selected_id for profile in scope_profiles):
             selected_id = scope_profiles[0].id if scope_profiles else None
@@ -1797,7 +1840,6 @@ class CodexSwitchApp:
             for item in self.profile_tree.get_children():
                 self.profile_tree.delete(item)
             for profile in sorted(scope_profiles, key=profile_library_sort_key):
-                model = profile.codex_display_model if self.library_profile_view == VENDOR_CODEX else profile.claude_display_model
                 self.profile_tree.insert(
                     "",
                     "end",
@@ -1806,7 +1848,7 @@ class CodexSwitchApp:
                         profile.name,
                         profile.vendor_label,
                         compact_text(profile.base_url, 42),
-                        compact_text(model or "-", 18),
+                        compact_text(self._profile_library_model_summary(profile) or "-", 18),
                         profile.sign_in_status,
                         self._health_status_text(profile),
                     ),
@@ -2398,7 +2440,12 @@ class CodexSwitchApp:
         self.status_var.set("已恢复默认 AGENTS 模板预览。")
 
     def add_profile(self) -> None:
-        dialog = ProfileDialog(self.root)
+        initial_vendor = (
+            self.library_profile_view
+            if self.library_profile_view in {VENDOR_CODEX, VENDOR_CLAUDE, VENDOR_OTHER}
+            else None
+        )
+        dialog = ProfileDialog(self.root, initial_vendor=initial_vendor)
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -2810,10 +2857,20 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
+        profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        if not profile:
+            messagebox.showerror("启动失败", "项目绑定的 Claude 配置已删除。", parent=self.root)
+            return
+        if not profile_supports_claude(profile):
+            messagebox.showerror("启动失败", "项目绑定的配置不支持 Claude。", parent=self.root)
+            return
+        env = os.environ.copy()
+        env.update(claude_env_from_profile(profile))
         try:
             subprocess.Popen(
                 ["cmd.exe", "/k", "claude"],
                 cwd=project.project_dir,
+                env=env,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
         except Exception as exc:
