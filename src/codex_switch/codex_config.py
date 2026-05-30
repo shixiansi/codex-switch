@@ -125,6 +125,14 @@ def render_mcp_servers_toml(mcp_servers: dict[str, dict] | None) -> str:
     return dumps_toml({"mcp_servers": normalized})
 
 
+def render_mcp_servers_json(mcp_servers: dict[str, dict] | None) -> str:
+    normalized: dict[str, dict] = {}
+    for server_name, server_config in (mcp_servers or {}).items():
+        if isinstance(server_config, dict):
+            normalized[str(server_name)] = deepcopy(server_config)
+    return json.dumps({"mcpServers": normalized}, ensure_ascii=False, indent=2) + "\n"
+
+
 def parse_mcp_servers_json(raw_json: str | None) -> dict[str, dict]:
     if not raw_json or not raw_json.strip():
         return {}

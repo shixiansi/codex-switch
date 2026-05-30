@@ -226,6 +226,7 @@ class ProjectRecord:
     updated_at: str
     mcp_toml: str = ""
     run_command: str = ""
+    mcp_server_names: list[str] | None = None
 
     @classmethod
     def create(
@@ -234,6 +235,7 @@ class ProjectRecord:
         profile_id: str,
         name: str | None = None,
         run_command: str = "",
+        mcp_server_names: list[str] | None = None,
     ) -> "ProjectRecord":
         normalized_dir = normalize_project_dir(project_dir)
         default_name = name.strip() if name else ""
@@ -249,11 +251,20 @@ class ProjectRecord:
             updated_at=timestamp,
             mcp_toml="",
             run_command=run_command.strip(),
+            mcp_server_names=list(mcp_server_names) if mcp_server_names is not None else None,
         )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProjectRecord":
         timestamp = data.get("updated_at") or data.get("created_at") or now_iso()
+        raw_mcp_server_names = data.get("mcp_server_names")
+        mcp_server_names = None
+        if isinstance(raw_mcp_server_names, list):
+            mcp_server_names = [
+                str(item).strip()
+                for item in raw_mcp_server_names
+                if str(item).strip()
+            ]
         return cls(
             id=data["id"],
             name=data.get("name") or "未命名项目",
@@ -263,6 +274,7 @@ class ProjectRecord:
             updated_at=data.get("updated_at", timestamp),
             mcp_toml=data.get("mcp_toml", ""),
             run_command=str(data.get("run_command", "") or "").strip(),
+            mcp_server_names=mcp_server_names,
         )
 
     def to_dict(self) -> dict[str, Any]:

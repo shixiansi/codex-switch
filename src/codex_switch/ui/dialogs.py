@@ -735,6 +735,7 @@ class ProjectDialog(tk.Toplevel):
         self,
         master: tk.Misc,
         profiles: list[Profile],
+        mcp_server_names: list[str] | None = None,
         project: ProjectRecord | None = None,
         initial_project_dir: str = "",
     ) -> None:
@@ -744,17 +745,25 @@ class ProjectDialog(tk.Toplevel):
         self.configure(bg=PALETTE["app_bg"])
         self.result: dict | None = None
         self.profile_values: dict[str, str] = {}
+        self.mcp_server_names = list(mcp_server_names or [])
+        self.mcp_server_vars: dict[str, tk.BooleanVar] = {}
 
         if project is None:
             default_name = ""
             default_project_dir = initial_project_dir.strip()
             default_profile_id = profiles[0].id if profiles else ""
             default_run_command = ""
+            default_mcp_server_names = list(self.mcp_server_names)
         else:
             default_name = project.name
             default_project_dir = project.project_dir
             default_profile_id = project.profile_id
             default_run_command = project.run_command
+            default_mcp_server_names = (
+                list(project.mcp_server_names)
+                if project.mcp_server_names is not None
+                else list(self.mcp_server_names)
+            )
         self.name_var = tk.StringVar(value=default_name)
         self.project_dir_var = tk.StringVar(value=default_project_dir)
         self.profile_var = tk.StringVar()
@@ -824,8 +833,34 @@ class ProjectDialog(tk.Toplevel):
             wraplength=420,
         ).grid(row=6, column=1, columnspan=2, sticky="w", pady=(0, 6))
 
+        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=7, column=0, sticky="nw", pady=6)
+        mcp_frame = tk.Frame(card, bg=PALETTE["card_bg"])
+        mcp_frame.grid(row=7, column=1, columnspan=2, sticky="ew", pady=6)
+        for column in range(2):
+            mcp_frame.columnconfigure(column, weight=1)
+        if self.mcp_server_names:
+            selected_set = set(default_mcp_server_names)
+            for index, server_name in enumerate(self.mcp_server_names):
+                var = tk.BooleanVar(value=server_name in selected_set)
+                self.mcp_server_vars[server_name] = var
+                ttk.Checkbutton(mcp_frame, text=server_name, variable=var).grid(
+                    row=index // 2,
+                    column=index % 2,
+                    sticky="w",
+                    padx=(0, 12),
+                    pady=(0, 4),
+                )
+        else:
+            tk.Label(
+                mcp_frame,
+                text="尚未保存 MCP 工具，可先到 MCP 配置页新增并保存。",
+                bg=PALETTE["card_bg"],
+                fg=PALETTE["muted"],
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=0, column=0, sticky="w")
+
         buttons = ttk.Frame(card)
-        buttons.grid(row=7, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存项目", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
@@ -861,6 +896,11 @@ class ProjectDialog(tk.Toplevel):
             "project_dir": str(project_root),
             "profile_id": selected_profile,
             "run_command": self.run_command_var.get().strip(),
+            "mcp_server_names": [
+                server_name
+                for server_name, variable in self.mcp_server_vars.items()
+                if variable.get()
+            ],
         }
         self.destroy()
 

@@ -24,7 +24,7 @@ from codex_switch import main
 from codex_switch.chat import ChatResult, ChatTester
 from codex_switch.codex_config import CodexConfigManager, PROJECT_ENV_KEY, PROJECT_PROVIDER_ID, scope_mcp_servers_to_project
 from codex_switch.health import HealthChecker, build_candidate_urls
-from codex_switch.models import HealthResult, Profile
+from codex_switch.models import HealthResult, Profile, ProjectRecord
 from codex_switch.project_template import (
     CODEX_SCRIPT_DIRNAME,
     GITIGNORE_MANAGED_BEGIN,
@@ -114,6 +114,52 @@ class ProfileStoreTests(unittest.TestCase):
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["version"], 6)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
+
+    def test_store_persists_project_mcp_selection(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            project = ProjectRecord.create(
+                str(temp_dir),
+                "profile-1",
+                name="project",
+                mcp_server_names=["filesystem", "serena"],
+            )
+
+            store.save([], None, projects=[project], selected_project_id=project.id)
+            loaded_projects = store.load()[2]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(loaded_projects[0].mcp_server_names, ["filesystem", "serena"])
+            self.assertEqual(payload["projects"][0]["mcp_server_names"], ["filesystem", "serena"])
+
+    def test_store_loads_legacy_project_without_mcp_selection(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            store.storage_path.write_text(
+                json.dumps(
+                    {
+                        "version": 6,
+                        "profiles": [],
+                        "projects": [
+                            {
+                                "id": "project-1",
+                                "name": "legacy-project",
+                                "project_dir": str(temp_dir),
+                                "profile_id": "profile-1",
+                                "created_at": "2026-05-30T10:00:00",
+                                "updated_at": "2026-05-30T10:00:00",
+                                "mcp_toml": "[mcp_servers.legacy]\ncommand = \"legacy\"\n",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded_project = store.load()[2][0]
+
+            self.assertIsNone(loaded_project.mcp_server_names)
+            self.assertIn("mcp_servers.legacy", loaded_project.mcp_toml)
 
     def test_store_persists_model_batch_settings(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -443,6 +489,8 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertTrue((script_dir / "start-codex.cmd").exists())
             self.assertTrue((script_dir / "codex-profile.cmd").exists())
             self.assertTrue((temp_dir / ".codex" / "home" / "AGENTS.md").exists())
+            self.assertTrue((temp_dir / "CLAUDE.md").exists())
+            self.assertTrue((temp_dir / ".mcp.json").exists())
 
             gitignore_text = (temp_dir / ".gitignore").read_text(encoding="utf-8")
             self.assertIn("node_modules/", gitignore_text)
@@ -469,6 +517,8 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertEqual(status.start_script_path, script_dir / "start-codex.ps1")
             self.assertIn(temp_dir / ".gitignore", status.generated_paths)
             self.assertIn(temp_dir / ".codex" / "home" / "AGENTS.md", status.generated_paths)
+            self.assertIn(temp_dir / "CLAUDE.md", status.generated_paths)
+            self.assertIn(temp_dir / ".mcp.json", status.generated_paths)
 
     def test_generate_updates_gitignore_idempotently(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -494,6 +544,55 @@ class ProjectTemplateServiceTests(unittest.TestCase):
 
             self.assertEqual((temp_dir / "AGENTS.md").read_text(encoding="utf-8"), "# Custom Agents\n")
             self.assertEqual((temp_dir / ".codex" / "home" / "AGENTS.md").read_text(encoding="utf-8"), "# Custom Agents\n")
+            self.assertEqual((temp_dir / "CLAUDE.md").read_text(encoding="utf-8"), "# Custom Agents\n")
+
+    def test_generate_writes_project_mcp_for_codex_and_claude(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            profile = Profile.create("project-template", "https://gateway.example.com", "sk-template")
+            mcp_toml = """
+[mcp_servers.custom]
+command = "{project_root}/bin/tool"
+args = ["--root", "{project_root}"]
+
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "server", "/tmp"]
+""".strip()
+
+            service.generate(temp_dir, profile, global_mcp_toml=mcp_toml, project_mcp_toml=mcp_toml)
+
+            project_dir = str(temp_dir.resolve())
+            repo_config_data = tomllib.loads((temp_dir / ".codex" / "config.toml").read_text(encoding="utf-8"))
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            claude_config_data = json.loads((temp_dir / ".mcp.json").read_text(encoding="utf-8"))
+            repo_servers = repo_config_data["mcp_servers"]
+            runtime_servers = runtime_config_data["mcp_servers"]
+            claude_servers = claude_config_data["mcpServers"]
+
+            self.assertEqual(repo_servers, runtime_servers)
+            self.assertEqual(repo_servers, claude_servers)
+            self.assertEqual(repo_servers["custom"]["command"], f"{project_dir}/bin/tool")
+            self.assertEqual(repo_servers["custom"]["args"], ["--root", project_dir])
+            self.assertEqual(repo_servers["filesystem"]["args"][-1], project_dir)
+
+    def test_generate_claude_template_does_not_write_codex_config(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            mcp_toml = """
+[mcp_servers.custom]
+command = "tool"
+""".strip()
+
+            result = service.generate_claude_template(temp_dir, project_mcp_toml=mcp_toml, agents_doc_text="# Claude\n")
+
+            self.assertEqual(
+                {path.relative_to(temp_dir).as_posix() for path in result.generated_paths},
+                {"CLAUDE.md", ".mcp.json"},
+            )
+            self.assertFalse((temp_dir / ".codex" / "config.toml").exists())
+            self.assertEqual((temp_dir / "CLAUDE.md").read_text(encoding="utf-8"), "# Claude\n")
+            self.assertEqual(json.loads((temp_dir / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["custom"]["command"], "tool")
 
     def test_sync_api_binding_updates_repo_runtime_models_api_and_key(self) -> None:
         with workspace_tempdir() as temp_dir:

@@ -840,13 +840,15 @@ class CodexSwitchApp:
         project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         project_tree_wrap.columnconfigure(0, weight=1)
         project_tree_wrap.rowconfigure(0, weight=1)
-        self.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "api"), show="headings")
+        self.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "api", "mcp"), show="headings")
         self.project_tree.heading("name", text="项目")
         self.project_tree.heading("dir", text="目录")
         self.project_tree.heading("api", text="绑定 API")
+        self.project_tree.heading("mcp", text="MCP")
         self.project_tree.column("name", width=180, anchor="center")
-        self.project_tree.column("dir", width=320, anchor="center")
-        self.project_tree.column("api", width=180, anchor="center")
+        self.project_tree.column("dir", width=260, anchor="center")
+        self.project_tree.column("api", width=160, anchor="center")
+        self.project_tree.column("mcp", width=110, anchor="center")
         self.project_tree.grid(row=0, column=0, sticky="nsew")
         self.project_tree.bind("<<TreeviewSelect>>", self._on_project_selection_changed)
         project_scroll = ttk.Scrollbar(project_tree_wrap, orient="vertical", command=self.project_tree.yview)
@@ -888,16 +890,40 @@ class CodexSwitchApp:
         self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
         self._create_info_row(detail, 8, "项目 MCP", self.project_mcp_var, wraplength=440)
 
-        buttons = tk.Frame(detail, bg=PALETTE["card_bg"])
-        buttons.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(18, 0))
-        for column in range(3):
-            buttons.columnconfigure(column, weight=1)
-        make_button(buttons, text="编辑项目 MCP", variant="secondary", command=self.edit_project_mcp).grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(buttons, text="清空项目 MCP", variant="danger", command=self.clear_project_mcp).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(buttons, text="生成模板", variant="primary", command=self.generate_project_template).grid(row=0, column=2, sticky="ew", pady=(0, 8))
-        make_button(buttons, text="运行项目", variant="primary", command=self.run_project).grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        make_button(buttons, text="VS Code 运行", variant="secondary", command=self.run_project_vscode).grid(row=1, column=1, sticky="ew", padx=(0, 8))
-        make_button(buttons, text="CMD 运行", variant="secondary", command=self.run_project_cmd).grid(row=1, column=2, sticky="ew")
+        actions = tk.Frame(detail, bg=PALETTE["card_bg"])
+        actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        actions.columnconfigure(0, weight=1)
+
+        self._create_project_action_group(
+            actions,
+            0,
+            "Codex 相关",
+            (
+                ("生成 Codex 模板", "primary", self.generate_project_template),
+                ("VS Code 运行", "secondary", self.run_project_vscode),
+                ("CMD 运行", "secondary", self.run_project_cmd),
+            ),
+        )
+        self._create_project_action_group(
+            actions,
+            1,
+            "Claude 相关",
+            (
+                ("生成 Claude 模板", "primary", self.generate_claude_template),
+                ("VS Code 打开", "secondary", self.open_project_vscode),
+                ("CMD 运行", "secondary", self.open_project_cmd),
+            ),
+        )
+        self._create_project_action_group(
+            actions,
+            2,
+            "项目相关",
+            (
+                ("运行项目", "primary", self.run_project),
+                ("打开项目文件夹", "secondary", self.open_project_folder),
+                ("项目设置/MCP", "secondary", self.edit_project),
+            ),
+        )
 
     def _build_mcp_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1219,6 +1245,26 @@ class CodexSwitchApp:
         tk.Label(parent, text=label, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=4)
         tk.Label(parent, textvariable=variable, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=wraplength).grid(row=row, column=1, columnspan=3, sticky="w", pady=4)
 
+    def _create_project_action_group(
+        self,
+        parent: tk.Misc,
+        row: int,
+        label: str,
+        actions: tuple[tuple[str, str, object], ...],
+    ) -> None:
+        group = tk.Frame(parent, bg=PALETTE["card_bg"])
+        group.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        group.columnconfigure(0, weight=1)
+        tk.Label(group, text=label, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        buttons = tk.Frame(group, bg=PALETTE["card_bg"])
+        buttons.grid(row=1, column=0, sticky="ew")
+        for column in range(len(actions)):
+            buttons.columnconfigure(column, weight=1)
+        for column, (text, variant, command) in enumerate(actions):
+            padx = (0, 8) if column < len(actions) - 1 else 0
+            make_button(buttons, text=text, variant=variant, command=command).grid(row=0, column=column, sticky="ew", padx=padx)
+
     def _create_success_models_row(self, parent: tk.Misc, row: int) -> None:
         tk.Label(parent, text="成功模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=4)
         value_row = tk.Frame(parent, bg=PALETTE["card_bg"])
@@ -1383,9 +1429,30 @@ class CodexSwitchApp:
         return load_default_global_mcp_toml()
 
     def _effective_project_mcp_toml(self, project: ProjectRecord | None) -> str:
-        if project and project.mcp_toml.strip():
+        if not project:
+            return self._effective_global_mcp_toml()
+        if project.mcp_server_names is not None:
+            return self.project_template_service.select_project_mcp_toml(
+                self._effective_global_mcp_toml(),
+                project.mcp_server_names,
+            )
+        if project.mcp_toml.strip():
             return project.mcp_toml
         return self._effective_global_mcp_toml()
+
+    def _available_mcp_server_names(self) -> list[str]:
+        return self._safe_mcp_server_names(self._effective_global_mcp_toml())
+
+    def _project_mcp_selection_summary(self, project: ProjectRecord | None) -> str:
+        if not project:
+            return "-"
+        if project.mcp_server_names is None:
+            return self._mcp_summary(self._effective_project_mcp_toml(project))
+        if not project.mcp_server_names:
+            return "未启用"
+        label = ", ".join(project.mcp_server_names[:4])
+        suffix = " …" if len(project.mcp_server_names) > 4 else ""
+        return f"{len(project.mcp_server_names)} 个服务：{label}{suffix}"
 
     def _mcp_contains_project_root(self, value) -> bool:
         if isinstance(value, str):
@@ -1737,6 +1804,7 @@ class CodexSwitchApp:
                         project.name,
                         compact_text(project.project_dir, 42),
                         compact_text(api_name, 18),
+                        compact_text(self._project_mcp_selection_summary(project), 16),
                     ),
                 )
                 if Path(project.project_dir).exists():
@@ -1772,7 +1840,7 @@ class CodexSwitchApp:
         self.project_selected_dir_var.set(project.project_dir)
         self.project_run_var.set(project.run_command or "未配置")
         self.project_script_var.set(str(self._get_project_script_path(project)))
-        self.project_mcp_var.set(self._mcp_summary(self._effective_project_mcp_toml(project)))
+        self.project_mcp_var.set(self._project_mcp_selection_summary(project))
 
         profile = self._profile_by_id(project.profile_id)
         if profile:
@@ -2188,37 +2256,6 @@ class CodexSwitchApp:
         self.docs_hint_var.set("已恢复默认模板内容，点击“保存文档”后生效。")
         self.status_var.set("已恢复默认 AGENTS 模板预览。")
 
-    def edit_project_mcp(self) -> None:
-        project = self.get_selected_project()
-        if not project:
-            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
-            return
-        dialog = McpConfigDialog(
-            self.root,
-            title=f"编辑项目 MCP：{project.name}",
-            subtitle="项目 MCP 优先级高于全局 MCP。留空时会自动回退到全局 MCP。",
-            initial_text=resolve_mcp_editor_text(project.mcp_toml, self.global_mcp_toml, load_default_global_mcp_toml()),
-        )
-        self.root.wait_window(dialog)
-        if dialog.result is None:
-            return
-        updated = replace(project, mcp_toml=dialog.result, updated_at=now_iso())
-        self.projects = [updated if item.id == updated.id else item for item in self.projects]
-        self.persist_state()
-        self.refresh_project_tab()
-        self.status_var.set(f"已更新项目 MCP：{updated.name}")
-
-    def clear_project_mcp(self) -> None:
-        project = self.get_selected_project()
-        if not project:
-            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
-            return
-        updated = replace(project, mcp_toml="", updated_at=now_iso())
-        self.projects = [updated if item.id == updated.id else item for item in self.projects]
-        self.persist_state()
-        self.refresh_project_tab()
-        self.status_var.set(f"已清空项目 MCP 配置：{updated.name}")
-
     def add_profile(self) -> None:
         dialog = ProfileDialog(self.root)
         self.root.wait_window(dialog)
@@ -2290,7 +2327,7 @@ class CodexSwitchApp:
         if not profiles:
             messagebox.showinfo("提示", "请先添加至少一套可用配置。", parent=self.root)
             return
-        dialog = ProjectDialog(self.root, profiles=profiles)
+        dialog = ProjectDialog(self.root, profiles=profiles, mcp_server_names=self._available_mcp_server_names())
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -2302,6 +2339,7 @@ class CodexSwitchApp:
             profile_id=dialog.result["profile_id"],
             name=dialog.result["name"],
             run_command=dialog.result["run_command"],
+            mcp_server_names=dialog.result["mcp_server_names"],
         )
         self.projects.append(project)
         self.selected_project_id = project.id
@@ -2331,7 +2369,12 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        dialog = ProjectDialog(self.root, profiles=self._healthy_profiles(), project=project)
+        dialog = ProjectDialog(
+            self.root,
+            profiles=self._healthy_profiles(),
+            mcp_server_names=self._available_mcp_server_names(),
+            project=project,
+        )
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -2345,6 +2388,7 @@ class CodexSwitchApp:
             project_dir=dialog.result["project_dir"],
             profile_id=dialog.result["profile_id"],
             run_command=dialog.result["run_command"],
+            mcp_server_names=dialog.result["mcp_server_names"],
             updated_at=now_iso(),
         )
         api_binding_changed = updated.profile_id != project.profile_id or updated.project_dir != project.project_dir
@@ -2422,12 +2466,13 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showerror("无法生成", "当前项目绑定的配置已经不存在。", parent=self.root)
             return
+        project_mcp_toml = self._effective_project_mcp_toml(project)
         try:
             result = self.project_template_service.generate(
                 Path(project.project_dir),
                 profile,
-                global_mcp_toml=self._effective_global_mcp_toml(),
-                project_mcp_toml=project.mcp_toml,
+                global_mcp_toml=project_mcp_toml,
+                project_mcp_toml=project_mcp_toml,
                 agents_doc_text=self.agents_doc_text,
             )
         except Exception as exc:
@@ -2442,11 +2487,83 @@ class CodexSwitchApp:
             parent=self.root,
         )
 
+    def generate_claude_template(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        try:
+            result = self.project_template_service.generate_claude_template(
+                Path(project.project_dir),
+                project_mcp_toml=self._effective_project_mcp_toml(project),
+                agents_doc_text=self.agents_doc_text,
+            )
+        except Exception as exc:
+            messagebox.showerror("生成失败", f"写入 Claude 项目模板失败：\n{exc}", parent=self.root)
+            self.status_var.set("Claude 项目模板生成失败")
+            return
+        self.refresh_project_tab()
+        self.status_var.set(f"已生成 Claude 项目模板：{project.name}")
+        generated = "\n".join(str(path) for path in result.generated_paths)
+        messagebox.showinfo(
+            "生成成功",
+            f"已为项目“{project.name}”生成 Claude 模板。\n\n生成文件：\n{generated}\n\n备份目录：\n{result.backup_dir}",
+            parent=self.root,
+        )
+
     def _get_project_script_path(self, project: ProjectRecord) -> Path:
         ps1_path, cmd_path = project_start_script_paths(project.project_dir)
         if cmd_path.exists():
             return cmd_path
         return ps1_path
+
+    def open_project_folder(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        project_root = Path(project.project_dir)
+        if not project_root.exists():
+            messagebox.showerror("打开失败", "项目目录不存在。", parent=self.root)
+            return
+        try:
+            os.startfile(project_root)  # type: ignore[attr-defined]
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"打开项目文件夹失败：\n{exc}", parent=self.root)
+            return
+        self.status_var.set(f"已打开项目文件夹：{project.name}")
+
+    def open_project_vscode(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/c", "code.cmd", str(Path(project.project_dir))],
+                cwd=project.project_dir,
+                creationflags=_CREATE_NEW_CONSOLE,
+            )
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"使用 VS Code 打开项目失败：\n{exc}", parent=self.root)
+            return
+        self.status_var.set(f"已用 VS Code 打开项目：{project.name}")
+
+    def open_project_cmd(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/k"],
+                cwd=project.project_dir,
+                creationflags=_CREATE_NEW_CONSOLE,
+            )
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"打开项目 CMD 失败：\n{exc}", parent=self.root)
+            return
+        self.status_var.set(f"已打开项目 CMD：{project.name}")
 
     def run_project(self) -> None:
         project = self.get_selected_project()

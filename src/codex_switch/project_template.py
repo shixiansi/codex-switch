@@ -10,8 +10,12 @@ from codex_switch.codex_config import (
     PROJECT_ENV_KEY,
     PROJECT_PROVIDER_ID,
     dumps_toml,
+    parse_mcp_servers_toml,
+    render_mcp_servers_json,
+    render_mcp_servers_toml,
     render_project_repo_config,
     render_project_runtime_config,
+    scope_mcp_servers_to_project,
     timestamp_label,
 )
 from codex_switch.models import Profile
@@ -26,6 +30,8 @@ MANAGED_GITIGNORE_RULES = (
 )
 MANAGED_TEMPLATE_FILES = (
     "AGENTS.md",
+    "CLAUDE.md",
+    ".mcp.json",
     f"{CODEX_SCRIPT_DIRNAME}/start-codex.ps1",
     f"{CODEX_SCRIPT_DIRNAME}/start-codex.cmd",
     f"{CODEX_SCRIPT_DIRNAME}/codex-profile.cmd",
@@ -160,6 +166,38 @@ class ProjectTemplateService:
             start_script_path=project_root / CODEX_SCRIPT_DIRNAME / "start-codex.ps1",
         )
 
+    def generate_claude_template(
+        self,
+        project_root: Path,
+        *,
+        project_mcp_toml: str = "",
+        agents_doc_text: str | None = None,
+    ) -> ProjectTemplateResult:
+        project_root = project_root.resolve()
+        backup_root = project_root / ".claude" / "template-backups"
+        backup_root.mkdir(parents=True, exist_ok=True)
+
+        backup_dir = self._backup_managed_files(project_root, backup_root)
+        files = self._render_claude_files(
+            project_root,
+            project_mcp_toml=project_mcp_toml,
+            agents_doc_text=agents_doc_text,
+        )
+
+        generated_paths: list[Path] = []
+        for relative_path, content in files.items():
+            target = project_root / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            generated_paths.append(target)
+
+        return ProjectTemplateResult(
+            generated_paths=generated_paths,
+            backup_dir=backup_dir,
+            project_root=project_root,
+            start_script_path=project_root / CODEX_SCRIPT_DIRNAME / "start-codex.ps1",
+        )
+
     def inspect(self, project_root: Path) -> ProjectTemplateStatus:
         project_root = project_root.resolve()
         backup_root = project_root / ".codex" / "template-backups"
@@ -213,7 +251,7 @@ class ProjectTemplateService:
     ) -> dict[str, str]:
         effective_project_mcp_toml = project_mcp_toml or global_mcp_toml
         agents_content = self._render_agents_file(agents_doc_text)
-        return {
+        files = {
             "AGENTS.md": agents_content,
             f"{CODEX_SCRIPT_DIRNAME}/start-codex.ps1": self._render_start_script(),
             f"{CODEX_SCRIPT_DIRNAME}/start-codex.cmd": self._render_cmd_start_script(),
@@ -231,12 +269,53 @@ class ProjectTemplateService:
             ".codex/home/config.toml": dumps_toml(
                 render_project_runtime_config(
                     profile,
-                    global_mcp_toml=global_mcp_toml,
+                    global_mcp_toml=effective_project_mcp_toml,
                     project_root=project_root,
                 )
             ),
             ".codex/home/AGENTS.md": agents_content,
         }
+        files.update(
+            self._render_claude_files(
+                project_root,
+                project_mcp_toml=effective_project_mcp_toml,
+                agents_doc_text=agents_doc_text,
+            )
+        )
+        return files
+
+    def _render_claude_files(
+        self,
+        project_root: Path,
+        *,
+        project_mcp_toml: str = "",
+        agents_doc_text: str | None = None,
+    ) -> dict[str, str]:
+        agents_content = self._render_agents_file(agents_doc_text)
+        return {
+            "CLAUDE.md": agents_content,
+            ".mcp.json": render_mcp_servers_json(
+                scope_mcp_servers_to_project(
+                    parse_mcp_servers_toml(project_mcp_toml),
+                    project_root,
+                )
+            ),
+        }
+
+    def select_project_mcp_toml(
+        self,
+        global_mcp_toml: str,
+        selected_server_names: list[str] | None,
+    ) -> str:
+        if selected_server_names is None:
+            return global_mcp_toml
+        mcp_servers = parse_mcp_servers_toml(global_mcp_toml)
+        selected = {
+            server_name: mcp_servers[server_name]
+            for server_name in selected_server_names
+            if server_name in mcp_servers
+        }
+        return render_mcp_servers_toml(selected)
 
     def _render_agents_file(self, agents_doc_text: str | None = None) -> str:
         if agents_doc_text is not None:
