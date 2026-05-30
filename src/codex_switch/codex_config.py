@@ -327,9 +327,10 @@ def render_global_config(
     previous_managed_mcp_server_names: list[str] | None = None,
 ) -> dict:
     config = deepcopy(existing_config) if existing_config is not None else deepcopy(GLOBAL_BASE_CONFIG)
+    codex_model = profile.codex_display_model
     config["model_provider"] = profile.provider_name
-    config["model"] = profile.model
-    config["review_model"] = profile.model
+    config["model"] = codex_model
+    config["review_model"] = codex_model
     providers = config.setdefault("model_providers", {})
     providers[profile.provider_name] = build_provider_payload(profile)
     merge_mcp_servers(
@@ -362,9 +363,10 @@ def render_project_runtime_config(
     project_root: str | Path | None = None,
 ) -> dict:
     config = render_project_base_config()
+    codex_model = profile.codex_display_model
     config["model_provider"] = PROJECT_PROVIDER_ID
-    config["model"] = profile.model
-    config["review_model"] = profile.model
+    config["model"] = codex_model
+    config["review_model"] = codex_model
     config["model_providers"] = {
         PROJECT_PROVIDER_ID: build_provider_payload(
             profile,
@@ -390,7 +392,7 @@ def render_project_repo_config(
 ) -> dict:
     config = render_project_base_config(
         project_mcp_toml=project_mcp_toml,
-        model=profile.model if profile else None,
+        model=profile.codex_display_model if profile else None,
     )
     merge_mcp_servers(
         config,

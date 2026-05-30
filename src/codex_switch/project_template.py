@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import shutil
 import sys
 import tomllib
@@ -40,6 +41,7 @@ MANAGED_TEMPLATE_FILES = (
     ".codex/local.env.example",
     ".codex/home/config.toml",
     ".codex/home/AGENTS.md",
+    ".claude/settings.local.json",
 )
 GENERATED_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
 BACKUP_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
@@ -99,16 +101,16 @@ class ProjectTemplateService:
         if repo_config_path.exists():
             with repo_config_path.open("rb") as handle:
                 config = tomllib.load(handle)
-            config["model"] = profile.model
-            config["review_model"] = profile.model
+            config["model"] = profile.codex_display_model
+            config["review_model"] = profile.codex_display_model
             repo_config_path.write_text(dumps_toml(config), encoding="utf-8")
             updated_paths.append(repo_config_path)
 
         if runtime_config_path.exists():
             with runtime_config_path.open("rb") as handle:
                 config = tomllib.load(handle)
-            config["model"] = profile.model
-            config["review_model"] = profile.model
+            config["model"] = profile.codex_display_model
+            config["review_model"] = profile.codex_display_model
             providers = config.setdefault("model_providers", {})
             provider = providers.setdefault(PROJECT_PROVIDER_ID, {})
             provider.setdefault("name", profile.provider_name)
@@ -135,6 +137,7 @@ class ProjectTemplateService:
         global_mcp_toml: str = "",
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
+        claude_profile: Profile | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         codex_dir = project_root / ".codex"
@@ -150,6 +153,7 @@ class ProjectTemplateService:
             global_mcp_toml=global_mcp_toml,
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=agents_doc_text,
+            claude_profile=claude_profile,
         )
 
         generated_paths: list[Path] = []
@@ -169,6 +173,7 @@ class ProjectTemplateService:
     def generate_claude_template(
         self,
         project_root: Path,
+        profile: Profile,
         *,
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
@@ -182,6 +187,7 @@ class ProjectTemplateService:
             project_root,
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=agents_doc_text,
+            profile=profile,
         )
 
         generated_paths: list[Path] = []
@@ -248,6 +254,7 @@ class ProjectTemplateService:
         global_mcp_toml: str = "",
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
+        claude_profile: Profile | None = None,
     ) -> dict[str, str]:
         effective_project_mcp_toml = project_mcp_toml or global_mcp_toml
         agents_content = self._render_agents_file(agents_doc_text)
@@ -280,6 +287,7 @@ class ProjectTemplateService:
                 project_root,
                 project_mcp_toml=effective_project_mcp_toml,
                 agents_doc_text=agents_doc_text,
+                profile=claude_profile,
             )
         )
         return files
@@ -290,9 +298,10 @@ class ProjectTemplateService:
         *,
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
+        profile: Profile | None = None,
     ) -> dict[str, str]:
         agents_content = self._render_agents_file(agents_doc_text)
-        return {
+        files = {
             "CLAUDE.md": agents_content,
             ".mcp.json": render_mcp_servers_json(
                 scope_mcp_servers_to_project(
@@ -301,6 +310,18 @@ class ProjectTemplateService:
                 )
             ),
         }
+        if profile is not None:
+            files[".claude/settings.local.json"] = self._render_claude_settings(profile)
+        return files
+
+    def _render_claude_settings(self, profile: Profile) -> str:
+        payload = {
+            "env": {
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": profile.claude_display_model,
+                "ANTHROPIC_MODEL": profile.claude_display_fallback_model,
+            }
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
     def select_project_mcp_toml(
         self,

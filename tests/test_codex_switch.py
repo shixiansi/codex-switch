@@ -24,7 +24,17 @@ from codex_switch import main
 from codex_switch.chat import ChatResult, ChatTester
 from codex_switch.codex_config import CodexConfigManager, PROJECT_ENV_KEY, PROJECT_PROVIDER_ID, scope_mcp_servers_to_project
 from codex_switch.health import HealthChecker, build_candidate_urls
-from codex_switch.models import HealthResult, Profile, ProjectRecord
+from codex_switch.models import (
+    DEFAULT_CLAUDE_FALLBACK_MODEL,
+    DEFAULT_CLAUDE_MODEL,
+    HealthResult,
+    Profile,
+    ProjectRecord,
+    VENDOR_CLAUDE,
+    VENDOR_CODEX,
+    VENDOR_GENERIC,
+    today_iso,
+)
 from codex_switch.project_template import (
     CODEX_SCRIPT_DIRNAME,
     GITIGNORE_MANAGED_BEGIN,
@@ -39,6 +49,7 @@ from codex_switch.ui.app import (
     model_batch_caches_to_payload,
     model_batch_targets,
     ordered_model_batch_models,
+    profile_library_sort_key,
     run_model_batch_requests,
     successful_model_batch_models,
     visible_profiles_for_filter,
@@ -112,7 +123,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 6)
+            self.assertEqual(payload["version"], 7)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_project_mcp_selection(self) -> None:
@@ -120,9 +131,11 @@ class ProfileStoreTests(unittest.TestCase):
             store = ProfileStore(temp_dir)
             project = ProjectRecord.create(
                 str(temp_dir),
-                "profile-1",
+                "codex-profile",
                 name="project",
                 mcp_server_names=["filesystem", "serena"],
+                codex_profile_id="codex-profile",
+                claude_profile_id="claude-profile",
             )
 
             store.save([], None, projects=[project], selected_project_id=project.id)
@@ -130,7 +143,12 @@ class ProfileStoreTests(unittest.TestCase):
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
 
             self.assertEqual(loaded_projects[0].mcp_server_names, ["filesystem", "serena"])
+            self.assertEqual(loaded_projects[0].profile_id, "codex-profile")
+            self.assertEqual(loaded_projects[0].codex_profile_id, "codex-profile")
+            self.assertEqual(loaded_projects[0].claude_profile_id, "claude-profile")
             self.assertEqual(payload["projects"][0]["mcp_server_names"], ["filesystem", "serena"])
+            self.assertEqual(payload["projects"][0]["codex_profile_id"], "codex-profile")
+            self.assertEqual(payload["projects"][0]["claude_profile_id"], "claude-profile")
 
     def test_store_loads_legacy_project_without_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -159,6 +177,9 @@ class ProfileStoreTests(unittest.TestCase):
             loaded_project = store.load()[2][0]
 
             self.assertIsNone(loaded_project.mcp_server_names)
+            self.assertEqual(loaded_project.profile_id, "profile-1")
+            self.assertEqual(loaded_project.codex_profile_id, "profile-1")
+            self.assertEqual(loaded_project.claude_profile_id, "profile-1")
             self.assertIn("mcp_servers.legacy", loaded_project.mcp_toml)
 
     def test_store_persists_model_batch_settings(self) -> None:
@@ -195,6 +216,7 @@ class ProfileStoreTests(unittest.TestCase):
                                 "name": "legacy",
                                 "base_url": "https://example.com",
                                 "api_key": "sk-legacy",
+                                "model": "legacy-model",
                             }
                         ],
                     }
@@ -208,6 +230,42 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(profiles[0].api_keys, ["sk-legacy"])
             self.assertEqual(profiles[0].api_key, "sk-legacy")
             self.assertEqual(profiles[0].active_api_key_index, 0)
+            self.assertEqual(profiles[0].vendor, VENDOR_GENERIC)
+            self.assertEqual(profiles[0].model, "legacy-model")
+            self.assertEqual(profiles[0].codex_model, "legacy-model")
+            self.assertEqual(profiles[0].claude_model, DEFAULT_CLAUDE_MODEL)
+            self.assertEqual(profiles[0].claude_fallback_model, DEFAULT_CLAUDE_FALLBACK_MODEL)
+
+    def test_profile_from_dict_defaults_legacy_model_to_generic_vendor(self) -> None:
+        profile = Profile.from_dict(
+            {
+                "id": "profile-1",
+                "name": "legacy",
+                "base_url": "https://example.com",
+                "api_key": "sk-legacy",
+                "model": "legacy-model",
+            }
+        )
+
+        self.assertEqual(profile.vendor, VENDOR_GENERIC)
+        self.assertEqual(profile.model, "legacy-model")
+        self.assertEqual(profile.codex_model, "legacy-model")
+        self.assertEqual(profile.claude_model, DEFAULT_CLAUDE_MODEL)
+        self.assertEqual(profile.claude_fallback_model, DEFAULT_CLAUDE_FALLBACK_MODEL)
+
+    def test_project_record_from_dict_migrates_legacy_profile_id_to_dual_bindings(self) -> None:
+        project = ProjectRecord.from_dict(
+            {
+                "id": "project-1",
+                "name": "legacy-project",
+                "project_dir": str(Path.cwd()),
+                "profile_id": "profile-1",
+            }
+        )
+
+        self.assertEqual(project.profile_id, "profile-1")
+        self.assertEqual(project.codex_profile_id, "profile-1")
+        self.assertEqual(project.claude_profile_id, "profile-1")
 
     def test_store_roundtrip_keeps_active_api_key(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -264,6 +322,26 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual(visible_profiles_for_filter(profiles, False), profiles)
         self.assertEqual(visible_profiles_for_filter(profiles, True), [healthy])
+
+    def test_profile_library_sort_key_prioritizes_unsigned_profiles(self) -> None:
+        signed = Profile.create(
+            "b-signed",
+            "https://signed.example.com",
+            "sk-signed",
+            requires_sign_in=True,
+            last_signed_date=today_iso(),
+        )
+        no_sign_in = Profile.create("a-no-sign", "https://no-sign.example.com", "sk-no-sign")
+        unsigned = Profile.create(
+            "c-unsigned",
+            "https://unsigned.example.com",
+            "sk-unsigned",
+            requires_sign_in=True,
+        )
+
+        profiles = sorted([no_sign_in, signed, unsigned], key=profile_library_sort_key)
+
+        self.assertEqual([profile.name for profile in profiles], ["c-unsigned", "b-signed", "a-no-sign"])
 
     def test_model_batch_targets_use_latest_health_models(self) -> None:
         profile = Profile.create("api", "https://api.example.com", "sk-api")
@@ -576,23 +654,64 @@ args = ["-y", "server", "/tmp"]
             self.assertEqual(repo_servers["custom"]["args"], ["--root", project_dir])
             self.assertEqual(repo_servers["filesystem"]["args"][-1], project_dir)
 
+    def test_generate_uses_codex_profile_and_writes_claude_settings_from_claude_profile(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            codex_profile = Profile.create(
+                "codex-project",
+                "https://codex.example.com",
+                "sk-codex",
+                vendor=VENDOR_CODEX,
+                codex_model="codex-special",
+            )
+            claude_profile = Profile.create(
+                "claude-project",
+                "https://claude.example.com",
+                "sk-claude",
+                vendor=VENDOR_CLAUDE,
+                claude_model="sonnet-special",
+                claude_fallback_model="haiku-special",
+            )
+
+            service.generate(temp_dir, codex_profile, claude_profile=claude_profile)
+
+            repo_config_data = tomllib.loads((temp_dir / ".codex" / "config.toml").read_text(encoding="utf-8"))
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(repo_config_data["model"], "codex-special")
+            self.assertEqual(runtime_config_data["model"], "codex-special")
+            self.assertEqual(claude_settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "sonnet-special")
+            self.assertEqual(claude_settings["env"]["ANTHROPIC_MODEL"], "haiku-special")
+
     def test_generate_claude_template_does_not_write_codex_config(self) -> None:
         with workspace_tempdir() as temp_dir:
             service = ProjectTemplateService()
+            profile = Profile.create(
+                "claude-project",
+                "https://claude.example.com",
+                "sk-claude",
+                vendor=VENDOR_CLAUDE,
+                claude_model="sonnet-template",
+                claude_fallback_model="haiku-template",
+            )
             mcp_toml = """
 [mcp_servers.custom]
 command = "tool"
 """.strip()
 
-            result = service.generate_claude_template(temp_dir, project_mcp_toml=mcp_toml, agents_doc_text="# Claude\n")
+            result = service.generate_claude_template(temp_dir, profile, project_mcp_toml=mcp_toml, agents_doc_text="# Claude\n")
 
             self.assertEqual(
                 {path.relative_to(temp_dir).as_posix() for path in result.generated_paths},
-                {"CLAUDE.md", ".mcp.json"},
+                {"CLAUDE.md", ".mcp.json", ".claude/settings.local.json"},
             )
             self.assertFalse((temp_dir / ".codex" / "config.toml").exists())
             self.assertEqual((temp_dir / "CLAUDE.md").read_text(encoding="utf-8"), "# Claude\n")
             self.assertEqual(json.loads((temp_dir / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["custom"]["command"], "tool")
+            claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+            self.assertEqual(claude_settings["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "sonnet-template")
+            self.assertEqual(claude_settings["env"]["ANTHROPIC_MODEL"], "haiku-template")
 
     def test_sync_api_binding_updates_repo_runtime_models_api_and_key(self) -> None:
         with workspace_tempdir() as temp_dir:

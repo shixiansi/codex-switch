@@ -8,7 +8,19 @@ import tomllib
 from tkinter import filedialog, messagebox
 
 from codex_switch.codex_config import dumps_toml, parse_mcp_servers_toml, render_mcp_servers_toml
-from codex_switch.models import Profile, ProjectRecord
+from codex_switch.models import (
+    DEFAULT_CLAUDE_FALLBACK_MODEL,
+    DEFAULT_CLAUDE_MODEL,
+    DEFAULT_CODEX_MODEL,
+    PROFILE_VENDOR_CHOICES,
+    Profile,
+    ProjectRecord,
+    VENDOR_CLAUDE,
+    VENDOR_CODEX,
+    VENDOR_GENERIC,
+    profile_supports_claude,
+    profile_supports_codex,
+)
 from codex_switch.ui.styles import PALETTE, make_button, ttk
 from codex_switch.ui.utils import compact_text, is_http_url
 
@@ -505,7 +517,10 @@ class ProfileDialog(tk.Toplevel):
         self.last_signed_date = defaults.last_signed_date
         self.name_var = tk.StringVar(value=defaults.name)
         self.base_url_var = tk.StringVar(value=defaults.base_url)
-        self.model_var = tk.StringVar(value=defaults.model)
+        self.vendor_var = tk.StringVar(value=defaults.vendor)
+        self.codex_model_var = tk.StringVar(value=defaults.codex_display_model)
+        self.claude_model_var = tk.StringVar(value=defaults.claude_display_model)
+        self.claude_fallback_model_var = tk.StringVar(value=defaults.claude_display_fallback_model)
         self.provider_name_var = tk.StringVar(value=defaults.provider_name)
         self.wire_api_var = tk.StringVar(value=defaults.wire_api)
         self.requires_sign_in_var = tk.BooleanVar(value=defaults.requires_sign_in)
@@ -533,7 +548,7 @@ class ProfileDialog(tk.Toplevel):
         ).grid(row=0, column=0, columnspan=3, sticky="w")
         tk.Label(
             card,
-            text="默认模型用于全局切换和聊天测试；如需签到，可在这里补充签到地址。",
+            text="供应商决定配置可用于 Codex、Claude 或两者；如需签到，可在这里补充签到地址。",
             bg=PALETTE["card_bg"],
             fg=PALETTE["muted"],
             font=("Microsoft YaHei UI", 9),
@@ -542,23 +557,46 @@ class ProfileDialog(tk.Toplevel):
         fields = [
             ("名称", self.name_var),
             ("API 地址", self.base_url_var),
-            ("默认模型", self.model_var),
+            ("Codex 默认模型", self.codex_model_var),
+            ("Claude 默认模型", self.claude_model_var),
+            ("Claude 兜底模型", self.claude_fallback_model_var),
             ("提供方名称", self.provider_name_var),
             ("Wire API", self.wire_api_var),
         ]
         self.entries: dict[str, ttk.Entry] = {}
+        self.model_rows: dict[str, list[tk.Widget]] = {}
         for index, (label, variable) in enumerate(fields, start=2):
-            row = index if index < 4 else index + 1
-            tk.Label(
+            row = index if index < 4 else index + 2
+            label_widget = tk.Label(
                 card,
                 text=label,
                 bg=PALETTE["card_bg"],
                 fg=PALETTE["text"],
                 font=("Microsoft YaHei UI", 10, "bold"),
-            ).grid(row=row, column=0, sticky="w", pady=6)
+            )
+            label_widget.grid(row=row, column=0, sticky="w", pady=6)
             entry = ttk.Entry(card, textvariable=variable, width=48)
             entry.grid(row=row, column=1, sticky="ew", pady=6)
             self.entries[label] = entry
+            if label in {"Codex 默认模型", "Claude 默认模型", "Claude 兜底模型"}:
+                self.model_rows[label] = [label_widget, entry]
+
+        tk.Label(
+            card,
+            text="供应商",
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).grid(row=4, column=0, sticky="w", pady=6)
+        self.vendor_combo = ttk.Combobox(
+            card,
+            textvariable=self.vendor_var,
+            values=PROFILE_VENDOR_CHOICES,
+            state="readonly",
+            width=48,
+        )
+        self.vendor_combo.grid(row=4, column=1, sticky="ew", pady=6)
+        self.vendor_combo.bind("<<ComboboxSelected>>", self._toggle_model_fields)
 
         tk.Label(
             card,
@@ -566,12 +604,12 @@ class ProfileDialog(tk.Toplevel):
             bg=PALETTE["card_bg"],
             fg=PALETTE["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=4, column=0, sticky="nw", pady=6)
+        ).grid(row=5, column=0, sticky="nw", pady=6)
         self.api_keys_frame = tk.Frame(card, bg=PALETTE["card_bg"])
-        self.api_keys_frame.grid(row=4, column=1, sticky="ew", pady=6)
+        self.api_keys_frame.grid(row=5, column=1, sticky="ew", pady=6)
         self.api_keys_frame.columnconfigure(0, weight=1)
         key_actions = ttk.Frame(card)
-        key_actions.grid(row=4, column=2, sticky="nw", padx=(8, 0), pady=4)
+        key_actions.grid(row=5, column=2, sticky="nw", padx=(8, 0), pady=4)
         key_actions.columnconfigure(1, weight=1)
         make_button(
             key_actions,
@@ -591,7 +629,7 @@ class ProfileDialog(tk.Toplevel):
         if not self.api_key_vars:
             self._add_api_key_row()
         ttk.Checkbutton(card, text="需要签到", variable=self.requires_sign_in_var, command=self._toggle_sign_in_fields).grid(
-            row=8,
+            row=11,
             column=0,
             sticky="w",
             pady=(6, 0),
@@ -602,9 +640,9 @@ class ProfileDialog(tk.Toplevel):
             bg=PALETTE["card_bg"],
             fg=PALETTE["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=9, column=0, sticky="w", pady=6)
+        ).grid(row=12, column=0, sticky="w", pady=6)
         self.sign_in_url_entry = ttk.Entry(card, textvariable=self.sign_in_url_var, width=48)
-        self.sign_in_url_entry.grid(row=9, column=1, columnspan=2, sticky="ew", pady=6)
+        self.sign_in_url_entry.grid(row=12, column=1, columnspan=2, sticky="ew", pady=6)
 
         tk.Label(
             card,
@@ -612,7 +650,7 @@ class ProfileDialog(tk.Toplevel):
             bg=PALETTE["card_bg"],
             fg=PALETTE["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=10, column=0, sticky="nw", pady=6)
+        ).grid(row=13, column=0, sticky="nw", pady=6)
         self.notes_text = tk.Text(
             card,
             width=48,
@@ -624,16 +662,17 @@ class ProfileDialog(tk.Toplevel):
             font=("Microsoft YaHei UI", 10),
             fg=PALETTE["text"],
         )
-        self.notes_text.grid(row=10, column=1, columnspan=2, sticky="ew", pady=6)
+        self.notes_text.grid(row=13, column=1, columnspan=2, sticky="ew", pady=6)
         if defaults.notes:
             self.notes_text.insert("1.0", defaults.notes)
 
         buttons = ttk.Frame(card)
-        buttons.grid(row=11, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=14, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存配置", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
         card.columnconfigure(1, weight=1)
+        self._toggle_model_fields()
         self._toggle_sign_in_fields()
         self.transient(master)
         self.grab_set()
@@ -675,9 +714,27 @@ class ProfileDialog(tk.Toplevel):
         state = "normal" if self.requires_sign_in_var.get() else "disabled"
         self.sign_in_url_entry.configure(state=state)
 
+    def _toggle_model_fields(self, _event: object | None = None) -> None:
+        vendor = self.vendor_var.get().strip() or VENDOR_GENERIC
+        visibility = {
+            "Codex 默认模型": vendor in (VENDOR_CODEX, VENDOR_GENERIC),
+            "Claude 默认模型": vendor in (VENDOR_CLAUDE, VENDOR_GENERIC),
+            "Claude 兜底模型": vendor in (VENDOR_CLAUDE, VENDOR_GENERIC),
+        }
+        for label, widgets in self.model_rows.items():
+            for widget in widgets:
+                if visibility.get(label, True):
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+
     def _on_submit(self) -> None:
         name = self.name_var.get().strip()
         base_url = self.base_url_var.get().strip()
+        vendor = self.vendor_var.get().strip() or VENDOR_GENERIC
+        codex_model = self.codex_model_var.get().strip() or DEFAULT_CODEX_MODEL
+        claude_model = self.claude_model_var.get().strip() or DEFAULT_CLAUDE_MODEL
+        claude_fallback_model = self.claude_fallback_model_var.get().strip() or DEFAULT_CLAUDE_FALLBACK_MODEL
         raw_api_keys = [variable.get().strip() for variable in self.api_key_vars]
         api_keys: list[str] = []
         active_api_key_index = 0
@@ -690,7 +747,6 @@ class ProfileDialog(tk.Toplevel):
                 active_api_key_index = len(api_keys)
                 active_row_has_key = True
             api_keys.append(key)
-        model = self.model_var.get().strip()
         requires_sign_in = self.requires_sign_in_var.get()
         sign_in_url = self.sign_in_url_var.get().strip()
 
@@ -706,8 +762,14 @@ class ProfileDialog(tk.Toplevel):
         if not active_row_has_key:
             messagebox.showerror("校验失败", "请选择一个已填写的活动 API Key。", parent=self)
             return
-        if not model:
-            messagebox.showerror("校验失败", "请至少填写一个默认模型。", parent=self)
+        if vendor == VENDOR_CODEX and not codex_model:
+            messagebox.showerror("校验失败", "请填写 Codex 默认模型。", parent=self)
+            return
+        if vendor == VENDOR_CLAUDE and (not claude_model or not claude_fallback_model):
+            messagebox.showerror("校验失败", "请填写 Claude 默认模型和兜底模型。", parent=self)
+            return
+        if vendor == VENDOR_GENERIC and (not codex_model or not claude_model or not claude_fallback_model):
+            messagebox.showerror("校验失败", "通用配置需要填写三项模型。", parent=self)
             return
         if requires_sign_in and sign_in_url and not is_http_url(sign_in_url):
             messagebox.showerror("校验失败", "签到地址必须以 http:// 或 https:// 开头。", parent=self)
@@ -719,7 +781,11 @@ class ProfileDialog(tk.Toplevel):
             "api_key": api_keys[active_api_key_index],
             "api_keys": api_keys,
             "active_api_key_index": active_api_key_index,
-            "model": model,
+            "model": codex_model,
+            "vendor": vendor,
+            "codex_model": codex_model,
+            "claude_model": claude_model,
+            "claude_fallback_model": claude_fallback_model,
             "provider_name": self.provider_name_var.get().strip() or "OpenAI",
             "wire_api": self.wire_api_var.get().strip() or "responses",
             "requires_sign_in": requires_sign_in,
@@ -744,20 +810,27 @@ class ProjectDialog(tk.Toplevel):
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
         self.result: dict | None = None
-        self.profile_values: dict[str, str] = {}
+        self.codex_profile_values: dict[str, str] = {}
+        self.claude_profile_values: dict[str, str] = {}
         self.mcp_server_names = list(mcp_server_names or [])
         self.mcp_server_vars: dict[str, tk.BooleanVar] = {}
+        codex_profiles = [profile for profile in profiles if profile_supports_codex(profile)]
+        claude_profiles = [profile for profile in profiles if profile_supports_claude(profile)]
 
         if project is None:
             default_name = ""
             default_project_dir = initial_project_dir.strip()
             default_profile_id = profiles[0].id if profiles else ""
+            default_codex_profile_id = codex_profiles[0].id if codex_profiles else default_profile_id
+            default_claude_profile_id = claude_profiles[0].id if claude_profiles else default_profile_id
             default_run_command = ""
             default_mcp_server_names = list(self.mcp_server_names)
         else:
             default_name = project.name
             default_project_dir = project.project_dir
             default_profile_id = project.profile_id
+            default_codex_profile_id = project.codex_profile_id or project.profile_id
+            default_claude_profile_id = project.claude_profile_id or project.profile_id
             default_run_command = project.run_command
             default_mcp_server_names = (
                 list(project.mcp_server_names)
@@ -766,7 +839,8 @@ class ProjectDialog(tk.Toplevel):
             )
         self.name_var = tk.StringVar(value=default_name)
         self.project_dir_var = tk.StringVar(value=default_project_dir)
-        self.profile_var = tk.StringVar()
+        self.codex_profile_var = tk.StringVar()
+        self.claude_profile_var = tk.StringVar()
         self.run_command_var = tk.StringVar(value=default_run_command)
 
         card = tk.Frame(
@@ -801,19 +875,15 @@ class ProjectDialog(tk.Toplevel):
         browse_button = make_button(card, text="浏览", variant="secondary", command=self._pick_dir)
         browse_button.grid(row=3, column=2, sticky="ew", padx=(8, 0), pady=6)
 
-        tk.Label(card, text="绑定配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=6)
-        profile_choices: list[str] = []
-        for profile in profiles:
-            label = f"{profile.name} | {profile.provider_name} | {profile.model or '-'}"
-            if label in self.profile_values:
-                label = f"{label} [{profile.id[:8]}]"
-            self.profile_values[label] = profile.id
-            profile_choices.append(label)
-            if profile.id == default_profile_id:
-                self.profile_var.set(label)
-        if not self.profile_var.get() and profile_choices:
-            self.profile_var.set(profile_choices[0])
-        ttk.Combobox(card, textvariable=self.profile_var, values=profile_choices, state="readonly", width=50).grid(
+        tk.Label(card, text="绑定 Codex", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=6)
+        codex_choices = self._profile_choices(codex_profiles, self.codex_profile_values, "codex")
+        for label, profile_id in self.codex_profile_values.items():
+            if profile_id == default_codex_profile_id:
+                self.codex_profile_var.set(label)
+                break
+        if not self.codex_profile_var.get() and codex_choices:
+            self.codex_profile_var.set(codex_choices[0])
+        ttk.Combobox(card, textvariable=self.codex_profile_var, values=codex_choices, state="readonly", width=50).grid(
             row=4,
             column=1,
             columnspan=2,
@@ -821,8 +891,24 @@ class ProjectDialog(tk.Toplevel):
             pady=6,
         )
 
-        tk.Label(card, text="运行命令", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=5, column=0, sticky="w", pady=6)
-        ttk.Entry(card, textvariable=self.run_command_var, width=52).grid(row=5, column=1, columnspan=2, sticky="ew", pady=6)
+        tk.Label(card, text="绑定 Claude", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=5, column=0, sticky="w", pady=6)
+        claude_choices = self._profile_choices(claude_profiles, self.claude_profile_values, "claude")
+        for label, profile_id in self.claude_profile_values.items():
+            if profile_id == default_claude_profile_id:
+                self.claude_profile_var.set(label)
+                break
+        if not self.claude_profile_var.get() and claude_choices:
+            self.claude_profile_var.set(claude_choices[0])
+        ttk.Combobox(card, textvariable=self.claude_profile_var, values=claude_choices, state="readonly", width=50).grid(
+            row=5,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            pady=6,
+        )
+
+        tk.Label(card, text="运行命令", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=6, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.run_command_var, width=52).grid(row=6, column=1, columnspan=2, sticky="ew", pady=6)
         tk.Label(
             card,
             text="例如 npm run dev、pnpm dev、python main.py。点击“运行项目”时会在新开的 cmd 窗口执行。",
@@ -831,11 +917,11 @@ class ProjectDialog(tk.Toplevel):
             font=("Microsoft YaHei UI", 9),
             justify="left",
             wraplength=420,
-        ).grid(row=6, column=1, columnspan=2, sticky="w", pady=(0, 6))
+        ).grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 6))
 
-        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=7, column=0, sticky="nw", pady=6)
+        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=8, column=0, sticky="nw", pady=6)
         mcp_frame = tk.Frame(card, bg=PALETTE["card_bg"])
-        mcp_frame.grid(row=7, column=1, columnspan=2, sticky="ew", pady=6)
+        mcp_frame.grid(row=8, column=1, columnspan=2, sticky="ew", pady=6)
         for column in range(2):
             mcp_frame.columnconfigure(column, weight=1)
         if self.mcp_server_names:
@@ -860,13 +946,24 @@ class ProjectDialog(tk.Toplevel):
             ).grid(row=0, column=0, sticky="w")
 
         buttons = ttk.Frame(card)
-        buttons.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=9, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存项目", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
         card.columnconfigure(1, weight=1)
         self.transient(master)
         self.grab_set()
+
+    def _profile_choices(self, profiles: list[Profile], target: dict[str, str], vendor: str) -> list[str]:
+        choices: list[str] = []
+        for profile in profiles:
+            model = profile.codex_display_model if vendor == "codex" else profile.claude_display_model
+            label = f"{profile.name} | {profile.vendor_label} | {model or '-'}"
+            if label in target:
+                label = f"{label} [{profile.id[:8]}]"
+            target[label] = profile.id
+            choices.append(label)
+        return choices
 
     def _pick_dir(self) -> None:
         current = self.project_dir_var.get().strip() or str(Path.cwd())
@@ -885,16 +982,23 @@ class ProjectDialog(tk.Toplevel):
             messagebox.showerror("校验失败", "项目目录不存在，或不是一个目录。", parent=self)
             return
 
-        selected_profile = self.profile_values.get(self.profile_var.get())
-        if not selected_profile:
-            messagebox.showerror("校验失败", "请选择要绑定的配置。", parent=self)
+        selected_codex_profile = self.codex_profile_values.get(self.codex_profile_var.get())
+        if not selected_codex_profile:
+            messagebox.showerror("校验失败", "请选择要绑定的 Codex 配置。", parent=self)
+            return
+
+        selected_claude_profile = self.claude_profile_values.get(self.claude_profile_var.get())
+        if not selected_claude_profile:
+            messagebox.showerror("校验失败", "请选择要绑定的 Claude 配置。", parent=self)
             return
 
         project_name = self.name_var.get().strip() or project_root.name or "未命名项目"
         self.result = {
             "name": project_name,
             "project_dir": str(project_root),
-            "profile_id": selected_profile,
+            "profile_id": selected_codex_profile,
+            "codex_profile_id": selected_codex_profile,
+            "claude_profile_id": selected_claude_profile,
             "run_command": self.run_command_var.get().strip(),
             "mcp_server_names": [
                 server_name
@@ -906,13 +1010,21 @@ class ProjectDialog(tk.Toplevel):
 
 
 class McpConfigDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, title: str, subtitle: str, initial_text: str = "") -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        title: str,
+        subtitle: str,
+        initial_text: str = "",
+        validator=None,
+    ) -> None:
         super().__init__(master)
         self.title(title)
         self.geometry("760x620")
         self.minsize(680, 520)
         self.configure(bg=PALETTE["app_bg"])
         self.result: str | None = None
+        self.validator = validator or parse_mcp_servers_toml
 
         card = tk.Frame(
             self,
@@ -968,8 +1080,8 @@ class McpConfigDialog(tk.Toplevel):
         content = self.text.get("1.0", "end").strip()
         if content:
             try:
-                parse_mcp_servers_toml(content)
-            except ValueError as exc:
+                self.validator(content)
+            except (ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
                 messagebox.showerror("校验失败", str(exc), parent=self)
                 return
         self.result = content

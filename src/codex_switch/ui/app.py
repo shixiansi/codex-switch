@@ -13,6 +13,7 @@ import platform
 import subprocess
 import threading
 import tkinter as tk
+import tomllib
 import webbrowser
 import sys
 from tkinter import font as tkfont
@@ -29,7 +30,19 @@ from codex_switch.codex_config import (
     render_mcp_servers_toml,
 )
 from codex_switch.health import HealthChecker
-from codex_switch.models import CurrentCodexConfig, HealthResult, Profile, ProjectRecord, now_iso, project_dir_key, today_iso
+from codex_switch.models import (
+    CurrentCodexConfig,
+    HealthResult,
+    Profile,
+    ProjectRecord,
+    VENDOR_CLAUDE,
+    VENDOR_CODEX,
+    now_iso,
+    profile_supports_claude,
+    profile_supports_codex,
+    project_dir_key,
+    today_iso,
+)
 from codex_switch.project_template import CODEX_SCRIPT_DIRNAME, ProjectTemplateService, load_default_agents_doc_text
 from codex_switch.storage import (
     DEFAULT_MODEL_BATCH_CONCURRENCY,
@@ -88,6 +101,15 @@ def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bo
     if not hide_error_profiles:
         return list(profiles)
     return [profile for profile in profiles if profile.effective_health_status != "error"]
+
+
+def profile_library_sort_key(profile: Profile) -> tuple[int, str, str]:
+    sign_in_rank = {
+        "未签到": 0,
+        "已签到": 1,
+        "无需签到": 2,
+    }.get(profile.sign_in_status, 3)
+    return sign_in_rank, profile.name.casefold(), profile.id
 
 
 def model_batch_targets(profile: Profile | None) -> list[str]:
@@ -450,10 +472,12 @@ class CodexSwitchApp:
         self.project_hint_var = tk.StringVar(value="还没有添加项目。")
         self.project_selected_name_var = tk.StringVar(value="未选择项目")
         self.project_selected_dir_var = tk.StringVar(value="-")
-        self.project_selected_profile_var = tk.StringVar(value="-")
-        self.project_selected_provider_var = tk.StringVar(value="-")
-        self.project_selected_model_var = tk.StringVar(value="-")
-        self.project_selected_key_var = tk.StringVar(value="-")
+        self.project_selected_codex_profile_var = tk.StringVar(value="-")
+        self.project_selected_claude_profile_var = tk.StringVar(value="-")
+        self.project_selected_codex_model_var = tk.StringVar(value="-")
+        self.project_selected_claude_model_var = tk.StringVar(value="-")
+        self.project_selected_codex_key_var = tk.StringVar(value="-")
+        self.project_selected_claude_key_var = tk.StringVar(value="-")
         self.project_backup_var = tk.StringVar(value="-")
         self.project_generated_var = tk.StringVar(value="-")
         self.project_script_var = tk.StringVar(value="-")
@@ -737,13 +761,17 @@ class CodexSwitchApp:
         tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         tree_wrap.columnconfigure(0, weight=1)
         tree_wrap.rowconfigure(0, weight=1)
-        self.profile_tree = ttk.Treeview(tree_wrap, columns=("name", "base_url", "model", "sign_in", "health"), show="headings")
+        self.profile_tree = ttk.Treeview(tree_wrap, columns=("name", "vendor", "base_url", "model", "sign_in", "health"), show="tree headings")
+        self.profile_tree.heading("#0", text="分组", anchor="w")
         self.profile_tree.heading("name", text="配置名", anchor="w")
+        self.profile_tree.heading("vendor", text="供应商", anchor="center")
         self.profile_tree.heading("base_url", text="API 地址", anchor="w")
         self.profile_tree.heading("model", text="默认模型", anchor="center")
         self.profile_tree.heading("sign_in", text="API签到状态", anchor="center")
         self.profile_tree.heading("health", text="状态", anchor="center")
+        self.profile_tree.column("#0", width=90, anchor="w", stretch=False)
         self.profile_tree.column("name", width=150, anchor="w")
+        self.profile_tree.column("vendor", width=72, anchor="center", stretch=False)
         self.profile_tree.column("base_url", width=220, anchor="w")
         self.profile_tree.column("model", width=130, anchor="center")
         self.profile_tree.column("sign_in", width=110, anchor="center")
@@ -790,7 +818,7 @@ class CodexSwitchApp:
         detail.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         detail.columnconfigure(1, weight=1)
         detail.columnconfigure(3, weight=1)
-        self._create_dual_info_row(detail, 0, "提供方", self.library_selected_provider_var, "默认模型", self.library_selected_model_var)
+        self._create_dual_info_row(detail, 0, "供应商", self.library_selected_provider_var, "模型", self.library_selected_model_var)
         self.library_api_link_label = self._create_link_info_row(detail, 1, "API 地址", self.library_selected_api_var, self._open_selected_api_url, wraplength=460)
         self._create_dual_info_row(detail, 2, "活动 Key", self.library_selected_key_var, "Wire API", self.library_selected_wire_var)
         self._create_info_row(detail, 3, "签到状态", self.library_selected_sign_in_status_var, wraplength=460)
@@ -840,14 +868,16 @@ class CodexSwitchApp:
         project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         project_tree_wrap.columnconfigure(0, weight=1)
         project_tree_wrap.rowconfigure(0, weight=1)
-        self.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "api", "mcp"), show="headings")
+        self.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "codex", "claude", "mcp"), show="headings")
         self.project_tree.heading("name", text="项目")
         self.project_tree.heading("dir", text="目录")
-        self.project_tree.heading("api", text="绑定 API")
+        self.project_tree.heading("codex", text="绑定 Codex")
+        self.project_tree.heading("claude", text="绑定 Claude")
         self.project_tree.heading("mcp", text="MCP")
         self.project_tree.column("name", width=180, anchor="center")
-        self.project_tree.column("dir", width=260, anchor="center")
-        self.project_tree.column("api", width=160, anchor="center")
+        self.project_tree.column("dir", width=230, anchor="center")
+        self.project_tree.column("codex", width=130, anchor="center")
+        self.project_tree.column("claude", width=130, anchor="center")
         self.project_tree.column("mcp", width=110, anchor="center")
         self.project_tree.grid(row=0, column=0, sticky="nsew")
         self.project_tree.bind("<<TreeviewSelect>>", self._on_project_selection_changed)
@@ -882,9 +912,9 @@ class CodexSwitchApp:
         )
 
         self._create_info_row(detail, 1, "项目目录", self.project_selected_dir_var, wraplength=440)
-        self._create_info_row(detail, 2, "绑定 API", self.project_selected_profile_var, wraplength=440)
-        self._create_dual_info_row(detail, 3, "提供方", self.project_selected_provider_var, "模型", self.project_selected_model_var)
-        self._create_info_row(detail, 4, "活动 Key", self.project_selected_key_var, wraplength=440)
+        self._create_dual_info_row(detail, 2, "绑定 Codex", self.project_selected_codex_profile_var, "绑定 Claude", self.project_selected_claude_profile_var)
+        self._create_dual_info_row(detail, 3, "Codex 模型", self.project_selected_codex_model_var, "Claude 模型", self.project_selected_claude_model_var)
+        self._create_dual_info_row(detail, 4, "Codex Key", self.project_selected_codex_key_var, "Claude Key", self.project_selected_claude_key_var)
         self._create_dual_info_row(detail, 5, "最近备份", self.project_backup_var, "最近生成", self.project_generated_var)
         self._create_info_row(detail, 6, "运行脚本", self.project_script_var, wraplength=440)
         self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
@@ -900,8 +930,8 @@ class CodexSwitchApp:
             "Codex 相关",
             (
                 ("生成 Codex 模板", "primary", self.generate_project_template),
+                ("修改 config.toml", "secondary", self.edit_project_codex_config),
                 ("VS Code 运行", "secondary", self.run_project_vscode),
-                ("CMD 运行", "secondary", self.run_project_cmd),
             ),
         )
         self._create_project_action_group(
@@ -910,8 +940,8 @@ class CodexSwitchApp:
             "Claude 相关",
             (
                 ("生成 Claude 模板", "primary", self.generate_claude_template),
+                ("修改 settings.local.json", "secondary", self.edit_project_claude_settings),
                 ("VS Code 打开", "secondary", self.open_project_vscode),
-                ("CMD 运行", "secondary", self.open_project_cmd),
             ),
         )
         self._create_project_action_group(
@@ -921,7 +951,7 @@ class CodexSwitchApp:
             (
                 ("运行项目", "primary", self.run_project),
                 ("打开项目文件夹", "secondary", self.open_project_folder),
-                ("项目设置/MCP", "secondary", self.edit_project),
+                ("CMD 打开", "secondary", self.open_project_cmd),
             ),
         )
 
@@ -1324,22 +1354,40 @@ class CodexSwitchApp:
             return f"{summary}（Key {profile.effective_active_api_key_index + 1}/{key_count}）"
         return summary
 
+    def _profile_model_summary(self, profile: Profile) -> str:
+        if profile.vendor == VENDOR_CODEX:
+            return f"Codex：{profile.codex_display_model}"
+        if profile.vendor == VENDOR_CLAUDE:
+            return f"Claude：{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}"
+        return (
+            f"Codex：{profile.codex_display_model}\n"
+            f"Claude：{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}"
+        )
+
     def _global_profile_choice_label(self, profile: Profile) -> str:
-        return f"{profile.name} | {profile.model or '-'} | {compact_text(profile.base_url, 42)}"
+        return f"{profile.name} | {profile.codex_display_model or '-'} | {compact_text(profile.base_url, 42)}"
 
     def _profile_from_global_choice(self) -> Profile | None:
         choice = self.global_profile_choice_var.get().strip()
         for profile in self.profiles:
+            if not profile_supports_codex(profile):
+                continue
             if self._global_profile_choice_label(profile) == choice:
                 return profile
-        return self.get_selected_profile()
+        selected = self.get_selected_profile()
+        if selected and profile_supports_codex(selected):
+            return selected
+        return None
 
     def _sync_global_profile_choice(self) -> None:
         if not hasattr(self, "global_profile_combo"):
             return
-        labels = tuple(self._global_profile_choice_label(profile) for profile in self.profiles)
+        profiles = [profile for profile in self.profiles if profile_supports_codex(profile)]
+        labels = tuple(self._global_profile_choice_label(profile) for profile in profiles)
         self.global_profile_combo.configure(values=labels, state="readonly" if labels else "disabled")
         profile = self.get_selected_profile()
+        if not profile or not profile_supports_codex(profile):
+            profile = profiles[0] if profiles else None
         if not profile:
             self.global_profile_choice_var.set("")
             self.global_profile_summary_var.set("尚未选择全局 API 配置。")
@@ -1347,7 +1395,7 @@ class CodexSwitchApp:
         self.global_profile_choice_var.set(self._global_profile_choice_label(profile))
         self.global_profile_summary_var.set(
             f"将写入：{profile.provider_name} / {profile.wire_api}\n"
-            f"模型：{profile.model or '-'}\n"
+            f"模型：{profile.codex_display_model or '-'}\n"
             f"API：{profile.base_url}\n"
             f"活动 Key：{self._profile_key_summary(profile)}"
         )
@@ -1359,17 +1407,36 @@ class CodexSwitchApp:
         key = project_dir_key(project_dir)
         return next((item for item in self.projects if project_dir_key(item.project_dir) == key), None)
 
+    def _profile_tree_iid(self, group: str, profile: Profile) -> str:
+        return f"{group}:{profile.id}"
+
+    def _profile_id_from_tree_item(self, item_id: str) -> str | None:
+        if item_id.startswith("__"):
+            return None
+        if ":" in item_id:
+            return item_id.split(":", 1)[1]
+        return item_id
+
     def _sync_profile_tree_selection(self) -> None:
         if not self.selected_profile_id or not self._profile_by_id(self.selected_profile_id):
             return
-        if not self.profile_tree.exists(self.selected_profile_id):
+        item_id = None
+        for candidate in (
+            f"{VENDOR_CODEX}:{self.selected_profile_id}",
+            f"{VENDOR_CLAUDE}:{self.selected_profile_id}",
+            self.selected_profile_id,
+        ):
+            if self.profile_tree.exists(candidate):
+                item_id = candidate
+                break
+        if item_id is None:
             return
-        if self.profile_tree.selection() == (self.selected_profile_id,):
+        if self.profile_tree.selection() == (item_id,):
             return
         self.suppress_selection_events = True
         try:
-            self.profile_tree.selection_set(self.selected_profile_id)
-            self.profile_tree.focus(self.selected_profile_id)
+            self.profile_tree.selection_set(item_id)
+            self.profile_tree.focus(item_id)
         finally:
             self.suppress_selection_events = False
 
@@ -1514,7 +1581,10 @@ class CodexSwitchApp:
             return
         selection = self.profile_tree.selection()
         if selection:
-            self.selected_profile_id = selection[0]
+            profile_id = self._profile_id_from_tree_item(selection[0])
+            if profile_id is None:
+                return
+            self.selected_profile_id = profile_id
             self._sync_global_profile_choice()
             self._sync_test_tree_selection()
             self._refresh_library_detail()
@@ -1674,20 +1744,30 @@ class CodexSwitchApp:
         try:
             for item in self.profile_tree.get_children():
                 self.profile_tree.delete(item)
-            for profile in visible_profiles:
-                self.profile_tree.insert(
-                    "",
-                    "end",
-                    iid=profile.id,
-                    values=(
-                        profile.name,
-                        compact_text(profile.base_url, 42),
-                        compact_text(profile.model or "-", 18),
-                        profile.sign_in_status,
-                        self._health_status_text(profile),
-                    ),
-                    tags=(profile.effective_health_status,),
-                )
+            groups = (
+                (VENDOR_CODEX, "Codex 配置", [profile for profile in visible_profiles if profile_supports_codex(profile)]),
+                (VENDOR_CLAUDE, "Claude 配置", [profile for profile in visible_profiles if profile_supports_claude(profile)]),
+            )
+            for group_id, group_label, group_profiles in groups:
+                parent_iid = f"__group_{group_id}__"
+                self.profile_tree.insert("", "end", iid=parent_iid, text=group_label, open=True, values=("", "", "", "", "", ""))
+                for profile in sorted(group_profiles, key=profile_library_sort_key):
+                    model = profile.codex_display_model if group_id == VENDOR_CODEX else profile.claude_display_model
+                    self.profile_tree.insert(
+                        parent_iid,
+                        "end",
+                        iid=self._profile_tree_iid(group_id, profile),
+                        text="",
+                        values=(
+                            profile.name,
+                            profile.vendor_label,
+                            compact_text(profile.base_url, 42),
+                            compact_text(model or "-", 18),
+                            profile.sign_in_status,
+                            self._health_status_text(profile),
+                        ),
+                        tags=(profile.effective_health_status,),
+                    )
             self.profile_tree.tag_configure("healthy", foreground=PALETTE["success"])
             self.profile_tree.tag_configure("degraded", foreground=PALETTE["warning"])
             self.profile_tree.tag_configure("error", foreground=PALETTE["danger"])
@@ -1722,8 +1802,8 @@ class CodexSwitchApp:
             return
 
         self.library_selected_name_var.set(profile.name)
-        self.library_selected_provider_var.set(profile.provider_name)
-        self.library_selected_model_var.set(profile.model or "-")
+        self.library_selected_provider_var.set(f"{profile.vendor_label} / {profile.provider_name}")
+        self.library_selected_model_var.set(self._profile_model_summary(profile))
         self.library_selected_api_var.set(profile.base_url)
         self.library_selected_key_var.set(self._profile_key_summary(profile))
         self.library_selected_wire_var.set(profile.wire_api)
@@ -1794,8 +1874,10 @@ class CodexSwitchApp:
             for item in self.project_tree.get_children():
                 self.project_tree.delete(item)
             for project in self.projects:
-                profile = self._profile_by_id(project.profile_id)
-                api_name = profile.name if profile else "配置已删除"
+                codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
+                claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+                codex_name = codex_profile.name if codex_profile else "配置已删除"
+                claude_name = claude_profile.name if claude_profile else "配置已删除"
                 self.project_tree.insert(
                     "",
                     "end",
@@ -1803,7 +1885,8 @@ class CodexSwitchApp:
                     values=(
                         project.name,
                         compact_text(project.project_dir, 42),
-                        compact_text(api_name, 18),
+                        compact_text(codex_name, 16),
+                        compact_text(claude_name, 16),
                         compact_text(self._project_mcp_selection_summary(project), 16),
                     ),
                 )
@@ -1824,10 +1907,12 @@ class CodexSwitchApp:
         if not project:
             self.project_selected_name_var.set("未选择项目")
             self.project_selected_dir_var.set("-")
-            self.project_selected_profile_var.set("-")
-            self.project_selected_provider_var.set("-")
-            self.project_selected_model_var.set("-")
-            self.project_selected_key_var.set("-")
+            self.project_selected_codex_profile_var.set("-")
+            self.project_selected_claude_profile_var.set("-")
+            self.project_selected_codex_model_var.set("-")
+            self.project_selected_claude_model_var.set("-")
+            self.project_selected_codex_key_var.set("-")
+            self.project_selected_claude_key_var.set("-")
             self.project_backup_var.set("-")
             self.project_generated_var.set("-")
             self.project_script_var.set("-")
@@ -1842,17 +1927,26 @@ class CodexSwitchApp:
         self.project_script_var.set(str(self._get_project_script_path(project)))
         self.project_mcp_var.set(self._project_mcp_selection_summary(project))
 
-        profile = self._profile_by_id(project.profile_id)
-        if profile:
-            self.project_selected_profile_var.set(profile.name)
-            self.project_selected_provider_var.set(profile.provider_name)
-            self.project_selected_model_var.set(profile.model or "-")
-            self.project_selected_key_var.set(self._profile_key_summary(profile))
+        codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
+        claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        if codex_profile:
+            self.project_selected_codex_profile_var.set(f"{codex_profile.name} / {codex_profile.vendor_label}")
+            self.project_selected_codex_model_var.set(codex_profile.codex_display_model)
+            self.project_selected_codex_key_var.set(self._profile_key_summary(codex_profile))
         else:
-            self.project_selected_profile_var.set("绑定配置已删除")
-            self.project_selected_provider_var.set("-")
-            self.project_selected_model_var.set("-")
-            self.project_selected_key_var.set("-")
+            self.project_selected_codex_profile_var.set("绑定配置已删除")
+            self.project_selected_codex_model_var.set("-")
+            self.project_selected_codex_key_var.set("-")
+        if claude_profile:
+            self.project_selected_claude_profile_var.set(f"{claude_profile.name} / {claude_profile.vendor_label}")
+            self.project_selected_claude_model_var.set(
+                f"{claude_profile.claude_display_model} / 兜底：{claude_profile.claude_display_fallback_model}"
+            )
+            self.project_selected_claude_key_var.set(self._profile_key_summary(claude_profile))
+        else:
+            self.project_selected_claude_profile_var.set("绑定配置已删除")
+            self.project_selected_claude_model_var.set("-")
+            self.project_selected_claude_key_var.set("-")
 
         project_root = Path(project.project_dir)
         if not project_root.exists():
@@ -1985,7 +2079,7 @@ class CodexSwitchApp:
         self.test_selected_name_var.set(profile.name)
         self.test_detail_health_var.set(self._health_status_text(profile))
         self.test_detail_provider_var.set(profile.provider_name)
-        self.test_detail_model_var.set(profile.model or "-")
+        self.test_detail_model_var.set(self._profile_model_summary(profile))
         self.test_detail_api_var.set(profile.base_url)
         self.test_detail_key_var.set(self._profile_key_summary(profile))
         self.test_detail_wire_var.set(profile.wire_api)
@@ -2074,6 +2168,8 @@ class CodexSwitchApp:
 
     def find_matching_profile(self, current: CurrentCodexConfig) -> Profile | None:
         for profile in self.profiles:
+            if not profile_supports_codex(profile):
+                continue
             if (
                 profile.base_url.rstrip("/") == (current.base_url or "").rstrip("/")
                 and profile.api_key == (current.api_key or "")
@@ -2286,6 +2382,10 @@ class CodexSwitchApp:
             api_keys=dialog.result["api_keys"],
             active_api_key_index=dialog.result["active_api_key_index"],
             model=dialog.result["model"],
+            vendor=dialog.result["vendor"],
+            codex_model=dialog.result["codex_model"],
+            claude_model=dialog.result["claude_model"],
+            claude_fallback_model=dialog.result["claude_fallback_model"],
             provider_name=dialog.result["provider_name"],
             wire_api=dialog.result["wire_api"],
             requires_sign_in=dialog.result["requires_sign_in"],
@@ -2307,7 +2407,11 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
             return
-        bound_projects = [project.name for project in self.projects if project.profile_id == profile.id]
+        bound_projects = [
+            project.name
+            for project in self.projects
+            if profile.id in {project.profile_id, project.codex_profile_id, project.claude_profile_id}
+        ]
         if bound_projects:
             messagebox.showerror("无法删除", f"以下项目仍绑定此配置：\n{', '.join(bound_projects)}", parent=self.root)
             return
@@ -2327,6 +2431,9 @@ class CodexSwitchApp:
         if not profiles:
             messagebox.showinfo("提示", "请先添加至少一套可用配置。", parent=self.root)
             return
+        if not any(profile_supports_codex(profile) for profile in profiles) or not any(profile_supports_claude(profile) for profile in profiles):
+            messagebox.showinfo("提示", "请先准备可用于 Codex 和 Claude 的配置。通用配置可同时用于两侧。", parent=self.root)
+            return
         dialog = ProjectDialog(self.root, profiles=profiles, mcp_server_names=self._available_mcp_server_names())
         self.root.wait_window(dialog)
         if not dialog.result:
@@ -2340,6 +2447,8 @@ class CodexSwitchApp:
             name=dialog.result["name"],
             run_command=dialog.result["run_command"],
             mcp_server_names=dialog.result["mcp_server_names"],
+            codex_profile_id=dialog.result["codex_profile_id"],
+            claude_profile_id=dialog.result["claude_profile_id"],
         )
         self.projects.append(project)
         self.selected_project_id = project.id
@@ -2348,9 +2457,9 @@ class CodexSwitchApp:
         self.status_var.set(f"已新增项目：{project.name}")
 
     def _sync_project_api_binding(self, project: ProjectRecord) -> bool:
-        profile = self._profile_by_id(project.profile_id)
+        profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
         if profile is None:
-            messagebox.showerror("无法同步", "当前项目绑定的配置已经不存在。", parent=self.root)
+            messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return False
         try:
             updated_paths = self.project_template_service.sync_api_binding(Path(project.project_dir), profile)
@@ -2387,11 +2496,17 @@ class CodexSwitchApp:
             name=dialog.result["name"],
             project_dir=dialog.result["project_dir"],
             profile_id=dialog.result["profile_id"],
+            codex_profile_id=dialog.result["codex_profile_id"],
+            claude_profile_id=dialog.result["claude_profile_id"],
             run_command=dialog.result["run_command"],
             mcp_server_names=dialog.result["mcp_server_names"],
             updated_at=now_iso(),
         )
-        api_binding_changed = updated.profile_id != project.profile_id or updated.project_dir != project.project_dir
+        api_binding_changed = (
+            updated.profile_id != project.profile_id
+            or updated.codex_profile_id != project.codex_profile_id
+            or updated.project_dir != project.project_dir
+        )
         self.projects = [updated if item.id == updated.id else item for item in self.projects]
         self.selected_project_id = updated.id
         self.persist_state()
@@ -2416,6 +2531,9 @@ class CodexSwitchApp:
         self.status_var.set(f"已删除项目：{project.name}")
 
     def _apply_profile_to_global_config(self, profile: Profile) -> Path | None:
+        if not profile_supports_codex(profile):
+            messagebox.showerror("切换失败", "Claude 专用配置不能写入 Codex 全局配置。", parent=self.root)
+            return None
         effective_global_mcp = self._effective_global_mcp_toml()
         try:
             backup_dir = self.manager.apply_profile(
@@ -2451,6 +2569,9 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
             return
+        if not profile_supports_codex(profile):
+            messagebox.showinfo("提示", "Claude 专用配置不能设为 Codex 当前配置。", parent=self.root)
+            return
         backup_dir = self._apply_profile_to_global_config(profile)
         if backup_dir is None:
             return
@@ -2462,10 +2583,11 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        profile = self._profile_by_id(project.profile_id)
+        profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
         if not profile:
-            messagebox.showerror("无法生成", "当前项目绑定的配置已经不存在。", parent=self.root)
+            messagebox.showerror("无法生成", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
+        claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
         project_mcp_toml = self._effective_project_mcp_toml(project)
         try:
             result = self.project_template_service.generate(
@@ -2474,6 +2596,7 @@ class CodexSwitchApp:
                 global_mcp_toml=project_mcp_toml,
                 project_mcp_toml=project_mcp_toml,
                 agents_doc_text=self.agents_doc_text,
+                claude_profile=claude_profile,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)
@@ -2492,9 +2615,14 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
+        profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        if not profile:
+            messagebox.showerror("无法生成", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
+            return
         try:
             result = self.project_template_service.generate_claude_template(
                 Path(project.project_dir),
+                profile,
                 project_mcp_toml=self._effective_project_mcp_toml(project),
                 agents_doc_text=self.agents_doc_text,
             )
@@ -2509,6 +2637,59 @@ class CodexSwitchApp:
             "生成成功",
             f"已为项目“{project.name}”生成 Claude 模板。\n\n生成文件：\n{generated}\n\n备份目录：\n{result.backup_dir}",
             parent=self.root,
+        )
+
+    def _edit_project_text_file(self, *, relative_path: str, title: str, missing_message: str, validator) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        target = Path(project.project_dir) / relative_path
+        if not target.exists():
+            messagebox.showinfo("提示", missing_message, parent=self.root)
+            return
+        try:
+            initial_text = target.read_text(encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("打开失败", f"读取配置文件失败：\n{exc}", parent=self.root)
+            return
+        dialog = McpConfigDialog(
+            self.root,
+            title=title,
+            subtitle=str(target),
+            initial_text=initial_text,
+            validator=validator,
+        )
+        self.root.wait_window(dialog)
+        if dialog.result is None:
+            return
+        try:
+            target.write_text(dialog.result.rstrip("\n") + "\n", encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("保存失败", f"写入配置文件失败：\n{exc}", parent=self.root)
+            return
+        self.status_var.set(f"已保存：{target}")
+
+    def edit_project_codex_config(self) -> None:
+        self._edit_project_text_file(
+            relative_path=".codex/home/config.toml",
+            title="修改 config.toml",
+            missing_message="未找到 .codex/home/config.toml，请先生成 Codex 模板。",
+            validator=tomllib.loads,
+        )
+
+    def edit_project_claude_settings(self) -> None:
+        def validate_json(content: str):
+            payload = json.loads(content)
+            if not isinstance(payload, dict):
+                raise ValueError("settings.local.json 必须是一个 JSON object。")
+            return payload
+
+        self._edit_project_text_file(
+            relative_path=".claude/settings.local.json",
+            title="修改 settings.local.json",
+            missing_message="未找到 .claude/settings.local.json，请先生成 Claude 模板。",
+            validator=validate_json,
         )
 
     def _get_project_script_path(self, project: ProjectRecord) -> Path:

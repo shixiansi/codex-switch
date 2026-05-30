@@ -45,11 +45,12 @@ def _build_endpoint(base_url: str, wire_api: str) -> str:
 def _pick_model(profile: Profile, override_model: str | None = None) -> str:
     if override_model and override_model.strip():
         return override_model.strip()
-    models = parse_model_names(profile.model)
+    default_model = profile.codex_display_model
+    models = parse_model_names(default_model)
     if models:
         return models[0]
-    if profile.model.strip():
-        return profile.model.strip()
+    if default_model.strip():
+        return default_model.strip()
     raise ValueError("当前配置没有可用的默认模型。")
 
 
