@@ -26,6 +26,7 @@ from codex_switch.resources import asset_path
 CODEX_SCRIPT_DIRNAME = "codex_scripts"
 CLAUDE_BASE_URL_ENV_KEY = "ANTHROPIC_BASE_URL"
 CLAUDE_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY"
+CLAUDE_AUTH_TOKEN_ENV_KEY = "ANTHROPIC_AUTH_TOKEN"
 CLAUDE_MODEL_ENV_KEY = "ANTHROPIC_MODEL"
 CLAUDE_FALLBACK_MODEL_ENV_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
 GITIGNORE_MANAGED_BEGIN = "# >>> codex-switch managed ignores >>>"
@@ -58,6 +59,13 @@ def claude_env_from_profile(profile: Profile) -> dict[str, str]:
         CLAUDE_MODEL_ENV_KEY: profile.claude_display_model,
         CLAUDE_FALLBACK_MODEL_ENV_KEY: profile.claude_display_fallback_model,
     }
+
+
+def apply_claude_profile_env(env: dict[str, str], profile: Profile) -> dict[str, str]:
+    rendered = dict(env)
+    rendered.update(claude_env_from_profile(profile))
+    rendered.pop(CLAUDE_AUTH_TOKEN_ENV_KEY, None)
+    return rendered
 
 
 def load_default_agents_doc_text() -> str:
@@ -359,8 +367,7 @@ class ProjectTemplateService:
             env = {}
         else:
             env = dict(env)
-        env.update(claude_env_from_profile(profile))
-        rendered["env"] = env
+        rendered["env"] = apply_claude_profile_env(env, profile)
         return rendered
 
     def select_project_mcp_toml(

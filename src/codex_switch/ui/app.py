@@ -48,7 +48,7 @@ from codex_switch.models import (
 from codex_switch.project_template import (
     CODEX_SCRIPT_DIRNAME,
     ProjectTemplateService,
-    claude_env_from_profile,
+    apply_claude_profile_env,
     load_default_agents_doc_text,
 )
 from codex_switch.storage import (
@@ -2864,8 +2864,7 @@ class CodexSwitchApp:
         if not profile_supports_claude(profile):
             messagebox.showerror("启动失败", "项目绑定的配置不支持 Claude。", parent=self.root)
             return
-        env = os.environ.copy()
-        env.update(claude_env_from_profile(profile))
+        env = apply_claude_profile_env(os.environ.copy(), profile)
         try:
             subprocess.Popen(
                 ["cmd.exe", "/k", "claude"],

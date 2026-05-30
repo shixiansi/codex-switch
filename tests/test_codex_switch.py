@@ -41,6 +41,7 @@ from codex_switch.models import (
 )
 from codex_switch.project_template import (
     CLAUDE_API_KEY_ENV_KEY,
+    CLAUDE_AUTH_TOKEN_ENV_KEY,
     CLAUDE_BASE_URL_ENV_KEY,
     CLAUDE_FALLBACK_MODEL_ENV_KEY,
     CLAUDE_MODEL_ENV_KEY,
@@ -48,6 +49,7 @@ from codex_switch.project_template import (
     GITIGNORE_MANAGED_BEGIN,
     GITIGNORE_MANAGED_END,
     ProjectTemplateService,
+    apply_claude_profile_env,
     claude_env_from_profile,
 )
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY, ProfileStore, clamp_model_batch_concurrency
@@ -803,6 +805,7 @@ command = "tool"
                         "permissions": {"allow": ["Bash(ls)"]},
                         "env": {
                             "EXTRA": "value",
+                            CLAUDE_AUTH_TOKEN_ENV_KEY: "token-old",
                             CLAUDE_BASE_URL_ENV_KEY: "https://old.example.com",
                             CLAUDE_API_KEY_ENV_KEY: "sk-old",
                         },
@@ -827,6 +830,7 @@ command = "tool"
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(settings["permissions"], {"allow": ["Bash(ls)"]})
             self.assertEqual(settings["env"]["EXTRA"], "value")
+            self.assertNotIn(CLAUDE_AUTH_TOKEN_ENV_KEY, settings["env"])
             self.assertEqual(settings["env"][CLAUDE_BASE_URL_ENV_KEY], "https://new-claude.example.com/v1")
             self.assertEqual(settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-active")
             self.assertEqual(settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-new")
@@ -853,6 +857,17 @@ command = "tool"
                 CLAUDE_FALLBACK_MODEL_ENV_KEY: "haiku-env",
             },
         )
+        applied_env = apply_claude_profile_env(
+            {
+                "EXTRA": "value",
+                CLAUDE_AUTH_TOKEN_ENV_KEY: "token-old",
+            },
+            profile,
+        )
+
+        self.assertEqual(applied_env["EXTRA"], "value")
+        self.assertNotIn(CLAUDE_AUTH_TOKEN_ENV_KEY, applied_env)
+        self.assertEqual(applied_env[CLAUDE_API_KEY_ENV_KEY], "sk-active")
 
 
 class McpEditorPrefillTests(unittest.TestCase):
