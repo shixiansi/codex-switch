@@ -25,8 +25,9 @@ from codex_switch.resources import asset_path
 
 CODEX_SCRIPT_DIRNAME = "codex_scripts"
 CLAUDE_BASE_URL_ENV_KEY = "ANTHROPIC_BASE_URL"
-CLAUDE_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY"
 CLAUDE_AUTH_TOKEN_ENV_KEY = "ANTHROPIC_AUTH_TOKEN"
+CLAUDE_API_KEY_ENV_KEY = CLAUDE_AUTH_TOKEN_ENV_KEY
+CLAUDE_LEGACY_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY"
 CLAUDE_MODEL_ENV_KEY = "ANTHROPIC_MODEL"
 CLAUDE_FALLBACK_MODEL_ENV_KEY = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
 GITIGNORE_MANAGED_BEGIN = "# >>> codex-switch managed ignores >>>"
@@ -62,8 +63,11 @@ def claude_env_from_profile(profile: Profile) -> dict[str, str]:
 
 
 def apply_claude_profile_env(env: dict[str, str], profile: Profile) -> dict[str, str]:
-    auth_token_key = CLAUDE_AUTH_TOKEN_ENV_KEY.casefold()
-    rendered = {key: value for key, value in env.items() if key.casefold() != auth_token_key}
+    auth_env_keys = {
+        CLAUDE_AUTH_TOKEN_ENV_KEY.casefold(),
+        CLAUDE_LEGACY_API_KEY_ENV_KEY.casefold(),
+    }
+    rendered = {key: value for key, value in env.items() if key.casefold() not in auth_env_keys}
     rendered.update(claude_env_from_profile(profile))
     return rendered
 

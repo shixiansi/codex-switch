@@ -54,6 +54,7 @@ from codex_switch.project_template import (
     CLAUDE_AUTH_TOKEN_ENV_KEY,
     CLAUDE_BASE_URL_ENV_KEY,
     CLAUDE_FALLBACK_MODEL_ENV_KEY,
+    CLAUDE_LEGACY_API_KEY_ENV_KEY,
     CLAUDE_MODEL_ENV_KEY,
     CODEX_SCRIPT_DIRNAME,
     GITIGNORE_MANAGED_BEGIN,
@@ -937,7 +938,7 @@ command = "tool"
                             CLAUDE_AUTH_TOKEN_ENV_KEY: "token-old",
                             "Anthropic_Auth_Token": "token-mixed",
                             CLAUDE_BASE_URL_ENV_KEY: "https://old.example.com",
-                            CLAUDE_API_KEY_ENV_KEY: "sk-old",
+                            CLAUDE_LEGACY_API_KEY_ENV_KEY: "sk-old",
                         },
                     }
                 ),
@@ -961,7 +962,7 @@ command = "tool"
             self.assertEqual(settings["permissions"], {"allow": ["Bash(ls)"]})
             self.assertEqual(settings["env"]["EXTRA"], "value")
             self.assertFalse(
-                any(key.casefold() == CLAUDE_AUTH_TOKEN_ENV_KEY.casefold() for key in settings["env"])
+                any(key.casefold() == CLAUDE_LEGACY_API_KEY_ENV_KEY.casefold() for key in settings["env"])
             )
             self.assertEqual(settings["env"][CLAUDE_BASE_URL_ENV_KEY], "https://new-claude.example.com/v1")
             self.assertEqual(settings["env"][CLAUDE_API_KEY_ENV_KEY], "sk-active")
@@ -969,6 +970,8 @@ command = "tool"
             self.assertEqual(settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-new")
 
     def test_claude_env_from_profile_uses_active_project_binding_values(self) -> None:
+        self.assertEqual(CLAUDE_API_KEY_ENV_KEY, "ANTHROPIC_AUTH_TOKEN")
+        self.assertEqual(CLAUDE_AUTH_TOKEN_ENV_KEY, "ANTHROPIC_AUTH_TOKEN")
         profile = Profile.create(
             "claude-env",
             "https://claude.example.com/v1/",
@@ -998,7 +1001,7 @@ command = "tool"
         )
 
         self.assertEqual(applied_env["EXTRA"], "value")
-        self.assertFalse(any(key.casefold() == CLAUDE_AUTH_TOKEN_ENV_KEY.casefold() for key in applied_env))
+        self.assertFalse(any(key.casefold() == CLAUDE_LEGACY_API_KEY_ENV_KEY.casefold() for key in applied_env))
         self.assertEqual(applied_env[CLAUDE_API_KEY_ENV_KEY], "sk-active")
 
 
