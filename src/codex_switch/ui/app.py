@@ -36,16 +36,12 @@ from codex_switch.models import (
     Profile,
     ProjectRecord,
     RouteProxyEvent,
-    RouteProxyRule,
     RouteProxySettings,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PLACEHOLDER_KEY,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
-    ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI,
-    ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
-    ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -95,6 +91,13 @@ from codex_switch.ui.styles import (
     make_button,
     make_status_badge,
     ttk,
+)
+from codex_switch.ui.route_proxy_logic import (
+    CLAUDE_ROUTE_PROXY_PROTOCOLS,
+    CODEX_ROUTE_PROXY_PROTOCOLS,
+    route_proxy_base_url_for_project,
+    route_proxy_codex_wire_api_override_for_project,
+    route_proxy_rules_for_project,
 )
 from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, project_start_script_paths, resolve_mcp_editor_text
 
@@ -178,53 +181,6 @@ def successful_model_batch_models(cache: ModelBatchCache | None) -> list[str]:
     if cache is None or not cache.completed:
         return []
     return [model for model in ordered_model_batch_models(cache.models, cache.results, True) if cache.results.get(model, ModelBatchResult()).status == "success"]
-
-
-def route_proxy_rules_for_project(
-    project: ProjectRecord,
-    codex_profile: Profile,
-    claude_profile: Profile,
-    codex_protocol: str,
-    claude_protocol: str,
-) -> list[RouteProxyRule]:
-    codex_conversion_protocols = {
-        ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
-        ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
-    }
-    codex_upstream_model = (
-        codex_profile.codex_display_model
-        if codex_protocol in codex_conversion_protocols
-        else ""
-    )
-    claude_upstream_model = (
-        claude_profile.claude_display_model
-        if claude_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
-        else ""
-    )
-    return [
-        RouteProxyRule.create(
-            project_id=project.id,
-            client_type=ROUTE_PROXY_CLIENT_CODEX,
-            primary_profile_id=codex_profile.id,
-            upstream_protocol=codex_protocol,
-            upstream_model=codex_upstream_model,
-        ),
-        RouteProxyRule.create(
-            project_id=project.id,
-            client_type=ROUTE_PROXY_CLIENT_CLAUDE,
-            primary_profile_id=claude_profile.id,
-            upstream_protocol=claude_protocol,
-            upstream_model=claude_upstream_model,
-        ),
-    ]
-
-
-def route_proxy_codex_wire_api_override(protocol: str) -> str | None:
-    if protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES:
-        return "chat_completions"
-    if protocol == ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT:
-        return "responses"
-    return None
 
 
 def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:
@@ -1118,11 +1074,7 @@ class CodexSwitchApp:
         ttk.Combobox(
             settings,
             textvariable=self.proxy_codex_protocol_var,
-            values=(
-                ROUTE_PROXY_PROTOCOL_OPENAI,
-                ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
-                ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
-            ),
+            values=CODEX_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
         ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
@@ -1130,7 +1082,7 @@ class CodexSwitchApp:
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
-            values=(ROUTE_PROXY_PROTOCOL_ANTHROPIC, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI),
+            values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
         ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
@@ -2597,9 +2549,7 @@ class CodexSwitchApp:
         return self.get_selected_project()
 
     def _route_proxy_base_url_for_project(self, project: ProjectRecord) -> str | None:
-        if not self.route_proxy_settings.project_enabled(project.id):
-            return None
-        return self.route_proxy_settings.project_base_url(project.id)
+        return route_proxy_base_url_for_project(self.route_proxy_settings, project)
 
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
@@ -2927,10 +2877,7 @@ class CodexSwitchApp:
         self.status_var.set(f"已新增项目：{project.name}")
 
     def _route_proxy_codex_wire_api_override_for_project(self, project: ProjectRecord) -> str | None:
-        for rule in self.route_proxy_settings.rules_for_project(project.id):
-            if rule.enabled and rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-                return route_proxy_codex_wire_api_override(rule.upstream_protocol)
-        return None
+        return route_proxy_codex_wire_api_override_for_project(self.route_proxy_settings, project)
 
     def _sync_project_api_binding(
         self,

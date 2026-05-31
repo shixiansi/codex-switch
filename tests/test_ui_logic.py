@@ -18,6 +18,7 @@ from codex_switch.models import (
     HealthResult,
     Profile,
     ProjectRecord,
+    RouteProxyRule,
     RouteProxySettings,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
@@ -45,11 +46,15 @@ from codex_switch.ui.app import (
     ordered_model_batch_models,
     profile_library_sort_key,
     profiles_for_library_view,
-    route_proxy_codex_wire_api_override,
-    route_proxy_rules_for_project,
     run_model_batch_requests,
     successful_model_batch_models,
     visible_profiles_for_filter,
+)
+from codex_switch.ui.route_proxy_logic import (
+    route_proxy_base_url_for_project,
+    route_proxy_codex_wire_api_override,
+    route_proxy_codex_wire_api_override_for_project,
+    route_proxy_rules_for_project,
 )
 from codex_switch.ui.utils import resolve_mcp_editor_text
 
@@ -255,6 +260,27 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES), "chat_completions")
         self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT), "responses")
         self.assertIsNone(route_proxy_codex_wire_api_override("openai_passthrough"))
+
+    def test_route_proxy_project_helpers_follow_enabled_codex_rule(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id")
+        disabled_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="profile-id",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+            enabled=False,
+        )
+        enabled_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="profile-id",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+        )
+        settings = RouteProxySettings(rules=[disabled_rule, enabled_rule])
+
+        self.assertEqual(route_proxy_base_url_for_project(settings, project), settings.project_base_url(project.id))
+        self.assertEqual(route_proxy_codex_wire_api_override_for_project(settings, project), "responses")
+        self.assertIsNone(route_proxy_base_url_for_project(RouteProxySettings(), project))
 
 
 class McpEditorPrefillTests(unittest.TestCase):
