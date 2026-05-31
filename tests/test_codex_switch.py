@@ -1237,6 +1237,7 @@ class RouteProxyTests(unittest.TestCase):
                     {"role": "user", "content": "hello"},
                 ],
                 "max_tokens": 32,
+                "tool_choice": {"type": "function", "function": {"name": "lookup"}},
                 "tools": [
                     {
                         "type": "function",
@@ -1256,6 +1257,7 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(converted["input"], [{"role": "user", "content": "hello"}])
         self.assertEqual(converted["max_output_tokens"], 32)
         self.assertEqual(converted["tools"][0]["name"], "lookup")
+        self.assertEqual(converted["tool_choice"], {"type": "function", "name": "lookup"})
 
         chat = responses_to_openai_chat_response(
             {
@@ -1398,6 +1400,7 @@ class RouteProxyTests(unittest.TestCase):
                 "instructions": "be helpful",
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
                 "max_output_tokens": 32,
+                "tool_choice": {"type": "function", "name": "lookup"},
                 "tools": [
                     {
                         "type": "function",
@@ -1415,6 +1418,7 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(converted["messages"][1], {"role": "user", "content": "hello"})
         self.assertEqual(converted["max_tokens"], 32)
         self.assertEqual(converted["tools"][0]["function"]["name"], "lookup")
+        self.assertEqual(converted["tool_choice"], {"type": "function", "function": {"name": "lookup"}})
 
         responses = openai_chat_to_responses_response(
             {
@@ -1864,6 +1868,37 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIn('"delta": "hel"', rendered)
         self.assertIn('"delta": "lo"', rendered)
         self.assertIn("event: response.completed", rendered)
+
+    def test_openai_chat_sse_tool_calls_convert_to_responses_events(self) -> None:
+        rendered = b"".join(
+            iter_openai_chat_sse_to_responses(
+                [
+                    (
+                        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+                        b'"type":"function","function":{"name":"read_file","arguments":"{\\"path\\": "}}]}}]}\n\n'
+                    ),
+                    b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"README.md\\"}"}}]}}]}\n\n',
+                    b"data: [DONE]\n\n",
+                ],
+                "responses-model",
+            )
+        ).decode("utf-8")
+        payloads = []
+        for block in rendered.strip().split("\n\n"):
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    payloads.append(json.loads(line[6:]))
+
+        completed = next(payload for payload in payloads if payload.get("type") == "response.completed")
+        output = completed["response"]["output"]
+
+        self.assertIn("event: response.function_call_arguments.delta", rendered)
+        self.assertIn("event: response.function_call_arguments.done", rendered)
+        self.assertEqual(len(output), 1)
+        self.assertEqual(output[0]["type"], "function_call")
+        self.assertEqual(output[0]["call_id"], "call_1")
+        self.assertEqual(output[0]["name"], "read_file")
+        self.assertEqual(output[0]["arguments"], '{"path": "README.md"}')
 
 
 class MainStartupTests(unittest.TestCase):

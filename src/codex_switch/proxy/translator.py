@@ -59,6 +59,30 @@ def _anthropic_tool_choice_to_openai(value: Any) -> Any:
     return "auto"
 
 
+def _chat_tool_choice_to_responses(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    if value.get("type") != "function":
+        return value
+    function = value.get("function")
+    name = (function.get("name") if isinstance(function, dict) else None) or value.get("name")
+    if name:
+        return {"type": "function", "name": name}
+    return value
+
+
+def _responses_tool_choice_to_chat(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    if value.get("type") != "function":
+        return value
+    function = value.get("function")
+    name = value.get("name") or (function.get("name") if isinstance(function, dict) else None)
+    if name:
+        return {"type": "function", "function": {"name": name}}
+    return value
+
+
 def _openai_arguments_to_dict(value: Any) -> dict:
     if isinstance(value, dict):
         return value
@@ -256,7 +280,7 @@ def openai_chat_to_responses_request(payload: dict[str, Any], upstream_model: st
             if isinstance(tool, dict) and tool.get("type") == "function"
         ]
     if "tool_choice" in payload:
-        rendered["tool_choice"] = payload["tool_choice"]
+        rendered["tool_choice"] = _chat_tool_choice_to_responses(payload["tool_choice"])
     return rendered
 
 
@@ -343,7 +367,7 @@ def openai_responses_to_chat_request(payload: dict[str, Any], upstream_model: st
         if rendered_tools:
             rendered["tools"] = rendered_tools
     if "tool_choice" in payload:
-        rendered["tool_choice"] = payload["tool_choice"]
+        rendered["tool_choice"] = _responses_tool_choice_to_chat(payload["tool_choice"])
     return rendered
 
 
@@ -641,11 +665,102 @@ def iter_openai_chat_sse_to_responses(lines: Iterable[bytes], model: str) -> Ite
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
     text_parts: list[str] = []
     message_started = False
+    message_output_index: int | None = None
+    next_output_index = 0
+    tool_states: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] = {}
 
     def event(name: str, data: dict[str, Any]) -> bytes:
         payload = dict(data)
         payload.setdefault("type", name)
         return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    def allocate_output_index() -> int:
+        nonlocal next_output_index
+        output_index = next_output_index
+        next_output_index += 1
+        return output_index
+
+    def start_message_events() -> list[bytes]:
+        nonlocal message_output_index, message_started
+        if message_started:
+            return []
+        message_started = True
+        message_output_index = allocate_output_index()
+        return [
+            event(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": message_output_index,
+                    "item": {
+                        "id": message_id,
+                        "type": "message",
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": [],
+                    },
+                },
+            ),
+            event(
+                "response.content_part.added",
+                {
+                    "type": "response.content_part.added",
+                    "item_id": message_id,
+                    "output_index": message_output_index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []},
+                },
+            ),
+        ]
+
+    def tool_item(state: dict[str, Any], status: str) -> dict[str, Any]:
+        return {
+            "id": str(state["item_id"]),
+            "type": "function_call",
+            "status": status,
+            "call_id": str(state["call_id"]),
+            "name": str(state["name"]),
+            "arguments": "" if status == "in_progress" else str(state.get("arguments") or ""),
+        }
+
+    def start_tool_events(state: dict[str, Any], *, force: bool = False) -> list[bytes]:
+        if state.get("started"):
+            return []
+        if not state.get("call_id"):
+            if not state.get("name") and not force:
+                return []
+            state["call_id"] = f"call_{uuid.uuid4().hex[:12]}"
+        if not state.get("name") and not force:
+            return []
+        state.setdefault("name", "")
+        state["started"] = True
+        state["item_id"] = f"fc_{uuid.uuid4().hex[:24]}"
+        state["output_index"] = allocate_output_index()
+        chunks = [
+            event(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": int(state["output_index"]),
+                    "item": tool_item(state, "in_progress"),
+                },
+            )
+        ]
+        for delta in state.get("pending_argument_deltas", []):
+            chunks.append(
+                event(
+                    "response.function_call_arguments.delta",
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "item_id": str(state["item_id"]),
+                        "output_index": int(state["output_index"]),
+                        "delta": str(delta),
+                    },
+                )
+            )
+        state["pending_argument_deltas"] = []
+        return chunks
 
     response = {
         "id": response_id,
@@ -669,103 +784,148 @@ def iter_openai_chat_sse_to_responses(lines: Iterable[bytes], model: str) -> Ite
             chunk = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
         choice = (chunk.get("choices") or [{}])[0]
         delta = choice.get("delta") or {}
         text = str(delta.get("content") or "")
-        if not text:
-            continue
-        if not message_started:
-            message_started = True
+        if text:
+            for chunk_part in start_message_events():
+                yield chunk_part
+            text_parts.append(text)
             yield event(
-                "response.output_item.added",
+                "response.output_text.delta",
                 {
-                    "type": "response.output_item.added",
-                    "output_index": 0,
-                    "item": {
-                        "id": message_id,
-                        "type": "message",
-                        "status": "in_progress",
-                        "role": "assistant",
-                        "content": [],
-                    },
-                },
-            )
-            yield event(
-                "response.content_part.added",
-                {
-                    "type": "response.content_part.added",
+                    "type": "response.output_text.delta",
                     "item_id": message_id,
-                    "output_index": 0,
+                    "output_index": int(message_output_index or 0),
                     "content_index": 0,
-                    "part": {"type": "output_text", "text": "", "annotations": []},
+                    "delta": text,
                 },
             )
-        text_parts.append(text)
-        yield event(
-            "response.output_text.delta",
-            {
-                "type": "response.output_text.delta",
-                "item_id": message_id,
-                "output_index": 0,
-                "content_index": 0,
-                "delta": text,
-            },
-        )
+
+        for tool_call in delta.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            try:
+                tool_index = int(tool_call.get("index") or 0)
+            except (TypeError, ValueError):
+                tool_index = 0
+            state = tool_states.setdefault(
+                tool_index,
+                {"call_id": "", "name": "", "arguments": "", "pending_argument_deltas": []},
+            )
+            if tool_call.get("id"):
+                state["call_id"] = str(tool_call["id"])
+            function = tool_call.get("function") or {}
+            if isinstance(function, dict) and function.get("name"):
+                state["name"] = str(function["name"])
+            for chunk_part in start_tool_events(state):
+                yield chunk_part
+            if isinstance(function, dict) and function.get("arguments"):
+                argument_delta = str(function["arguments"])
+                state["arguments"] += argument_delta
+                if state.get("started"):
+                    yield event(
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": str(state["item_id"]),
+                            "output_index": int(state["output_index"]),
+                            "delta": argument_delta,
+                        },
+                    )
+                else:
+                    state["pending_argument_deltas"].append(argument_delta)
 
     output_text = "".join(text_parts)
-    if not message_started:
+    completed_items: list[tuple[int, dict[str, Any]]] = []
+    has_pending_tools = any(
+        state.get("call_id") or state.get("name") or state.get("arguments")
+        for state in tool_states.values()
+    )
+    if not message_started and not has_pending_tools:
+        for chunk_part in start_message_events():
+            yield chunk_part
+    if message_started:
         yield event(
-            "response.output_item.added",
+            "response.output_text.done",
             {
-                "type": "response.output_item.added",
-                "output_index": 0,
-                "item": {
-                    "id": message_id,
-                    "type": "message",
-                    "status": "in_progress",
-                    "role": "assistant",
-                    "content": [],
-                },
+                "type": "response.output_text.done",
+                "item_id": message_id,
+                "output_index": int(message_output_index or 0),
+                "content_index": 0,
+                "text": output_text,
             },
         )
-    yield event(
-        "response.output_text.done",
-        {
-            "type": "response.output_text.done",
-            "item_id": message_id,
-            "output_index": 0,
-            "content_index": 0,
-            "text": output_text,
-        },
-    )
-    yield event(
-        "response.output_item.done",
-        {
-            "type": "response.output_item.done",
-            "output_index": 0,
-            "item": {
-                "id": message_id,
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+        yield event(
+            "response.content_part.done",
+            {
+                "type": "response.content_part.done",
+                "item_id": message_id,
+                "output_index": int(message_output_index or 0),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": output_text, "annotations": []},
             },
-        },
-    )
+        )
+        message_item = {
+            "id": message_id,
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+        }
+        yield event(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": int(message_output_index or 0),
+                "item": message_item,
+            },
+        )
+        completed_items.append((int(message_output_index or 0), message_item))
+
+    for state in tool_states.values():
+        if not state.get("started") and (state.get("call_id") or state.get("name") or state.get("arguments")):
+            for chunk_part in start_tool_events(state, force=True):
+                yield chunk_part
+        if not state.get("started"):
+            continue
+        yield event(
+            "response.function_call_arguments.done",
+            {
+                "type": "response.function_call_arguments.done",
+                "item_id": str(state["item_id"]),
+                "output_index": int(state["output_index"]),
+                "arguments": str(state.get("arguments") or ""),
+            },
+        )
+        completed_tool_item = tool_item(state, "completed")
+        yield event(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": int(state["output_index"]),
+                "item": completed_tool_item,
+            },
+        )
+        completed_items.append((int(state["output_index"]), completed_tool_item))
+
+    completed_output = [item for _index, item in sorted(completed_items, key=lambda pair: pair[0])]
     completed_response = dict(response)
     completed_response.update(
         {
             "status": "completed",
-            "output": [
-                {
-                    "id": message_id,
-                    "type": "message",
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": output_text, "annotations": []}],
-                }
-            ],
+            "output": completed_output,
             "output_text": output_text,
         }
     )
+    if usage:
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        completed_response["usage"] = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens),
+        }
     yield event("response.completed", {"type": "response.completed", "response": completed_response})
