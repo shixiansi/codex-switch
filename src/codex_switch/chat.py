@@ -5,10 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
 
-from codex_switch.models import Profile, parse_model_names
+from codex_switch.models import Profile, VENDOR_CLAUDE, parse_model_names
 
 
-SUPPORTED_WIRE_APIS = ("responses", "chat_completions")
+WIRE_API_RESPONSES = "responses"
+WIRE_API_CHAT_COMPLETIONS = "chat_completions"
+WIRE_API_ANTHROPIC_MESSAGES = "anthropic_messages"
+SUPPORTED_WIRE_APIS = (WIRE_API_RESPONSES, WIRE_API_CHAT_COMPLETIONS, WIRE_API_ANTHROPIC_MESSAGES)
 
 
 @dataclass
@@ -25,10 +28,19 @@ def _normalize_base_url(base_url: str) -> str:
 
 
 def _normalize_wire_api(wire_api: str | None) -> str:
-    normalized = (wire_api or "responses").strip() or "responses"
+    normalized = (wire_api or WIRE_API_RESPONSES).strip() or WIRE_API_RESPONSES
     if normalized not in SUPPORTED_WIRE_APIS:
         raise ValueError(f"不支持的接口标准：{normalized}")
     return normalized
+
+
+def default_wire_api_for_profile(profile: Profile) -> str:
+    if profile.vendor == VENDOR_CLAUDE:
+        return WIRE_API_ANTHROPIC_MESSAGES
+    try:
+        return _normalize_wire_api(profile.wire_api)
+    except ValueError:
+        return WIRE_API_RESPONSES
 
 
 def _build_endpoint(base_url: str, wire_api: str) -> str:
@@ -37,15 +49,22 @@ def _build_endpoint(base_url: str, wire_api: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("API 地址格式不正确，请输入形如 https://example.com 的地址。")
 
-    if _normalize_wire_api(wire_api) == "responses":
+    normalized_wire_api = _normalize_wire_api(wire_api)
+    if normalized_wire_api == WIRE_API_RESPONSES:
         return f"{base}/responses" if base.endswith("/v1") else f"{base}/v1/responses"
+    if normalized_wire_api == WIRE_API_ANTHROPIC_MESSAGES:
+        return f"{base}/messages" if base.endswith("/v1") else f"{base}/v1/messages"
     return f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
 
-def _pick_model(profile: Profile, override_model: str | None = None) -> str:
+def _pick_model(profile: Profile, override_model: str | None = None, wire_api: str | None = None) -> str:
     if override_model and override_model.strip():
         return override_model.strip()
-    default_model = profile.codex_display_model
+    default_model = (
+        profile.claude_display_model
+        if _normalize_wire_api(wire_api) == WIRE_API_ANTHROPIC_MESSAGES
+        else profile.codex_display_model
+    )
     models = parse_model_names(default_model)
     if models:
         return models[0]
@@ -73,9 +92,9 @@ class ChatTester:
             return ChatResult(ok=False, text="当前配置缺少 API Key。")
 
         try:
-            wire_api = _normalize_wire_api(wire_api_override or profile.wire_api)
+            wire_api = _normalize_wire_api(wire_api_override or default_wire_api_for_profile(profile))
             endpoint = _build_endpoint(profile.base_url, wire_api)
-            model = _pick_model(profile, model_override)
+            model = _pick_model(profile, model_override, wire_api)
             payload = self._build_payload(wire_api, model, prompt, payload_override_text)
         except ValueError as exc:
             return ChatResult(ok=False, text=str(exc))
@@ -84,12 +103,7 @@ class ChatTester:
         req = request.Request(
             url=endpoint,
             data=body,
-            headers={
-                "Authorization": f"Bearer {profile.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "CodexSwitch/1.0",
-            },
+            headers=self._build_headers(profile, wire_api),
             method="POST",
         )
 
@@ -149,17 +163,37 @@ class ChatTester:
             )
 
     def build_payload_template(self, wire_api: str) -> dict[str, Any]:
-        if _normalize_wire_api(wire_api) == "responses":
+        normalized_wire_api = _normalize_wire_api(wire_api)
+        if normalized_wire_api == WIRE_API_RESPONSES:
             return {
                 "model": "{{model}}",
                 "input": "{{prompt}}",
                 "max_output_tokens": 512,
+            }
+        if normalized_wire_api == WIRE_API_ANTHROPIC_MESSAGES:
+            return {
+                "model": "{{model}}",
+                "messages": [{"role": "user", "content": "{{prompt}}"}],
+                "max_tokens": 512,
             }
         return {
             "model": "{{model}}",
             "messages": [{"role": "user", "content": "{{prompt}}"}],
             "max_tokens": 512,
         }
+
+    def _build_headers(self, profile: Profile, wire_api: str) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "CodexSwitch/1.0",
+        }
+        if _normalize_wire_api(wire_api) == WIRE_API_ANTHROPIC_MESSAGES:
+            headers["x-api-key"] = profile.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        else:
+            headers["Authorization"] = f"Bearer {profile.api_key}"
+        return headers
 
     def _build_payload(
         self,
@@ -201,7 +235,8 @@ class ChatTester:
         )
 
     def _extract_text(self, wire_api: str, payload: dict[str, Any]) -> str:
-        if _normalize_wire_api(wire_api) == "responses":
+        normalized_wire_api = _normalize_wire_api(wire_api)
+        if normalized_wire_api == WIRE_API_RESPONSES:
             output_text = payload.get("output_text")
             if isinstance(output_text, str) and output_text.strip():
                 return output_text.strip()
@@ -216,6 +251,20 @@ class ChatTester:
                     text_value = content.get("text")
                     if isinstance(text_value, str) and text_value.strip():
                         fragments.append(text_value.strip())
+            if fragments:
+                return "\n".join(fragments)
+            return self._format_unextracted_response(payload)
+
+        if normalized_wire_api == WIRE_API_ANTHROPIC_MESSAGES:
+            fragments: list[str] = []
+            for item in payload.get("content", []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "text":
+                    continue
+                text_value = item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    fragments.append(text_value.strip())
             if fragments:
                 return "\n".join(fragments)
             return self._format_unextracted_response(payload)

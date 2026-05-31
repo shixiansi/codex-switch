@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from helpers import start_test_server
 
-from codex_switch.chat import ChatTester
-from codex_switch.models import Profile
+from codex_switch.chat import WIRE_API_ANTHROPIC_MESSAGES, ChatTester
+from codex_switch.models import Profile, VENDOR_CLAUDE
 
 
 class ChatTesterTests(unittest.TestCase):
@@ -104,6 +104,66 @@ class ChatTesterTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.text, "chat completion ok")
         self.assertEqual(result.endpoint, f"http://127.0.0.1:{server.server_port}/v1/chat/completions")
+
+    def test_send_message_with_anthropic_messages_api(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["x_api_key"] = self.headers.get("x-api-key")
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["anthropic_version"] = self.headers.get("anthropic-version")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps({"content": [{"type": "text", "text": "claude ok"}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        server = start_test_server(Handler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        tester = ChatTester(timeout=5)
+        profile = Profile.create(
+            "claude-chat",
+            f"http://127.0.0.1:{server.server_port}",
+            "sk-claude",
+            vendor=VENDOR_CLAUDE,
+            claude_model="claude-sonnet",
+        )
+
+        result = tester.send_message(profile, "ping")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.model, "claude-sonnet")
+        self.assertEqual(result.text, "claude ok")
+        self.assertEqual(result.endpoint, f"http://127.0.0.1:{server.server_port}/v1/messages")
+        self.assertEqual(captured["path"], "/v1/messages")
+        self.assertEqual(captured["x_api_key"], "sk-claude")
+        self.assertIsNone(captured["authorization"])
+        self.assertEqual(captured["anthropic_version"], "2023-06-01")
+        self.assertEqual(
+            captured["payload"],
+            {
+                "model": "claude-sonnet",
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 512,
+            },
+        )
+        self.assertEqual(
+            tester.build_payload_template(WIRE_API_ANTHROPIC_MESSAGES),
+            {
+                "model": "{{model}}",
+                "messages": [{"role": "user", "content": "{{prompt}}"}],
+                "max_tokens": 512,
+            },
+        )
 
     def test_send_message_returns_full_response_when_responses_text_is_missing(self) -> None:
         class Handler(BaseHTTPRequestHandler):

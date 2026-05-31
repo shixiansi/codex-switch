@@ -7,6 +7,7 @@ import unittest
 
 from helpers import workspace_tempdir
 
+from codex_switch.claude_config import ClaudeConfigManager
 from codex_switch.codex_config import CodexConfigManager, PROJECT_ENV_KEY, PROJECT_PROVIDER_ID, scope_mcp_servers_to_project
 from codex_switch.models import (
     DEFAULT_CLAUDE_FALLBACK_MODEL,
@@ -132,6 +133,49 @@ class CodexConfigManagerTests(unittest.TestCase):
             self.assertEqual(scoped["custom"]["env"]["PROJECT_HOME"], expected_project_dir)
             self.assertEqual(scoped["custom"]["nested"]["path"], f"{expected_project_dir}/nested")
             self.assertEqual(scoped["filesystem"]["args"][-1], f"{expected_project_dir}/allowed")
+
+
+class ClaudeConfigManagerTests(unittest.TestCase):
+    def test_apply_profile_updates_global_claude_settings(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            claude_dir = temp_dir / ".claude"
+            claude_dir.mkdir()
+            settings_path = claude_dir / "settings.json"
+            settings_path.write_text(
+                json.dumps(
+                    {
+                        "permissions": {"allow": ["Bash(git status)"]},
+                        "env": {
+                            CLAUDE_API_KEY_ENV_KEY: "token-old",
+                            CLAUDE_LEGACY_API_KEY_ENV_KEY: "sk-old",
+                            "KEEP_ME": "1",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = ClaudeConfigManager(claude_dir=claude_dir, backup_root=claude_dir / "backups")
+            profile = Profile.create(
+                "claude-global",
+                "https://claude.example.com/v1",
+                "sk-claude",
+                vendor=VENDOR_CLAUDE,
+                claude_model="sonnet-global",
+                claude_fallback_model="haiku-global",
+            )
+
+            backup_dir = manager.apply_profile(profile)
+
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            env = settings["env"]
+            self.assertTrue((backup_dir / "settings.json").exists())
+            self.assertEqual(settings["permissions"]["allow"], ["Bash(git status)"])
+            self.assertEqual(env["KEEP_ME"], "1")
+            self.assertEqual(env[CLAUDE_BASE_URL_ENV_KEY], "https://claude.example.com/v1")
+            self.assertEqual(env[CLAUDE_API_KEY_ENV_KEY], "sk-claude")
+            self.assertEqual(env[CLAUDE_MODEL_ENV_KEY], "sonnet-global")
+            self.assertEqual(env[CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-global")
+            self.assertFalse(any(key.casefold() == CLAUDE_LEGACY_API_KEY_ENV_KEY.casefold() for key in env))
 
 
 class ProjectTemplateServiceTests(unittest.TestCase):

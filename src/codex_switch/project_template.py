@@ -72,6 +72,42 @@ def apply_claude_profile_env(env: dict[str, str], profile: Profile) -> dict[str,
     return rendered
 
 
+def load_claude_settings_payload(settings_path: Path) -> dict:
+    if not settings_path.exists():
+        return {}
+    raw = settings_path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {}
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("Claude settings 必须是 JSON 对象。")
+    return payload
+
+
+def render_claude_settings_payload(
+    profile: Profile,
+    payload: dict | None = None,
+    *,
+    route_proxy_base_url: str | None = None,
+) -> dict:
+    rendered = dict(payload or {})
+    env = rendered.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    else:
+        env = dict(env)
+    rendered["env"] = apply_claude_profile_env(env, profile)
+    if route_proxy_base_url:
+        rendered["env"][CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url.rstrip("/")
+        rendered["env"][CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
+    return rendered
+
+
+def render_claude_settings(profile: Profile, *, route_proxy_base_url: str | None = None) -> str:
+    payload = render_claude_settings_payload(profile, route_proxy_base_url=route_proxy_base_url)
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
 def load_default_agents_doc_text() -> str:
     return asset_path("AGENTS.md").read_text(encoding="utf-8")
 
@@ -167,8 +203,8 @@ class ProjectTemplateService:
     def sync_claude_binding(self, project_root: Path, profile: Profile, *, route_proxy_base_url: str | None = None) -> list[Path]:
         project_root = project_root.resolve()
         settings_path = project_root / ".claude" / "settings.local.json"
-        payload = self._load_claude_settings_payload(settings_path)
-        payload = self._render_claude_settings_payload(profile, payload, route_proxy_base_url=route_proxy_base_url)
+        payload = load_claude_settings_payload(settings_path)
+        payload = render_claude_settings_payload(profile, payload, route_proxy_base_url=route_proxy_base_url)
 
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -374,19 +410,10 @@ class ProjectTemplateService:
         return files
 
     def _render_claude_settings(self, profile: Profile, *, route_proxy_base_url: str | None = None) -> str:
-        payload = self._render_claude_settings_payload(profile, route_proxy_base_url=route_proxy_base_url)
-        return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        return render_claude_settings(profile, route_proxy_base_url=route_proxy_base_url)
 
     def _load_claude_settings_payload(self, settings_path: Path) -> dict:
-        if not settings_path.exists():
-            return {}
-        raw = settings_path.read_text(encoding="utf-8").strip()
-        if not raw:
-            return {}
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise ValueError("settings.local.json 必须是 JSON 对象。")
-        return payload
+        return load_claude_settings_payload(settings_path)
 
     def _render_claude_settings_payload(
         self,
@@ -395,17 +422,7 @@ class ProjectTemplateService:
         *,
         route_proxy_base_url: str | None = None,
     ) -> dict:
-        rendered = dict(payload or {})
-        env = rendered.get("env")
-        if not isinstance(env, dict):
-            env = {}
-        else:
-            env = dict(env)
-        rendered["env"] = apply_claude_profile_env(env, profile)
-        if route_proxy_base_url:
-            rendered["env"][CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url.rstrip("/")
-            rendered["env"][CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
-        return rendered
+        return render_claude_settings_payload(profile, payload, route_proxy_base_url=route_proxy_base_url)
 
     def select_project_mcp_toml(
         self,

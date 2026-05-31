@@ -20,7 +20,14 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 
 from codex_switch import __version__
-from codex_switch.chat import SUPPORTED_WIRE_APIS, ChatResult, ChatTester
+from codex_switch.chat import (
+    SUPPORTED_WIRE_APIS,
+    WIRE_API_ANTHROPIC_MESSAGES,
+    ChatResult,
+    ChatTester,
+    default_wire_api_for_profile,
+)
+from codex_switch.claude_config import ClaudeConfigManager
 from codex_switch.codex_config import (
     CodexConfigManager,
     PROJECT_ROOT_PLACEHOLDER,
@@ -148,6 +155,13 @@ class ModelBatchCache:
     results: dict[str, ModelBatchResult]
     completed: bool = False
     tested_at: str | None = None
+
+
+@dataclass
+class GlobalApplyResult:
+    codex_backup_dir: Path | None = None
+    claude_backup_dir: Path | None = None
+    claude_settings_path: Path | None = None
 
 
 def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
@@ -446,6 +460,7 @@ class CodexSwitchApp:
         self.project_root = Path.cwd()
         self.store = ProfileStore()
         self.manager = CodexConfigManager()
+        self.claude_manager = ClaudeConfigManager()
         self.project_template_service = ProjectTemplateService()
         self.health_checker = HealthChecker()
         self.chat_tester = ChatTester()
@@ -1598,37 +1613,46 @@ class CodexSwitchApp:
         return "-"
 
     def _global_profile_choice_label(self, profile: Profile) -> str:
-        return f"{profile.name} | {profile.codex_display_model or '-'} | {compact_text(profile.base_url, 42)}"
+        models = self._profile_model_summary(profile).replace("\n", " / ")
+        return f"{profile.name} | {profile.vendor_label} | {compact_text(models, 34)} | {compact_text(profile.base_url, 42)}"
 
     def _profile_from_global_choice(self) -> Profile | None:
         choice = self.global_profile_choice_var.get().strip()
         for profile in self.profiles:
-            if not profile_supports_codex(profile):
+            if not (profile_supports_codex(profile) or profile_supports_claude(profile)):
                 continue
             if self._global_profile_choice_label(profile) == choice:
                 return profile
         selected = self.get_selected_profile()
-        if selected and profile_supports_codex(selected):
+        if selected and (profile_supports_codex(selected) or profile_supports_claude(selected)):
             return selected
         return None
 
     def _sync_global_profile_choice(self) -> None:
         if not hasattr(self, "global_profile_combo"):
             return
-        profiles = [profile for profile in self.profiles if profile_supports_codex(profile)]
+        profiles = [
+            profile
+            for profile in self.profiles
+            if profile_supports_codex(profile) or profile_supports_claude(profile)
+        ]
         labels = tuple(self._global_profile_choice_label(profile) for profile in profiles)
         self.global_profile_combo.configure(values=labels, state="readonly" if labels else "disabled")
         profile = self.get_selected_profile()
-        if not profile or not profile_supports_codex(profile):
+        if not profile or not (profile_supports_codex(profile) or profile_supports_claude(profile)):
             profile = profiles[0] if profiles else None
         if not profile:
             self.global_profile_choice_var.set("")
             self.global_profile_summary_var.set("尚未选择全局 API 配置。")
             return
         self.global_profile_choice_var.set(self._global_profile_choice_label(profile))
+        targets: list[str] = []
+        if profile_supports_codex(profile):
+            targets.append(f"Codex：{profile.provider_name} / {profile.wire_api} / {profile.codex_display_model or '-'}")
+        if profile_supports_claude(profile):
+            targets.append(f"Claude：anthropic_messages / {profile.claude_display_model or '-'}")
         self.global_profile_summary_var.set(
-            f"将写入：{profile.provider_name} / {profile.wire_api}\n"
-            f"模型：{profile.codex_display_model or '-'}\n"
+            f"将写入：{'; '.join(targets)}\n"
             f"API：{profile.base_url}\n"
             f"活动 Key：{self._profile_key_summary(profile)}"
         )
@@ -3019,53 +3043,83 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已删除项目：{project.name}")
 
-    def _apply_profile_to_global_config(self, profile: Profile) -> Path | None:
-        if not profile_supports_codex(profile):
-            messagebox.showerror("切换失败", "Claude 专用配置不能写入 Codex 全局配置。", parent=self.root)
+    def _apply_profile_to_global_config(self, profile: Profile) -> GlobalApplyResult | None:
+        supports_codex = profile_supports_codex(profile)
+        supports_claude = profile_supports_claude(profile)
+        if not supports_codex and not supports_claude:
+            messagebox.showerror("切换失败", "当前配置不能写入 Codex 或 Claude 全局配置。", parent=self.root)
             return None
+        result = GlobalApplyResult()
         effective_global_mcp = self._effective_global_mcp_toml()
-        try:
-            backup_dir = self.manager.apply_profile(
-                profile,
-                global_mcp_toml=effective_global_mcp,
-                previous_managed_mcp_server_names=self.applied_global_mcp_server_names,
-            )
-        except Exception as exc:
-            messagebox.showerror("切换失败", f"写入 Codex 配置失败：\n{exc}", parent=self.root)
-            self.status_var.set("切换失败")
-            return None
-        self.applied_global_mcp_server_names = self._safe_mcp_server_names(effective_global_mcp)
+        if supports_codex:
+            try:
+                result.codex_backup_dir = self.manager.apply_profile(
+                    profile,
+                    global_mcp_toml=effective_global_mcp,
+                    previous_managed_mcp_server_names=self.applied_global_mcp_server_names,
+                )
+            except Exception as exc:
+                messagebox.showerror("切换失败", f"写入 Codex 配置失败：\n{exc}", parent=self.root)
+                self.status_var.set("切换失败")
+                return None
+            self.applied_global_mcp_server_names = self._safe_mcp_server_names(effective_global_mcp)
+        if supports_claude:
+            try:
+                result.claude_backup_dir = self.claude_manager.apply_profile(profile)
+                result.claude_settings_path = self.claude_manager.settings_path
+            except Exception as exc:
+                messagebox.showerror("切换失败", f"写入 Claude 配置失败：\n{exc}", parent=self.root)
+                self.status_var.set("切换失败")
+                return None
         self.selected_profile_id = profile.id
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_library_tab()
         self.refresh_test_tab()
-        return backup_dir
+        return result
+
+    def _global_apply_targets(self, result: GlobalApplyResult) -> str:
+        targets = []
+        if result.codex_backup_dir is not None:
+            targets.append("Codex")
+        if result.claude_backup_dir is not None:
+            targets.append("Claude")
+        return " / ".join(targets)
+
+    def _global_apply_detail(self, result: GlobalApplyResult) -> str:
+        parts: list[str] = []
+        if result.codex_backup_dir is not None:
+            parts.append(f"Codex 备份位置：\n{result.codex_backup_dir}")
+        if result.claude_backup_dir is not None:
+            parts.append(f"Claude settings：\n{result.claude_settings_path}\nClaude 备份位置：\n{result.claude_backup_dir}")
+        return "\n\n".join(parts)
 
     def apply_global_profile(self) -> None:
         profile = self._profile_from_global_choice()
         if not profile:
             messagebox.showinfo("提示", "请先新增或选择一套全局 API 配置。", parent=self.root)
             return
-        backup_dir = self._apply_profile_to_global_config(profile)
-        if backup_dir is None:
+        result = self._apply_profile_to_global_config(profile)
+        if result is None:
             return
-        self.status_var.set(f"已写入全局 Codex 配置：{profile.name}")
-        messagebox.showinfo("写入成功", f"已写入全局 Codex 配置“{profile.name}”。\n\n备份位置：\n{backup_dir}", parent=self.root)
+        targets = self._global_apply_targets(result)
+        self.status_var.set(f"已写入全局配置：{profile.name}（{targets}）")
+        messagebox.showinfo("写入成功", f"已写入全局配置“{profile.name}”。\n\n{self._global_apply_detail(result)}", parent=self.root)
 
     def apply_selected_profile(self) -> None:
         profile = self.get_selected_profile()
         if not profile:
             messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
             return
-        if not profile_supports_codex(profile):
-            messagebox.showinfo("提示", "Claude 专用配置不能设为 Codex 当前配置。", parent=self.root)
+        if not (profile_supports_codex(profile) or profile_supports_claude(profile)):
+            messagebox.showinfo("提示", "当前配置不能设为全局配置。", parent=self.root)
             return
-        backup_dir = self._apply_profile_to_global_config(profile)
-        if backup_dir is None:
+        result = self._apply_profile_to_global_config(profile)
+        if result is None:
             return
-        self.status_var.set(f"已切换到 {profile.name}，并已备份原配置。")
-        messagebox.showinfo("切换成功", f"已切换到配置“{profile.name}”。\n\n备份位置：\n{backup_dir}", parent=self.root)
+        targets = self._global_apply_targets(result)
+        self.status_var.set(f"已切换到 {profile.name}（{targets}），并已备份原配置。")
+        messagebox.showinfo("切换成功", f"已切换到配置“{profile.name}”。\n\n{self._global_apply_detail(result)}", parent=self.root)
 
     def generate_project_template(self) -> None:
         project = self.get_selected_project()
@@ -3370,7 +3424,7 @@ class CodexSwitchApp:
     def _mark_health_check_complete(self) -> None:
         self.status_var.set("健康检测已完成，模型测试页会同步显示接口返回模型。")
 
-    def _chat_model_options(self, profile: Profile) -> list[str]:
+    def _chat_model_options(self, profile: Profile, wire_api: str | None = None) -> list[str]:
         cache = self._model_batch_cache(profile)
         if cache is not None and cache.completed:
             success_models = successful_model_batch_models(cache)
@@ -3380,7 +3434,15 @@ class CodexSwitchApp:
             for model in profile.health.models:
                 if model not in models:
                     models.append(model)
-        return models or ["-"]
+        if models:
+            return models
+        effective_wire_api = wire_api or self.chat_wire_choice_var.get().strip() or default_wire_api_for_profile(profile)
+        fallback_model = (
+            profile.claude_display_model
+            if effective_wire_api == WIRE_API_ANTHROPIC_MESSAGES
+            else profile.codex_display_model
+        )
+        return [fallback_model] if fallback_model else ["-"]
 
     def _chat_payload_templates(self) -> dict[str, str]:
         templates: dict[str, str] = {}
@@ -3419,7 +3481,8 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showinfo("提示", "请先选择一套测试配置。", parent=self.root)
             return
-        options = self._chat_model_options(profile)
+        selected_wire = self.chat_wire_choice_var.get().strip() or default_wire_api_for_profile(profile)
+        options = self._chat_model_options(profile, selected_wire)
         dialog = ChatSettingsDialog(
             self.root,
             model_values=options,
@@ -3455,13 +3518,13 @@ class CodexSwitchApp:
             self._append_chat_line("系统", "请选择左侧测试列表中的一套配置，再开始测试对话。")
             return
 
-        options = self._chat_model_options(profile)
         keep_history = self.chat_profile_id == profile.id
+        current_wire = self.chat_wire_choice_var.get().strip()
+        default_wire = default_wire_api_for_profile(profile)
+        next_wire = current_wire if keep_history and current_wire in SUPPORTED_WIRE_APIS else default_wire
+        options = self._chat_model_options(profile, next_wire)
         current_choice = self.chat_model_choice_var.get().strip()
         next_choice = current_choice if keep_history and current_choice and current_choice != "-" else options[0]
-        current_wire = self.chat_wire_choice_var.get().strip()
-        default_wire = profile.wire_api if profile.wire_api in SUPPORTED_WIRE_APIS else SUPPORTED_WIRE_APIS[0]
-        next_wire = current_wire if keep_history and current_wire in SUPPORTED_WIRE_APIS else default_wire
         should_reset_payload = not keep_history or next_wire != current_wire or not self.chat_request_body_text.strip()
 
         self.chat_profile_id = profile.id
