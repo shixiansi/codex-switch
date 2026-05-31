@@ -45,6 +45,10 @@ def project_root_path(project: ProjectRecord) -> Path:
     return Path(project.project_dir)
 
 
+def project_text_file_path(project: ProjectRecord, relative_path: str) -> Path:
+    return project_root_path(project) / relative_path
+
+
 def project_codex_script_paths(project: ProjectRecord) -> tuple[Path, Path]:
     return project_start_script_paths(project.project_dir)
 

@@ -65,6 +65,7 @@ from codex_switch.ui.project_logic import (
     project_codex_vscode_command,
     project_custom_run_command,
     project_root_path,
+    project_text_file_path,
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
@@ -273,6 +274,10 @@ class UiFilterTests(unittest.TestCase):
             script_root = temp_dir / CODEX_SCRIPT_DIRNAME
 
             self.assertEqual(project_root_path(project), temp_dir)
+            self.assertEqual(
+                project_text_file_path(project, ".codex/home/config.toml"),
+                temp_dir / ".codex" / "home" / "config.toml",
+            )
             self.assertEqual(ps1_path, script_root / "start-codex.ps1")
             self.assertEqual(cmd_path, script_root / "start-codex.cmd")
             self.assertEqual(preferred_project_script_path(project), ps1_path)

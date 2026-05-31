@@ -105,6 +105,7 @@ from codex_switch.ui.project_logic import (
     project_codex_vscode_command,
     project_custom_run_command,
     project_root_path,
+    project_text_file_path,
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
@@ -2162,8 +2163,9 @@ class CodexSwitchApp:
                         compact_text(self._project_mcp_selection_summary(project), 16),
                     ),
                 )
-                if Path(project.project_dir).exists():
-                    status = self.project_template_service.inspect(Path(project.project_dir))
+                project_root = project_root_path(project)
+                if project_root.exists():
+                    status = self.project_template_service.inspect(project_root)
                     if status.generated_paths:
                         generated_count += 1
         finally:
@@ -2286,7 +2288,7 @@ class CodexSwitchApp:
             self.project_selected_claude_model_var.set("-")
             self.project_selected_claude_key_var.set("-")
 
-        project_root = Path(project.project_dir)
+        project_root = project_root_path(project)
         if not project_root.exists():
             self.project_backup_var.set("项目目录不存在")
             self.project_generated_var.set("项目目录不存在，尚未生成模板。")
@@ -2903,6 +2905,7 @@ class CodexSwitchApp:
     ) -> bool:
         updated_paths: list[Path] = []
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
+        project_root = project_root_path(project)
         if sync_codex:
             codex_profile = self._profile_by_id(project_codex_profile_id(project))
             if codex_profile is None:
@@ -2911,7 +2914,7 @@ class CodexSwitchApp:
             try:
                 updated_paths.extend(
                     self.project_template_service.sync_api_binding(
-                        Path(project.project_dir),
+                        project_root,
                         codex_profile,
                         route_proxy_base_url=route_proxy_base_url,
                         wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
@@ -2930,7 +2933,7 @@ class CodexSwitchApp:
             try:
                 updated_paths.extend(
                     self.project_template_service.sync_claude_binding(
-                        Path(project.project_dir),
+                        project_root,
                         claude_profile,
                         route_proxy_base_url=route_proxy_base_url,
                     )
@@ -3067,7 +3070,7 @@ class CodexSwitchApp:
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         try:
             result = self.project_template_service.generate(
-                Path(project.project_dir),
+                project_root_path(project),
                 profile,
                 global_mcp_toml=project_mcp_toml,
                 project_mcp_toml=project_mcp_toml,
@@ -3099,7 +3102,7 @@ class CodexSwitchApp:
             return
         try:
             result = self.project_template_service.generate_claude_template(
-                Path(project.project_dir),
+                project_root_path(project),
                 profile,
                 project_mcp_toml=self._effective_project_mcp_toml(project),
                 agents_doc_text=self.agents_doc_text,
@@ -3123,7 +3126,7 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        target = Path(project.project_dir) / relative_path
+        target = project_text_file_path(project, relative_path)
         if not target.exists():
             messagebox.showinfo("提示", missing_message, parent=self.root)
             return
@@ -3221,7 +3224,7 @@ class CodexSwitchApp:
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         try:
             self.project_template_service.sync_claude_binding(
-                Path(project.project_dir),
+                project_root_path(project),
                 profile,
                 route_proxy_base_url=route_proxy_base_url,
             )
