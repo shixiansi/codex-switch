@@ -5,7 +5,7 @@ import json
 import os
 
 from codex_switch.codex_config import load_default_global_mcp_toml
-from codex_switch.models import Profile, ProjectRecord
+from codex_switch.models import Profile, ProjectRecord, RouteProxySettings
 from codex_switch.project_template import load_default_agents_doc_text
 
 
@@ -34,17 +34,17 @@ class ProfileStore:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.storage_path = self.root_dir / "profiles.json"
 
-    def load(self) -> tuple[list[Profile], str | None, list[ProjectRecord], str | None, bool, str, list[str], bool, str, int, dict]:
+    def load(self) -> tuple[list[Profile], str | None, list[ProjectRecord], str | None, bool, str, list[str], bool, str, int, dict, RouteProxySettings]:
         default_global_mcp_toml = load_default_global_mcp_toml()
         default_agents_doc_text = load_default_agents_doc_text()
         if not self.storage_path.exists():
-            return [], None, [], None, False, default_global_mcp_toml, [], False, default_agents_doc_text, DEFAULT_MODEL_BATCH_CONCURRENCY, {}
+            return [], None, [], None, False, default_global_mcp_toml, [], False, default_agents_doc_text, DEFAULT_MODEL_BATCH_CONCURRENCY, {}, RouteProxySettings()
 
         try:
             with self.storage_path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except (json.JSONDecodeError, OSError):
-            return [], None, [], None, False, default_global_mcp_toml, [], False, default_agents_doc_text, DEFAULT_MODEL_BATCH_CONCURRENCY, {}
+            return [], None, [], None, False, default_global_mcp_toml, [], False, default_agents_doc_text, DEFAULT_MODEL_BATCH_CONCURRENCY, {}, RouteProxySettings()
 
         profiles = [Profile.from_dict(item) for item in payload.get("profiles", [])]
         selected_profile_id = payload.get("selected_profile_id")
@@ -63,6 +63,7 @@ class ProfileStore:
         agents_doc_text = default_agents_doc_text
         model_batch_concurrency = DEFAULT_MODEL_BATCH_CONCURRENCY
         model_batch_cache_by_profile: dict = {}
+        route_proxy_settings = RouteProxySettings()
         if isinstance(settings_payload, dict):
             global_mcp_opt_out = bool(settings_payload.get("global_mcp_opt_out", False))
             if "global_mcp_toml" in settings_payload:
@@ -82,6 +83,7 @@ class ProfileStore:
             stored_model_batch_cache = settings_payload.get("model_batch_cache_by_profile", {})
             if isinstance(stored_model_batch_cache, dict):
                 model_batch_cache_by_profile = stored_model_batch_cache
+            route_proxy_settings = RouteProxySettings.from_dict(settings_payload.get("route_proxy"))
         return (
             profiles,
             selected_profile_id,
@@ -94,6 +96,7 @@ class ProfileStore:
             agents_doc_text,
             model_batch_concurrency,
             model_batch_cache_by_profile,
+            route_proxy_settings,
         )
 
     def save(
@@ -109,11 +112,14 @@ class ProfileStore:
         agents_doc_text: str | None = None,
         model_batch_concurrency: int = DEFAULT_MODEL_BATCH_CONCURRENCY,
         model_batch_cache_by_profile: dict | None = None,
+        route_proxy_settings: RouteProxySettings | None = None,
     ) -> None:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
+        if route_proxy_settings is None:
+            route_proxy_settings = RouteProxySettings()
         payload = {
-            "version": 7,
+            "version": 8,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,
@@ -128,6 +134,7 @@ class ProfileStore:
                 "agents_doc_text": agents_doc_text,
                 "model_batch_concurrency": clamp_model_batch_concurrency(model_batch_concurrency),
                 "model_batch_cache_by_profile": dict(model_batch_cache_by_profile or {}),
+                "route_proxy": route_proxy_settings.to_dict(),
             },
         }
         with self.storage_path.open("w", encoding="utf-8") as handle:

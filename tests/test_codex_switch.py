@@ -30,6 +30,13 @@ from codex_switch.models import (
     HealthResult,
     Profile,
     ProjectRecord,
+    RouteProxyRule,
+    RouteProxySettings,
+    ROUTE_PROXY_CLIENT_CLAUDE,
+    ROUTE_PROXY_CLIENT_CODEX,
+    ROUTE_PROXY_PLACEHOLDER_KEY,
+    ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+    ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -39,6 +46,8 @@ from codex_switch.models import (
     profile_supports_codex,
     today_iso,
 )
+from codex_switch.proxy import RouteProxyServer, anthropic_to_openai_request, openai_to_anthropic_response
+from codex_switch.proxy.translator import iter_openai_sse_to_anthropic
 from codex_switch.project_template import (
     CLAUDE_API_KEY_ENV_KEY,
     CLAUDE_AUTH_TOKEN_ENV_KEY,
@@ -105,6 +114,7 @@ class ProfileStoreTests(unittest.TestCase):
                 agents_doc_text,
                 model_batch_concurrency,
                 model_batch_cache_by_profile,
+                route_proxy_settings,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -126,6 +136,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertTrue(agents_doc_text.strip())
             self.assertEqual(model_batch_concurrency, DEFAULT_MODEL_BATCH_CONCURRENCY)
             self.assertEqual(model_batch_cache_by_profile, {})
+            self.assertFalse(route_proxy_settings.enabled)
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -136,8 +147,34 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 7)
+            self.assertEqual(payload["version"], 8)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
+
+    def test_store_persists_route_proxy_settings(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            settings = RouteProxySettings(
+                enabled=True,
+                port=17890,
+                rules=[
+                    RouteProxyRule.create(
+                        project_id="project-1",
+                        client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                        primary_profile_id="profile-1",
+                        upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                    )
+                ],
+            )
+
+            store.save([], None, route_proxy_settings=settings)
+            loaded = store.load()[11]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(loaded.port, 17890)
+            self.assertEqual(loaded.rules[0].project_id, "project-1")
+            self.assertEqual(loaded.rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+            self.assertEqual(payload["settings"]["route_proxy"]["rules"][0]["primary_profile_id"], "profile-1")
 
     def test_store_persists_project_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -720,6 +757,34 @@ args = ["-y", "server", "/tmp"]
             self.assertEqual(claude_settings["env"][CLAUDE_MODEL_ENV_KEY], "sonnet-special")
             self.assertEqual(claude_settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "haiku-special")
 
+    def test_generate_with_route_proxy_writes_proxy_endpoint_and_placeholder_key(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", codex_model="codex-model")
+            claude_profile = Profile.create(
+                "claude",
+                "https://claude.example.com",
+                "sk-claude",
+                vendor=VENDOR_CLAUDE,
+                claude_model="sonnet-proxy",
+            )
+
+            service.generate(
+                temp_dir,
+                codex_profile,
+                claude_profile=claude_profile,
+                route_proxy_base_url="http://127.0.0.1:15721/project/p1",
+            )
+
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            provider = runtime_config_data["model_providers"][PROJECT_PROVIDER_ID]
+            claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(provider["base_url"], "http://127.0.0.1:15721/project/p1")
+            self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
+            self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], "http://127.0.0.1:15721/project/p1")
+            self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
+
     def test_generate_claude_template_does_not_write_codex_config(self) -> None:
         with workspace_tempdir() as temp_dir:
             service = ProjectTemplateService()
@@ -793,6 +858,32 @@ command = "tool"
             self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)
             self.assertNotIn("requires_openai_auth", provider)
             self.assertEqual(env_path.read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}=sk-new-active\nEXTRA=value\n")
+
+    def test_sync_bindings_with_route_proxy_writes_placeholder_values(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", codex_model="gpt-real")
+            claude_profile = Profile.create(
+                "claude",
+                "https://claude.example.com",
+                "sk-claude",
+                vendor=VENDOR_CLAUDE,
+                claude_model="sonnet-real",
+            )
+            service.generate(temp_dir, codex_profile, claude_profile=claude_profile)
+            route_proxy_base_url = "http://127.0.0.1:15721/project/project-1"
+
+            service.sync_api_binding(temp_dir, codex_profile, route_proxy_base_url=route_proxy_base_url)
+            service.sync_claude_binding(temp_dir, claude_profile, route_proxy_base_url=route_proxy_base_url)
+
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            provider = runtime_config_data["model_providers"][PROJECT_PROVIDER_ID]
+            claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(provider["base_url"], route_proxy_base_url)
+            self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
+            self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], route_proxy_base_url)
+            self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
 
     def test_sync_claude_binding_updates_settings_env_and_preserves_existing_fields(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -970,6 +1061,365 @@ class HealthCheckerTests(unittest.TestCase):
         self.assertEqual(result.status, "error")
         self.assertEqual(result.http_status, 401)
         self.assertIn("鉴权失败", result.detail)
+
+
+class RouteProxyTests(unittest.TestCase):
+    def _serve(self, handler_cls: type[BaseHTTPRequestHandler]) -> ThreadingHTTPServer:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def test_openai_passthrough_rewrites_auth_and_preserves_query_once(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["x_api_key"] = self.headers.get("x-api-key")
+                body = json.dumps({"data": [{"id": "gpt-proxy"}]}).encode("utf-8")
+                self.send_response(200 if self.path == "/root/v1/models?after=abc" else 418)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}/root", "sk-upstream")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                )
+            ]
+        )
+        events = []
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile], events.append)
+
+        status, _headers, body, chunks = proxy.handle(
+            method="GET",
+            raw_path="/project/project-1/v1/models?after=abc",
+            headers={"Authorization": "Bearer placeholder", "x-api-key": "placeholder"},
+            body=b"",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertIn("gpt-proxy", body.decode("utf-8") if body else "")
+        self.assertEqual(captured["path"], "/root/v1/models?after=abc")
+        self.assertEqual(captured["authorization"], "Bearer sk-upstream")
+        self.assertIsNone(captured["x_api_key"])
+        self.assertEqual(events[-1].client_type, ROUTE_PROXY_CLIENT_CODEX)
+
+    def test_anthropic_passthrough_uses_x_api_key(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["x_api_key"] = self.headers.get("x-api-key")
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["anthropic_version"] = self.headers.get("anthropic-version")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "ok"}],
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("claude", f"http://127.0.0.1:{upstream.server_port}", "sk-claude", vendor=VENDOR_CLAUDE)
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "sonnet", "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertIn("msg_1", body.decode("utf-8") if body else "")
+        self.assertEqual(captured["path"], "/v1/messages")
+        self.assertEqual(captured["x_api_key"], "sk-claude")
+        self.assertIsNone(captured["authorization"])
+        self.assertEqual(captured["anthropic_version"], "2023-06-01")
+        self.assertEqual(captured["payload"], {"model": "sonnet", "messages": [{"role": "user", "content": "hi"}]})
+
+    def test_anthropic_to_openai_converts_tools_and_tool_results(self) -> None:
+        converted = anthropic_to_openai_request(
+            {
+                "model": "claude-sonnet",
+                "system": [{"type": "text", "text": "be precise"}],
+                "messages": [
+                    {"role": "user", "content": "inspect file"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "I will inspect it."},
+                            {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "README.md"}},
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [{"type": "text", "text": "done"}]},
+                        ],
+                    },
+                ],
+                "tools": [
+                    {
+                        "name": "read_file",
+                        "description": "Read a file",
+                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    }
+                ],
+                "tool_choice": {"type": "tool", "name": "read_file"},
+            },
+            "gpt-5",
+        )
+
+        self.assertEqual(converted["model"], "gpt-5")
+        self.assertEqual(converted["messages"][0], {"role": "system", "content": "be precise"})
+        self.assertEqual(converted["messages"][2]["tool_calls"][0]["function"]["name"], "read_file")
+        self.assertEqual(json.loads(converted["messages"][2]["tool_calls"][0]["function"]["arguments"]), {"path": "README.md"})
+        self.assertEqual(converted["messages"][3], {"role": "tool", "tool_call_id": "toolu_1", "content": "done"})
+        self.assertEqual(converted["tools"][0]["function"]["parameters"]["properties"]["path"]["type"], "string")
+        self.assertEqual(converted["tool_choice"], {"type": "function", "function": {"name": "read_file"}})
+
+        anthropic = openai_to_anthropic_response(
+            {
+                "id": "chatcmpl_1",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "read_file", "arguments": "{\"path\": \"README.md\"}"},
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+            },
+            "claude-sonnet",
+        )
+
+        self.assertEqual(anthropic["stop_reason"], "tool_use")
+        self.assertEqual(anthropic["usage"], {"input_tokens": 11, "output_tokens": 7})
+        self.assertEqual(anthropic["content"][0]["type"], "tool_use")
+        self.assertEqual(anthropic["content"][0]["input"], {"path": "README.md"})
+
+    def test_anthropic_to_openai_route_converts_request_and_response(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "chatcmpl_1",
+                        "choices": [{"finish_reason": "stop", "message": {"content": "converted ok"}}],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("openai", f"http://127.0.0.1:{upstream.server_port}", "sk-openai", codex_model="gpt-5")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps(
+            {
+                "model": "claude-sonnet",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 64,
+            }
+        ).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={"x-api-key": "placeholder"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(captured["path"], "/v1/chat/completions")
+        self.assertEqual(captured["authorization"], "Bearer sk-openai")
+        self.assertEqual(captured["payload"]["model"], "gpt-5")
+        self.assertEqual(captured["payload"]["messages"], [{"role": "user", "content": "hi"}])
+        self.assertEqual(response_payload["type"], "message")
+        self.assertEqual(response_payload["content"], [{"type": "text", "text": "converted ok"}])
+        self.assertEqual(response_payload["usage"], {"input_tokens": 3, "output_tokens": 2})
+
+    def test_anthropic_to_openai_route_converts_streaming_response(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b"".join(
+                    [
+                        b'data: {"choices":[{"delta":{"content":"stream "}}]}\n\n',
+                        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+                        b"data: [DONE]\n\n",
+                    ]
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("openai", f"http://127.0.0.1:{upstream.server_port}", "sk-openai", codex_model="gpt-5")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps(
+            {
+                "model": "claude-sonnet",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        ).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={},
+            body=request_body,
+        )
+
+        rendered = b"".join(chunks or []).decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIsNone(body)
+        self.assertEqual(headers["content-type"], "text/event-stream")
+        self.assertIn("event: message_start", rendered)
+        self.assertIn("\"text\": \"stream \"", rendered)
+        self.assertIn("\"text\": \"ok\"", rendered)
+        self.assertIn("event: message_stop", rendered)
+
+    def test_anthropic_to_openai_rejects_unsupported_multimodal_blocks(self) -> None:
+        profile = Profile.create("openai", "http://127.0.0.1:1", "sk-openai")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps(
+            {
+                "model": "claude-sonnet",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}],
+                    }
+                ],
+            }
+        ).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIsNone(chunks)
+        self.assertIn("Unsupported content block", body.decode("utf-8") if body else "")
+
+    def test_openai_sse_chunks_convert_to_anthropic_events(self) -> None:
+        rendered = b"".join(
+            iter_openai_sse_to_anthropic(
+                [
+                    b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+                    b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+                    b"data: [DONE]\n\n",
+                ],
+                "claude-sonnet",
+            )
+        ).decode("utf-8")
+
+        self.assertIn("event: message_start", rendered)
+        self.assertIn("\"type\": \"text_delta\", \"text\": \"hel\"", rendered)
+        self.assertIn("\"type\": \"text_delta\", \"text\": \"lo\"", rendered)
+        self.assertIn("event: content_block_stop", rendered)
+        self.assertIn("event: message_stop", rendered)
 
 
 class MainStartupTests(unittest.TestCase):

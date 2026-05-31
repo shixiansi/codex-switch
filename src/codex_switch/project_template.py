@@ -19,7 +19,7 @@ from codex_switch.codex_config import (
     scope_mcp_servers_to_project,
     timestamp_label,
 )
-from codex_switch.models import Profile
+from codex_switch.models import Profile, ROUTE_PROXY_PLACEHOLDER_KEY
 from codex_switch.resources import asset_path
 
 
@@ -112,7 +112,7 @@ class ProjectTemplateStatus:
 
 
 class ProjectTemplateService:
-    def sync_api_binding(self, project_root: Path, profile: Profile) -> list[Path]:
+    def sync_api_binding(self, project_root: Path, profile: Profile, *, route_proxy_base_url: str | None = None) -> list[Path]:
         project_root = project_root.resolve()
         repo_config_path = project_root / ".codex" / "config.toml"
         runtime_config_path = project_root / ".codex" / "home" / "config.toml"
@@ -135,7 +135,7 @@ class ProjectTemplateService:
             providers = config.setdefault("model_providers", {})
             provider = providers.setdefault(PROJECT_PROVIDER_ID, {})
             provider.setdefault("name", profile.provider_name)
-            provider["base_url"] = profile.base_url.rstrip("/")
+            provider["base_url"] = (route_proxy_base_url or profile.base_url).rstrip("/")
             provider["wire_api"] = profile.wire_api
             provider["env_key"] = PROJECT_ENV_KEY
             provider.pop("requires_openai_auth", None)
@@ -145,16 +145,19 @@ class ProjectTemplateService:
         if repo_config_path.exists() or runtime_config_path.exists() or env_path.exists():
             env_path.parent.mkdir(parents=True, exist_ok=True)
             existing_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-            env_path.write_text(self._render_local_env_with_key(existing_env, profile.api_key), encoding="utf-8")
+            env_path.write_text(
+                self._render_local_env_with_key(existing_env, ROUTE_PROXY_PLACEHOLDER_KEY if route_proxy_base_url else profile.api_key),
+                encoding="utf-8",
+            )
             updated_paths.append(env_path)
 
         return updated_paths
 
-    def sync_claude_binding(self, project_root: Path, profile: Profile) -> list[Path]:
+    def sync_claude_binding(self, project_root: Path, profile: Profile, *, route_proxy_base_url: str | None = None) -> list[Path]:
         project_root = project_root.resolve()
         settings_path = project_root / ".claude" / "settings.local.json"
         payload = self._load_claude_settings_payload(settings_path)
-        payload = self._render_claude_settings_payload(profile, payload)
+        payload = self._render_claude_settings_payload(profile, payload, route_proxy_base_url=route_proxy_base_url)
 
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -169,6 +172,7 @@ class ProjectTemplateService:
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
+        route_proxy_base_url: str | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         codex_dir = project_root / ".codex"
@@ -185,6 +189,7 @@ class ProjectTemplateService:
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=agents_doc_text,
             claude_profile=claude_profile,
+            route_proxy_base_url=route_proxy_base_url,
         )
 
         generated_paths: list[Path] = []
@@ -208,6 +213,7 @@ class ProjectTemplateService:
         *,
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
+        route_proxy_base_url: str | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         backup_root = project_root / ".claude" / "template-backups"
@@ -219,6 +225,7 @@ class ProjectTemplateService:
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=agents_doc_text,
             profile=profile,
+            route_proxy_base_url=route_proxy_base_url,
         )
 
         generated_paths: list[Path] = []
@@ -286,6 +293,7 @@ class ProjectTemplateService:
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
+        route_proxy_base_url: str | None = None,
     ) -> dict[str, str]:
         effective_project_mcp_toml = project_mcp_toml or global_mcp_toml
         agents_content = self._render_agents_file(agents_doc_text)
@@ -309,16 +317,20 @@ class ProjectTemplateService:
                     profile,
                     global_mcp_toml=effective_project_mcp_toml,
                     project_root=project_root,
+                    base_url_override=route_proxy_base_url,
                 )
             ),
             ".codex/home/AGENTS.md": agents_content,
         }
+        if route_proxy_base_url:
+            files[".codex/local.env"] = self._render_local_env(ROUTE_PROXY_PLACEHOLDER_KEY)
         files.update(
             self._render_claude_files(
                 project_root,
                 project_mcp_toml=effective_project_mcp_toml,
                 agents_doc_text=agents_doc_text,
                 profile=claude_profile,
+                route_proxy_base_url=route_proxy_base_url,
             )
         )
         return files
@@ -330,6 +342,7 @@ class ProjectTemplateService:
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
         profile: Profile | None = None,
+        route_proxy_base_url: str | None = None,
     ) -> dict[str, str]:
         agents_content = self._render_agents_file(agents_doc_text)
         files = {
@@ -342,11 +355,11 @@ class ProjectTemplateService:
             ),
         }
         if profile is not None:
-            files[".claude/settings.local.json"] = self._render_claude_settings(profile)
+            files[".claude/settings.local.json"] = self._render_claude_settings(profile, route_proxy_base_url=route_proxy_base_url)
         return files
 
-    def _render_claude_settings(self, profile: Profile) -> str:
-        payload = self._render_claude_settings_payload(profile)
+    def _render_claude_settings(self, profile: Profile, *, route_proxy_base_url: str | None = None) -> str:
+        payload = self._render_claude_settings_payload(profile, route_proxy_base_url=route_proxy_base_url)
         return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
     def _load_claude_settings_payload(self, settings_path: Path) -> dict:
@@ -360,7 +373,13 @@ class ProjectTemplateService:
             raise ValueError("settings.local.json 必须是 JSON 对象。")
         return payload
 
-    def _render_claude_settings_payload(self, profile: Profile, payload: dict | None = None) -> dict:
+    def _render_claude_settings_payload(
+        self,
+        profile: Profile,
+        payload: dict | None = None,
+        *,
+        route_proxy_base_url: str | None = None,
+    ) -> dict:
         rendered = dict(payload or {})
         env = rendered.get("env")
         if not isinstance(env, dict):
@@ -368,6 +387,9 @@ class ProjectTemplateService:
         else:
             env = dict(env)
         rendered["env"] = apply_claude_profile_env(env, profile)
+        if route_proxy_base_url:
+            rendered["env"][CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url.rstrip("/")
+            rendered["env"][CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
         return rendered
 
     def select_project_mcp_toml(

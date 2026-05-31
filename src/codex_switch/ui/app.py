@@ -35,18 +35,30 @@ from codex_switch.models import (
     HealthResult,
     Profile,
     ProjectRecord,
+    RouteProxyEvent,
+    RouteProxyRule,
+    RouteProxySettings,
+    ROUTE_PROXY_CLIENT_CLAUDE,
+    ROUTE_PROXY_CLIENT_CODEX,
+    ROUTE_PROXY_PLACEHOLDER_KEY,
+    ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+    ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
     VENDOR_OTHER,
+    normalize_route_proxy_port,
     now_iso,
     profile_supports_claude,
     profile_supports_codex,
     project_dir_key,
     today_iso,
 )
+from codex_switch.proxy import RouteProxyServer
 from codex_switch.project_template import (
     CODEX_SCRIPT_DIRNAME,
+    CLAUDE_API_KEY_ENV_KEY,
+    CLAUDE_BASE_URL_ENV_KEY,
     ProjectTemplateService,
     apply_claude_profile_env,
     load_default_agents_doc_text,
@@ -431,6 +443,7 @@ class CodexSwitchApp:
                 load_state[9] if len(load_state) >= 10 else DEFAULT_MODEL_BATCH_CONCURRENCY
             )
             raw_model_batch_cache_by_profile = load_state[10] if len(load_state) >= 11 else {}
+            self.route_proxy_settings = load_state[11] if len(load_state) >= 12 else RouteProxySettings()
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -442,7 +455,13 @@ class CodexSwitchApp:
             self.agents_doc_text = load_default_agents_doc_text()
             self.model_batch_concurrency = DEFAULT_MODEL_BATCH_CONCURRENCY
             raw_model_batch_cache_by_profile = {}
+            self.route_proxy_settings = RouteProxySettings()
         self.mcp_page_servers: dict[str, dict] = {}
+        self.route_proxy_server = RouteProxyServer(
+            lambda: self.route_proxy_settings,
+            lambda: self.profiles,
+            self._record_route_proxy_event,
+        )
 
         self.current_config: CurrentCodexConfig | None = None
         self.chat_profile_id: str | None = None
@@ -463,6 +482,8 @@ class CodexSwitchApp:
         self.refresh_all()
         self.persist_state()
         self._schedule_sign_in_status_refresh()
+        if self.route_proxy_settings.enabled:
+            self.start_route_proxy(show_errors=False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _init_variables(self) -> None:
@@ -514,6 +535,14 @@ class CodexSwitchApp:
         self.project_script_var = tk.StringVar(value="-")
         self.project_run_var = tk.StringVar(value="-")
         self.project_mcp_var = tk.StringVar(value="-")
+
+        self.proxy_status_var = tk.StringVar(value="未启动")
+        self.proxy_host_var = tk.StringVar(value=self.route_proxy_settings.host)
+        self.proxy_port_var = tk.StringVar(value=str(self.route_proxy_settings.port))
+        self.proxy_hint_var = tk.StringVar(value="项目级代理默认关闭。启用项目后生成模板会指向本地代理。")
+        self.proxy_selected_project_var = tk.StringVar(value="未选择项目")
+        self.proxy_selected_rules_var = tk.StringVar(value="-")
+        self.proxy_claude_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_ANTHROPIC)
 
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
@@ -597,6 +626,7 @@ class CodexSwitchApp:
             ("global", "全局配置"),
             ("library", "配置库"),
             ("project", "项目配置"),
+            ("proxy", "路由代理"),
             ("test", "模型测试"),
             ("mcp", "MCP配置"),
             ("docs", "文档配置"),
@@ -613,6 +643,7 @@ class CodexSwitchApp:
         self.global_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.library_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.project_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
+        self.proxy_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.mcp_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.docs_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.settings_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
@@ -621,6 +652,7 @@ class CodexSwitchApp:
             "global": self.global_tab,
             "library": self.library_tab,
             "project": self.project_tab,
+            "proxy": self.proxy_tab,
             "mcp": self.mcp_tab,
             "docs": self.docs_tab,
             "settings": self.settings_tab,
@@ -632,6 +664,7 @@ class CodexSwitchApp:
         self._build_global_tab(self.global_tab)
         self._build_library_tab(self.library_tab)
         self._build_project_tab(self.project_tab)
+        self._build_proxy_tab(self.proxy_tab)
         self._build_mcp_tab(self.mcp_tab)
         self._build_docs_tab(self.docs_tab)
         self._build_settings_tab(self.settings_tab)
@@ -1005,6 +1038,98 @@ class CodexSwitchApp:
                 ("打开项目文件夹", "secondary", self.open_project_folder),
             ),
         )
+
+    def _build_proxy_tab(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=5)
+        content.columnconfigure(1, weight=6)
+        content.rowconfigure(0, weight=1)
+
+        left = self._make_card(content)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(3, weight=1)
+        tk.Label(left, text="路由代理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        tk.Label(left, textvariable=self.proxy_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        settings = tk.Frame(left, bg=PALETTE["card_bg"])
+        settings.grid(row=2, column=0, sticky="ew")
+        settings.columnconfigure(1, weight=1)
+        tk.Label(settings, text="监听地址", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_host_var, width=18).grid(row=0, column=1, sticky="w", pady=4)
+        tk.Label(settings, text="端口", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w", padx=(16, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_port_var, width=8).grid(row=0, column=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Combobox(
+            settings,
+            textvariable=self.proxy_claude_protocol_var,
+            values=(ROUTE_PROXY_PROTOCOL_ANTHROPIC, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI),
+            state="readonly",
+            width=28,
+        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
+
+        proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
+        proxy_tree_wrap.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        proxy_tree_wrap.columnconfigure(0, weight=1)
+        proxy_tree_wrap.rowconfigure(0, weight=1)
+        self.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "enabled"), show="headings")
+        for column, title, width in (
+            ("name", "项目", 160),
+            ("codex", "Codex", 120),
+            ("claude", "Claude", 120),
+            ("enabled", "代理", 80),
+        ):
+            self.proxy_project_tree.heading(column, text=title)
+            self.proxy_project_tree.column(column, width=width, anchor="center")
+        self.proxy_project_tree.grid(row=0, column=0, sticky="nsew")
+        self.proxy_project_tree.bind("<<TreeviewSelect>>", self._on_proxy_project_selection_changed)
+        proxy_scroll = ttk.Scrollbar(proxy_tree_wrap, orient="vertical", command=self.proxy_project_tree.yview)
+        proxy_scroll.grid(row=0, column=1, sticky="ns")
+        self.proxy_project_tree.configure(yscrollcommand=proxy_scroll.set)
+
+        actions = tk.Frame(left, bg=PALETTE["card_bg"])
+        actions.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        for column in range(4):
+            actions.columnconfigure(column, weight=1)
+        make_button(actions, text="保存设置", variant="secondary", command=self.save_route_proxy_settings).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="启动代理", variant="primary", command=self.start_route_proxy).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="停止代理", variant="danger", command=self.stop_route_proxy).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(actions, text="刷新", variant="secondary", command=self.refresh_proxy_tab).grid(row=0, column=3, sticky="ew")
+        make_button(actions, text="启用项目代理", variant="primary", command=self.enable_route_proxy_for_project).grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(8, 0))
+        make_button(actions, text="关闭项目代理", variant="secondary", command=self.disable_route_proxy_for_project).grid(row=1, column=2, columnspan=2, sticky="ew", pady=(8, 0))
+
+        right = self._make_card(content)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(5, weight=1)
+        tk.Label(right, textvariable=self.proxy_status_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        self._create_info_row(right, 1, "选中项目", self.proxy_selected_project_var, wraplength=460)
+        self._create_info_row(right, 2, "当前规则", self.proxy_selected_rules_var, wraplength=460)
+        tk.Label(right, text="最近代理日志", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=3, column=0, sticky="w", pady=(16, 6))
+        log_wrap = tk.Frame(right, bg=PALETTE["card_bg"])
+        log_wrap.grid(row=5, column=0, sticky="nsew")
+        log_wrap.columnconfigure(0, weight=1)
+        log_wrap.rowconfigure(0, weight=1)
+        self.proxy_log_text = tk.Text(
+            log_wrap,
+            height=18,
+            wrap="word",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            font=self.small_font,
+            bg="#FBFDFE",
+            fg=PALETTE["text"],
+            state="disabled",
+        )
+        self.proxy_log_text.grid(row=0, column=0, sticky="nsew")
+        proxy_log_scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=self.proxy_log_text.yview)
+        proxy_log_scroll.grid(row=0, column=1, sticky="ns")
+        self.proxy_log_text.configure(yscrollcommand=proxy_log_scroll.set)
 
     def _build_mcp_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1554,6 +1679,23 @@ class CodexSwitchApp:
         finally:
             self.suppress_selection_events = False
 
+    def _sync_proxy_project_selection(self) -> None:
+        if not hasattr(self, "proxy_project_tree"):
+            return
+        if not self.selected_project_id or not self._project_by_id(self.selected_project_id):
+            return
+        if self.proxy_project_tree.selection() == (self.selected_project_id,):
+            return
+        if not self.proxy_project_tree.exists(self.selected_project_id):
+            return
+        self.suppress_selection_events = True
+        try:
+            self.proxy_project_tree.selection_set(self.selected_project_id)
+            self.proxy_project_tree.focus(self.selected_project_id)
+            self.proxy_project_tree.see(self.selected_project_id)
+        finally:
+            self.suppress_selection_events = False
+
     def _current_status_counts(self) -> tuple[int, int, int, int]:
         total = len(self.profiles)
         healthy = sum(1 for profile in self.profiles if profile.effective_health_status == "healthy")
@@ -1696,6 +1838,18 @@ class CodexSwitchApp:
         if selection:
             self.selected_project_id = selection[0]
             self._refresh_project_detail()
+            self._sync_proxy_project_selection()
+            self._refresh_proxy_detail()
+
+    def _on_proxy_project_selection_changed(self, _event: object | None = None) -> None:
+        if self.suppress_selection_events:
+            return
+        selection = self.proxy_project_tree.selection()
+        if selection:
+            self.selected_project_id = selection[0]
+            self._sync_project_tree_selection()
+            self._refresh_project_detail()
+            self._refresh_proxy_detail()
 
     def _on_mcp_server_selection_changed(self, _event: object | None = None) -> None:
         if self.suppress_selection_events:
@@ -1752,10 +1906,11 @@ class CodexSwitchApp:
         self.refresh_global_tab()
         self.refresh_library_tab()
         self.refresh_project_tab()
+        self.refresh_proxy_tab()
         self.refresh_mcp_tab()
         self.refresh_settings_tab()
         self.refresh_test_tab()
-        self.status_var.set("已刷新全局配置、配置库、项目配置、MCP配置、文档配置、设置和模型测试。")
+        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、MCP配置、文档配置、设置和模型测试。")
 
     def refresh_settings_tab(self) -> None:
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
@@ -1988,6 +2143,68 @@ class CodexSwitchApp:
 
         self.project_hint_var.set(f"共 {len(self.projects)} 个项目，已生成模板 {generated_count} 个。")
         self._refresh_project_detail()
+        self.refresh_proxy_tab()
+
+    def refresh_proxy_tab(self) -> None:
+        if not hasattr(self, "proxy_project_tree"):
+            return
+        self.proxy_host_var.set(self.route_proxy_settings.host)
+        self.proxy_port_var.set(str(self.route_proxy_settings.port))
+        self.proxy_status_var.set(
+            f"代理运行中：{self.route_proxy_settings.base_url}"
+            if self.route_proxy_server.is_running
+            else f"代理未启动：{self.route_proxy_settings.base_url}"
+        )
+        self.suppress_selection_events = True
+        try:
+            for item in self.proxy_project_tree.get_children():
+                self.proxy_project_tree.delete(item)
+            for project in self.projects:
+                codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
+                claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+                self.proxy_project_tree.insert(
+                    "",
+                    "end",
+                    iid=project.id,
+                    values=(
+                        project.name,
+                        compact_text(codex_profile.name if codex_profile else "配置已删除", 16),
+                        compact_text(claude_profile.name if claude_profile else "配置已删除", 16),
+                        "已启用" if self.route_proxy_settings.project_enabled(project.id) else "未启用",
+                    ),
+                )
+        finally:
+            self.suppress_selection_events = False
+        self._sync_proxy_project_selection()
+        self._refresh_proxy_detail()
+        self._render_proxy_log()
+
+    def _refresh_proxy_detail(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            self.proxy_selected_project_var.set("未选择项目")
+            self.proxy_selected_rules_var.set("-")
+            return
+        self.proxy_selected_project_var.set(f"{project.name}    {project.project_dir}")
+        rules = self.route_proxy_settings.rules_for_project(project.id)
+        if not rules:
+            self.proxy_selected_rules_var.set("未启用代理。")
+            return
+        summaries: list[str] = []
+        for rule in rules:
+            profile = self._profile_by_id(rule.primary_profile_id)
+            profile_name = profile.name if profile else "配置已删除"
+            summaries.append(f"{rule.client_type} / {rule.model_pattern} / {rule.upstream_protocol} -> {profile_name}")
+        self.proxy_selected_rules_var.set("\n".join(summaries))
+
+    def _render_proxy_log(self) -> None:
+        if not hasattr(self, "proxy_log_text"):
+            return
+        lines = [
+            f"{event.timestamp} [{event.level}] {event.message}"
+            for event in reversed(self.route_proxy_settings.events[-30:])
+        ]
+        self._set_text_content(self.proxy_log_text, "\n".join(lines) if lines else "暂无代理日志。", disabled=True)
 
     def _refresh_project_detail(self) -> None:
         project = self.get_selected_project()
@@ -2290,6 +2507,7 @@ class CodexSwitchApp:
                     if self._profile_by_id(profile_id) is not None
                 }
             ),
+            self.route_proxy_settings,
         )
 
     def save_settings(self) -> None:
@@ -2300,8 +2518,118 @@ class CodexSwitchApp:
         self.status_var.set("已保存设置。")
 
     def on_close(self) -> None:
+        self.route_proxy_server.stop()
         _release_single_instance()
         self.root.destroy()
+
+    def _selected_proxy_project(self) -> ProjectRecord | None:
+        if hasattr(self, "proxy_project_tree"):
+            selection = self.proxy_project_tree.selection()
+            if selection:
+                return self._project_by_id(selection[0])
+        return self.get_selected_project()
+
+    def _route_proxy_base_url_for_project(self, project: ProjectRecord) -> str | None:
+        if not self.route_proxy_settings.project_enabled(project.id):
+            return None
+        return self.route_proxy_settings.project_base_url(project.id)
+
+    def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
+        self.route_proxy_settings.append_event(event)
+        self.root.after(0, self._render_proxy_log)
+
+    def save_route_proxy_settings(self) -> bool:
+        self.route_proxy_settings.host = self.proxy_host_var.get().strip() or self.route_proxy_settings.host
+        raw_port = self.proxy_port_var.get().strip() or str(self.route_proxy_settings.port)
+        try:
+            int(raw_port)
+        except ValueError:
+            messagebox.showerror("保存失败", "代理端口必须是数字。", parent=self.root)
+            return False
+        self.route_proxy_settings.port = normalize_route_proxy_port(raw_port)
+        self.persist_state()
+        self.refresh_proxy_tab()
+        self.status_var.set("路由代理设置已保存。")
+        return True
+
+    def start_route_proxy(self, show_errors: bool = True) -> None:
+        if not self.save_route_proxy_settings():
+            return
+        self.route_proxy_settings.enabled = True
+        try:
+            self.route_proxy_server.start()
+        except Exception as exc:
+            self.route_proxy_settings.enabled = False
+            if show_errors:
+                messagebox.showerror("启动失败", f"路由代理启动失败：\n{exc}", parent=self.root)
+            self.status_var.set("路由代理启动失败")
+            self.persist_state()
+            return
+        self.persist_state()
+        self.refresh_proxy_tab()
+        self.status_var.set(f"路由代理已启动：{self.route_proxy_settings.base_url}")
+
+    def stop_route_proxy(self) -> None:
+        self.route_proxy_server.stop()
+        self.route_proxy_settings.enabled = False
+        self.persist_state()
+        self.refresh_proxy_tab()
+        self.status_var.set("路由代理已停止。")
+
+    def enable_route_proxy_for_project(self) -> None:
+        project = self._selected_proxy_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        codex_profile_id = project.codex_profile_id or project.profile_id
+        codex_profile = self._profile_by_id(codex_profile_id)
+        if codex_profile is None:
+            messagebox.showerror("无法启用", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
+            return
+        claude_protocol = self.proxy_claude_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_ANTHROPIC
+        claude_profile_id = (
+            codex_profile_id
+            if claude_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
+            else (project.claude_profile_id or project.profile_id)
+        )
+        if self._profile_by_id(claude_profile_id) is None:
+            messagebox.showerror("无法启用", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
+            return
+        self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
+        self.route_proxy_settings.rules.extend(
+            [
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=codex_profile_id,
+                ),
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=claude_profile_id,
+                    upstream_protocol=claude_protocol,
+                ),
+            ]
+        )
+        self.persist_state()
+        self.refresh_proxy_tab()
+        if self._sync_project_api_binding(project):
+            self.refresh_project_tab()
+            self.refresh_proxy_tab()
+            self.status_var.set(f"已启用项目路由代理并同步配置：{project.name}")
+
+    def disable_route_proxy_for_project(self) -> None:
+        project = self._selected_proxy_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
+        self.persist_state()
+        self.refresh_proxy_tab()
+        if self._sync_project_api_binding(project):
+            self.refresh_project_tab()
+            self.refresh_proxy_tab()
+            self.status_var.set(f"已关闭项目路由代理并同步配置：{project.name}")
 
     def ensure_window_visible(self) -> None:
         self.root.update_idletasks()
@@ -2556,13 +2884,20 @@ class CodexSwitchApp:
         sync_claude: bool = True,
     ) -> bool:
         updated_paths: list[Path] = []
+        route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         if sync_codex:
             codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
             if codex_profile is None:
                 messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
                 return False
             try:
-                updated_paths.extend(self.project_template_service.sync_api_binding(Path(project.project_dir), codex_profile))
+                updated_paths.extend(
+                    self.project_template_service.sync_api_binding(
+                        Path(project.project_dir),
+                        codex_profile,
+                        route_proxy_base_url=route_proxy_base_url,
+                    )
+                )
             except Exception as exc:
                 messagebox.showerror("同步失败", f"项目记录已保存，但同步 Codex API 配置失败：\n{exc}", parent=self.root)
                 self.status_var.set("Codex API 配置同步失败")
@@ -2574,7 +2909,13 @@ class CodexSwitchApp:
                 messagebox.showerror("无法同步", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
                 return False
             try:
-                updated_paths.extend(self.project_template_service.sync_claude_binding(Path(project.project_dir), claude_profile))
+                updated_paths.extend(
+                    self.project_template_service.sync_claude_binding(
+                        Path(project.project_dir),
+                        claude_profile,
+                        route_proxy_base_url=route_proxy_base_url,
+                    )
+                )
             except Exception as exc:
                 messagebox.showerror("同步失败", f"项目记录已保存，但同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
                 self.status_var.set("Claude settings.local.json 同步失败")
@@ -2711,6 +3052,7 @@ class CodexSwitchApp:
             return
         claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
         project_mcp_toml = self._effective_project_mcp_toml(project)
+        route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         try:
             result = self.project_template_service.generate(
                 Path(project.project_dir),
@@ -2719,6 +3061,7 @@ class CodexSwitchApp:
                 project_mcp_toml=project_mcp_toml,
                 agents_doc_text=self.agents_doc_text,
                 claude_profile=claude_profile,
+                route_proxy_base_url=route_proxy_base_url,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)
@@ -2747,6 +3090,7 @@ class CodexSwitchApp:
                 profile,
                 project_mcp_toml=self._effective_project_mcp_toml(project),
                 agents_doc_text=self.agents_doc_text,
+                route_proxy_base_url=self._route_proxy_base_url_for_project(project),
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入 Claude 项目模板失败：\n{exc}", parent=self.root)
@@ -2864,12 +3208,20 @@ class CodexSwitchApp:
         if not profile_supports_claude(profile):
             messagebox.showerror("启动失败", "项目绑定的配置不支持 Claude。", parent=self.root)
             return
+        route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         try:
-            self.project_template_service.sync_claude_binding(Path(project.project_dir), profile)
+            self.project_template_service.sync_claude_binding(
+                Path(project.project_dir),
+                profile,
+                route_proxy_base_url=route_proxy_base_url,
+            )
         except Exception as exc:
             messagebox.showerror("启动失败", f"同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
             return
         env = apply_claude_profile_env(os.environ.copy(), profile)
+        if route_proxy_base_url:
+            env[CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url
+            env[CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
         try:
             subprocess.Popen(
                 ["cmd.exe", "/k", "claude"],
