@@ -1,9 +1,28 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from codex_switch.models import ProjectRecord
 from codex_switch.ui.utils import project_start_script_paths
+
+
+@dataclass(frozen=True)
+class CodexProjectTemplateOptions:
+    project_root: Path
+    global_mcp_toml: str
+    project_mcp_toml: str
+    agents_doc_text: str
+    route_proxy_base_url: str | None
+    codex_wire_api_override: str | None
+
+
+@dataclass(frozen=True)
+class ClaudeProjectTemplateOptions:
+    project_root: Path
+    project_mcp_toml: str
+    agents_doc_text: str
+    route_proxy_base_url: str | None
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -47,6 +66,39 @@ def project_root_path(project: ProjectRecord) -> Path:
 
 def project_text_file_path(project: ProjectRecord, relative_path: str) -> Path:
     return project_root_path(project) / relative_path
+
+
+def codex_project_template_options(
+    project: ProjectRecord,
+    *,
+    project_mcp_toml: str,
+    agents_doc_text: str,
+    route_proxy_base_url: str | None,
+    codex_wire_api_override: str | None,
+) -> CodexProjectTemplateOptions:
+    return CodexProjectTemplateOptions(
+        project_root=project_root_path(project),
+        global_mcp_toml=project_mcp_toml,
+        project_mcp_toml=project_mcp_toml,
+        agents_doc_text=agents_doc_text,
+        route_proxy_base_url=route_proxy_base_url,
+        codex_wire_api_override=codex_wire_api_override,
+    )
+
+
+def claude_project_template_options(
+    project: ProjectRecord,
+    *,
+    project_mcp_toml: str,
+    agents_doc_text: str,
+    route_proxy_base_url: str | None,
+) -> ClaudeProjectTemplateOptions:
+    return ClaudeProjectTemplateOptions(
+        project_root=project_root_path(project),
+        project_mcp_toml=project_mcp_toml,
+        agents_doc_text=agents_doc_text,
+        route_proxy_base_url=route_proxy_base_url,
+    )
 
 
 def project_codex_script_paths(project: ProjectRecord) -> tuple[Path, Path]:

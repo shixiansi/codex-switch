@@ -53,6 +53,8 @@ from codex_switch.ui.app import (
     visible_profiles_for_filter,
 )
 from codex_switch.ui.project_logic import (
+    claude_project_template_options,
+    codex_project_template_options,
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -298,6 +300,34 @@ class UiFilterTests(unittest.TestCase):
             )
             self.assertEqual(project_codex_cmd_command(cmd_path), ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(project_claude_cmd_command(), ("cmd.exe", "/k", "claude"))
+
+    def test_project_template_option_helpers_build_service_inputs(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id")
+
+        codex_options = codex_project_template_options(
+            project,
+            project_mcp_toml="mcp-toml",
+            agents_doc_text="# Agents\n",
+            route_proxy_base_url="http://127.0.0.1:15721/project/p1",
+            codex_wire_api_override="responses",
+        )
+        claude_options = claude_project_template_options(
+            project,
+            project_mcp_toml="mcp-toml",
+            agents_doc_text="# Agents\n",
+            route_proxy_base_url="http://127.0.0.1:15721/project/p1",
+        )
+
+        self.assertEqual(codex_options.project_root, Path.cwd())
+        self.assertEqual(codex_options.global_mcp_toml, "mcp-toml")
+        self.assertEqual(codex_options.project_mcp_toml, "mcp-toml")
+        self.assertEqual(codex_options.agents_doc_text, "# Agents\n")
+        self.assertEqual(codex_options.route_proxy_base_url, "http://127.0.0.1:15721/project/p1")
+        self.assertEqual(codex_options.codex_wire_api_override, "responses")
+        self.assertEqual(claude_options.project_root, Path.cwd())
+        self.assertEqual(claude_options.project_mcp_toml, "mcp-toml")
+        self.assertEqual(claude_options.agents_doc_text, "# Agents\n")
+        self.assertEqual(claude_options.route_proxy_base_url, "http://127.0.0.1:15721/project/p1")
 
     def test_route_proxy_rules_keep_claude_binding_for_openai_conversion(self) -> None:
         project = ProjectRecord.create(

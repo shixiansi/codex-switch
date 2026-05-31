@@ -93,6 +93,8 @@ from codex_switch.ui.styles import (
     ttk,
 )
 from codex_switch.ui.project_logic import (
+    claude_project_template_options,
+    codex_project_template_options,
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -3067,17 +3069,23 @@ class CodexSwitchApp:
             return
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
         project_mcp_toml = self._effective_project_mcp_toml(project)
-        route_proxy_base_url = self._route_proxy_base_url_for_project(project)
+        template_options = codex_project_template_options(
+            project,
+            project_mcp_toml=project_mcp_toml,
+            agents_doc_text=self.agents_doc_text,
+            route_proxy_base_url=self._route_proxy_base_url_for_project(project),
+            codex_wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
+        )
         try:
             result = self.project_template_service.generate(
-                project_root_path(project),
+                template_options.project_root,
                 profile,
-                global_mcp_toml=project_mcp_toml,
-                project_mcp_toml=project_mcp_toml,
-                agents_doc_text=self.agents_doc_text,
+                global_mcp_toml=template_options.global_mcp_toml,
+                project_mcp_toml=template_options.project_mcp_toml,
+                agents_doc_text=template_options.agents_doc_text,
                 claude_profile=claude_profile,
-                route_proxy_base_url=route_proxy_base_url,
-                codex_wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
+                route_proxy_base_url=template_options.route_proxy_base_url,
+                codex_wire_api_override=template_options.codex_wire_api_override,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)
@@ -3100,13 +3108,19 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showerror("无法生成", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
+        template_options = claude_project_template_options(
+            project,
+            project_mcp_toml=self._effective_project_mcp_toml(project),
+            agents_doc_text=self.agents_doc_text,
+            route_proxy_base_url=self._route_proxy_base_url_for_project(project),
+        )
         try:
             result = self.project_template_service.generate_claude_template(
-                project_root_path(project),
+                template_options.project_root,
                 profile,
-                project_mcp_toml=self._effective_project_mcp_toml(project),
-                agents_doc_text=self.agents_doc_text,
-                route_proxy_base_url=self._route_proxy_base_url_for_project(project),
+                project_mcp_toml=template_options.project_mcp_toml,
+                agents_doc_text=template_options.agents_doc_text,
+                route_proxy_base_url=template_options.route_proxy_base_url,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入 Claude 项目模板失败：\n{exc}", parent=self.root)
