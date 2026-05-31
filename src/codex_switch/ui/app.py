@@ -757,12 +757,20 @@ class CodexSwitchApp:
             pady=pady,
         )
 
-    def _make_metric_card(self, parent: tk.Misc, title: str, value_var: tk.StringVar, foreground: str, background: str) -> tk.Frame:
+    def _make_metric_card(
+        self,
+        parent: tk.Misc,
+        title: str,
+        value_var: tk.StringVar,
+        foreground: str,
+        background: str,
+        value_foreground: str | None = None,
+    ) -> tk.Frame:
         card = self._make_card(parent, 10, 8)
         card.columnconfigure(0, weight=1)
         tk.Frame(card, bg=foreground, height=4).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         tk.Label(card, text=title, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w")
-        tk.Label(card, textvariable=value_var, bg=PALETTE["card_bg"], fg=foreground, font=("Microsoft YaHei UI", 20, "bold")).grid(row=2, column=0, sticky="w", pady=(6, 0))
+        tk.Label(card, textvariable=value_var, bg=PALETTE["card_bg"], fg=value_foreground or foreground, font=("Microsoft YaHei UI", 20, "bold")).grid(row=2, column=0, sticky="w", pady=(6, 0))
         badge = tk.Label(card, text="配置统计", bg=background, fg=foreground, font=("Microsoft YaHei UI", 8, "bold"), padx=8, pady=2)
         badge.grid(row=3, column=0, sticky="w", pady=(6, 0))
         return card
@@ -777,9 +785,9 @@ class CodexSwitchApp:
             metrics.columnconfigure(column, weight=1)
 
         self._make_metric_card(metrics, "配置总数", self.global_total_var, PALETTE["accent"], PALETTE["selection_bg"]).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self._make_metric_card(metrics, "健康配置", self.global_healthy_var, PALETTE["success"], PALETTE["success_soft"]).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        self._make_metric_card(metrics, "受限配置", self.global_degraded_var, PALETTE["warning"], PALETTE["warning_soft"]).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        self._make_metric_card(metrics, "异常配置", self.global_error_var, PALETTE["danger"], PALETTE["danger_soft"]).grid(row=0, column=3, sticky="ew")
+        self._make_metric_card(metrics, "健康配置", self.global_healthy_var, PALETTE["success"], PALETTE["success_soft"], value_foreground="#16A34A").grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self._make_metric_card(metrics, "受限配置", self.global_degraded_var, PALETTE["warning"], PALETTE["warning_soft"], value_foreground="#CA8A04").grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        self._make_metric_card(metrics, "异常配置", self.global_error_var, PALETTE["danger"], PALETTE["danger_soft"], value_foreground="#DC2626").grid(row=0, column=3, sticky="ew")
 
         content = tk.Frame(parent, bg=PALETTE["panel_bg"])
         content.grid(row=1, column=0, sticky="nsew")
