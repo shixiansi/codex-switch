@@ -965,7 +965,12 @@ class CodexSwitchApp:
         content.columnconfigure(1, weight=6)
         content.rowconfigure(0, weight=1)
 
-        project_list = self._make_card(content)
+        self._build_project_list_panel(content)
+        detail = self._build_project_detail_panel(content)
+        self._build_project_actions(detail)
+
+    def _build_project_list_panel(self, parent: tk.Misc) -> None:
+        project_list = self._make_card(parent)
         project_list.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         project_list.columnconfigure(0, weight=1)
         project_list.rowconfigure(1, weight=1)
@@ -1001,7 +1006,8 @@ class CodexSwitchApp:
         make_button(actions, text="修改项目", variant="secondary", command=self.edit_project).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         make_button(actions, text="删除项目", variant="danger", command=self.delete_project).grid(row=0, column=2, sticky="ew")
 
-        detail = self._make_card(content)
+    def _build_project_detail_panel(self, parent: tk.Misc) -> tk.Frame:
+        detail = self._make_card(parent)
         detail.grid(row=0, column=1, sticky="nsew")
         detail.columnconfigure(1, weight=1)
         detail.columnconfigure(3, weight=1)
@@ -1028,6 +1034,9 @@ class CodexSwitchApp:
         self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
         self._create_info_row(detail, 8, "项目 MCP", self.project_mcp_var, wraplength=440)
 
+        return detail
+
+    def _build_project_actions(self, detail: tk.Misc) -> None:
         actions = tk.Frame(detail, bg=PALETTE["card_bg"])
         actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         actions.columnconfigure(0, weight=1)
