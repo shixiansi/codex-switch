@@ -72,6 +72,7 @@ from codex_switch.ui.app import (
     ordered_model_batch_models,
     profile_library_sort_key,
     profiles_for_library_view,
+    route_proxy_rules_for_project,
     run_model_batch_requests,
     successful_model_batch_models,
     visible_profiles_for_filter,
@@ -515,6 +516,42 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(all(status == "success" for _, status, _, _ in results))
         self.assertTrue(all(duration_ms >= 0 for _, _, _, duration_ms in results))
         self.assertEqual(tester.max_active, 3)
+
+    def test_route_proxy_rules_keep_claude_binding_for_openai_conversion(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        codex_profile = Profile.create(
+            "codex",
+            "https://codex.example.com",
+            "sk-codex",
+            vendor=VENDOR_CODEX,
+            codex_model="gpt-codex",
+        )
+        codex_profile.id = "codex-profile"
+        claude_profile = Profile.create(
+            "joverna",
+            "https://joverna.example.com",
+            "sk-claude",
+            vendor=VENDOR_CLAUDE,
+            claude_model="mimo-v2.5-pro",
+        )
+        claude_profile.id = "claude-profile"
+
+        rules = route_proxy_rules_for_project(
+            project,
+            codex_profile,
+            claude_profile,
+            ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+        )
+
+        self.assertEqual(rules[0].primary_profile_id, "codex-profile")
+        self.assertEqual(rules[1].primary_profile_id, "claude-profile")
+        self.assertEqual(rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+        self.assertEqual(rules[1].upstream_model, "mimo-v2.5-pro")
 
 
 class CodexConfigManagerTests(unittest.TestCase):

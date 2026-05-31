@@ -177,6 +177,33 @@ def successful_model_batch_models(cache: ModelBatchCache | None) -> list[str]:
     return [model for model in ordered_model_batch_models(cache.models, cache.results, True) if cache.results.get(model, ModelBatchResult()).status == "success"]
 
 
+def route_proxy_rules_for_project(
+    project: ProjectRecord,
+    codex_profile: Profile,
+    claude_profile: Profile,
+    claude_protocol: str,
+) -> list[RouteProxyRule]:
+    claude_upstream_model = (
+        claude_profile.claude_display_model
+        if claude_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
+        else ""
+    )
+    return [
+        RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id=codex_profile.id,
+        ),
+        RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+            primary_profile_id=claude_profile.id,
+            upstream_protocol=claude_protocol,
+            upstream_model=claude_upstream_model,
+        ),
+    ]
+
+
 def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:
     if not isinstance(payload, dict):
         return {}
@@ -2587,30 +2614,12 @@ class CodexSwitchApp:
             messagebox.showerror("无法启用", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
         claude_protocol = self.proxy_claude_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_ANTHROPIC
-        claude_profile_id = (
-            codex_profile_id
-            if claude_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
-            else (project.claude_profile_id or project.profile_id)
-        )
-        if self._profile_by_id(claude_profile_id) is None:
+        claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        if claude_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
         self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
-        self.route_proxy_settings.rules.extend(
-            [
-                RouteProxyRule.create(
-                    project_id=project.id,
-                    client_type=ROUTE_PROXY_CLIENT_CODEX,
-                    primary_profile_id=codex_profile_id,
-                ),
-                RouteProxyRule.create(
-                    project_id=project.id,
-                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
-                    primary_profile_id=claude_profile_id,
-                    upstream_protocol=claude_protocol,
-                ),
-            ]
-        )
+        self.route_proxy_settings.rules.extend(route_proxy_rules_for_project(project, codex_profile, claude_profile, claude_protocol))
         self.persist_state()
         self.refresh_proxy_tab()
         if self._sync_project_api_binding(project):
