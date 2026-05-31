@@ -39,6 +39,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+    ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -51,11 +52,13 @@ from codex_switch.models import (
 from codex_switch.proxy import (
     RouteProxyServer,
     anthropic_to_openai_request,
+    openai_chat_to_responses_response,
     openai_chat_to_responses_request,
+    openai_responses_to_chat_request,
     openai_to_anthropic_response,
     responses_to_openai_chat_response,
 )
-from codex_switch.proxy.translator import iter_openai_sse_to_anthropic
+from codex_switch.proxy.translator import iter_openai_chat_sse_to_responses, iter_openai_sse_to_anthropic
 from codex_switch.project_template import (
     CLAUDE_API_KEY_ENV_KEY,
     CLAUDE_AUTH_TOKEN_ENV_KEY,
@@ -81,6 +84,7 @@ from codex_switch.ui.app import (
     ordered_model_batch_models,
     profile_library_sort_key,
     profiles_for_library_view,
+    route_proxy_codex_wire_api_override,
     route_proxy_rules_for_project,
     run_model_batch_requests,
     successful_model_batch_models,
@@ -565,6 +569,11 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(rules[1].upstream_model, "mimo-v2.5-pro")
 
+    def test_route_proxy_codex_protocol_selects_project_wire_api(self) -> None:
+        self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES), "chat_completions")
+        self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT), "responses")
+        self.assertIsNone(route_proxy_codex_wire_api_override("openai_passthrough"))
+
 
 class CodexConfigManagerTests(unittest.TestCase):
     def test_apply_profile_updates_codex_files(self) -> None:
@@ -823,6 +832,7 @@ args = ["-y", "server", "/tmp"]
                 codex_profile,
                 claude_profile=claude_profile,
                 route_proxy_base_url="http://127.0.0.1:15721/project/p1",
+                codex_wire_api_override="chat_completions",
             )
 
             runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
@@ -830,6 +840,7 @@ args = ["-y", "server", "/tmp"]
             claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
 
             self.assertEqual(provider["base_url"], "http://127.0.0.1:15721/project/p1")
+            self.assertEqual(provider["wire_api"], "chat_completions")
             self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
             self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], "http://127.0.0.1:15721/project/p1")
             self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
@@ -911,7 +922,7 @@ command = "tool"
     def test_sync_bindings_with_route_proxy_writes_placeholder_values(self) -> None:
         with workspace_tempdir() as temp_dir:
             service = ProjectTemplateService()
-            codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", codex_model="gpt-real")
+            codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", codex_model="gpt-real", wire_api="chat_completions")
             claude_profile = Profile.create(
                 "claude",
                 "https://claude.example.com",
@@ -922,7 +933,7 @@ command = "tool"
             service.generate(temp_dir, codex_profile, claude_profile=claude_profile)
             route_proxy_base_url = "http://127.0.0.1:15721/project/project-1"
 
-            service.sync_api_binding(temp_dir, codex_profile, route_proxy_base_url=route_proxy_base_url)
+            service.sync_api_binding(temp_dir, codex_profile, route_proxy_base_url=route_proxy_base_url, wire_api_override="responses")
             service.sync_claude_binding(temp_dir, claude_profile, route_proxy_base_url=route_proxy_base_url)
 
             runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
@@ -930,6 +941,7 @@ command = "tool"
             claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
 
             self.assertEqual(provider["base_url"], route_proxy_base_url)
+            self.assertEqual(provider["wire_api"], "responses")
             self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
             self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], route_proxy_base_url)
             self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
@@ -1379,6 +1391,108 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["model"], "responses-model")
         self.assertEqual(response_payload["choices"][0]["message"]["content"], "alias ok")
 
+    def test_openai_responses_to_chat_converts_request_and_response(self) -> None:
+        converted = openai_responses_to_chat_request(
+            {
+                "model": "responses-model",
+                "instructions": "be helpful",
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+                "max_output_tokens": 32,
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "lookup",
+                        "description": "Lookup data",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            },
+            "chat-model",
+        )
+
+        self.assertEqual(converted["model"], "chat-model")
+        self.assertEqual(converted["messages"][0], {"role": "system", "content": "be helpful"})
+        self.assertEqual(converted["messages"][1], {"role": "user", "content": "hello"})
+        self.assertEqual(converted["max_tokens"], 32)
+        self.assertEqual(converted["tools"][0]["function"]["name"], "lookup")
+
+        responses = openai_chat_to_responses_response(
+            {
+                "id": "chatcmpl_1",
+                "model": "chat-model",
+                "choices": [{"finish_reason": "stop", "message": {"content": "hello back"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 5},
+            },
+            "responses-model",
+        )
+
+        self.assertEqual(responses["object"], "response")
+        self.assertEqual(responses["model"], "responses-model")
+        self.assertEqual(responses["output_text"], "hello back")
+        self.assertEqual(responses["output"][0]["content"][0]["text"], "hello back")
+        self.assertEqual(responses["usage"]["input_tokens"], 4)
+        self.assertEqual(responses["usage"]["output_tokens"], 5)
+
+    def test_openai_responses_to_chat_route_converts_request_and_response(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "chatcmpl_1",
+                        "model": "chat-model",
+                        "choices": [{"finish_reason": "stop", "message": {"content": "chat ok"}}],
+                        "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("chat", f"http://127.0.0.1:{upstream.server_port}", "sk-chat", codex_model="chat-model")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+                    upstream_model="chat-model",
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "responses-model", "input": "hello", "max_output_tokens": 64}).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(captured["path"], "/v1/chat/completions")
+        self.assertEqual(captured["authorization"], "Bearer sk-chat")
+        self.assertEqual(captured["payload"]["model"], "chat-model")
+        self.assertEqual(captured["payload"]["messages"], [{"role": "user", "content": "hello"}])
+        self.assertEqual(captured["payload"]["max_tokens"], 64)
+        self.assertEqual(response_payload["output_text"], "chat ok")
+        self.assertEqual(response_payload["usage"]["output_tokens"], 3)
+
     def test_anthropic_passthrough_uses_x_api_key(self) -> None:
         captured: dict[str, object] = {}
 
@@ -1732,6 +1846,24 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIn("\"type\": \"text_delta\", \"text\": \"lo\"", rendered)
         self.assertIn("event: content_block_stop", rendered)
         self.assertIn("event: message_stop", rendered)
+
+    def test_openai_chat_sse_chunks_convert_to_responses_events(self) -> None:
+        rendered = b"".join(
+            iter_openai_chat_sse_to_responses(
+                [
+                    b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+                    b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+                    b"data: [DONE]\n\n",
+                ],
+                "responses-model",
+            )
+        ).decode("utf-8")
+
+        self.assertIn("event: response.created", rendered)
+        self.assertIn("event: response.output_text.delta", rendered)
+        self.assertIn('"delta": "hel"', rendered)
+        self.assertIn('"delta": "lo"', rendered)
+        self.assertIn("event: response.completed", rendered)
 
 
 class MainStartupTests(unittest.TestCase):

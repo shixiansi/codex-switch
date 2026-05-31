@@ -45,6 +45,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+    ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -186,9 +187,13 @@ def route_proxy_rules_for_project(
     codex_protocol: str,
     claude_protocol: str,
 ) -> list[RouteProxyRule]:
+    codex_conversion_protocols = {
+        ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+        ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    }
     codex_upstream_model = (
         codex_profile.codex_display_model
-        if codex_protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES
+        if codex_protocol in codex_conversion_protocols
         else ""
     )
     claude_upstream_model = (
@@ -212,6 +217,14 @@ def route_proxy_rules_for_project(
             upstream_model=claude_upstream_model,
         ),
     ]
+
+
+def route_proxy_codex_wire_api_override(protocol: str) -> str | None:
+    if protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES:
+        return "chat_completions"
+    if protocol == ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT:
+        return "responses"
+    return None
 
 
 def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:
@@ -1105,7 +1118,11 @@ class CodexSwitchApp:
         ttk.Combobox(
             settings,
             textvariable=self.proxy_codex_protocol_var,
-            values=(ROUTE_PROXY_PROTOCOL_OPENAI, ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES),
+            values=(
+                ROUTE_PROXY_PROTOCOL_OPENAI,
+                ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+                ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+            ),
             state="readonly",
             width=28,
         ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
@@ -2909,6 +2926,12 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已新增项目：{project.name}")
 
+    def _route_proxy_codex_wire_api_override_for_project(self, project: ProjectRecord) -> str | None:
+        for rule in self.route_proxy_settings.rules_for_project(project.id):
+            if rule.enabled and rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                return route_proxy_codex_wire_api_override(rule.upstream_protocol)
+        return None
+
     def _sync_project_api_binding(
         self,
         project: ProjectRecord,
@@ -2929,6 +2952,7 @@ class CodexSwitchApp:
                         Path(project.project_dir),
                         codex_profile,
                         route_proxy_base_url=route_proxy_base_url,
+                        wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
                     )
                 )
             except Exception as exc:
@@ -3095,6 +3119,7 @@ class CodexSwitchApp:
                 agents_doc_text=self.agents_doc_text,
                 claude_profile=claude_profile,
                 route_proxy_base_url=route_proxy_base_url,
+                codex_wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)

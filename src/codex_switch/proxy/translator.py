@@ -260,6 +260,93 @@ def openai_chat_to_responses_request(payload: dict[str, Any], upstream_model: st
     return rendered
 
 
+def openai_responses_to_chat_request(payload: dict[str, Any], upstream_model: str) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = []
+    instructions = payload.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": _chat_content_to_text(instructions)})
+
+    input_value = payload.get("input", "")
+    if isinstance(input_value, str):
+        messages.append({"role": "user", "content": input_value})
+    elif isinstance(input_value, list):
+        for item in input_value:
+            if isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+                continue
+            if not isinstance(item, dict):
+                raise TranslationError("Responses input item must be an object.")
+            item_type = str(item.get("type") or "")
+            if item_type == "function_call_output":
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(item.get("call_id") or ""),
+                        "content": _chat_content_to_text(item.get("output", "")),
+                    }
+                )
+                continue
+            if item_type == "function_call":
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": str(item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                                "type": "function",
+                                "function": {
+                                    "name": str(item.get("name") or ""),
+                                    "arguments": str(item.get("arguments") or "{}"),
+                                },
+                            }
+                        ],
+                    }
+                )
+                continue
+            role = str(item.get("role") or "user")
+            messages.append({"role": role, "content": _chat_content_to_text(item.get("content", ""))})
+    else:
+        raise TranslationError("Unsupported Responses input payload.")
+
+    rendered: dict[str, Any] = {
+        "model": upstream_model or str(payload.get("model") or ""),
+        "messages": messages or [{"role": "user", "content": ""}],
+    }
+    for source, target in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("stream", "stream"),
+        ("stop", "stop"),
+    ):
+        if source in payload:
+            rendered[target] = payload[source]
+    if "max_output_tokens" in payload:
+        rendered["max_tokens"] = payload["max_output_tokens"]
+
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        rendered_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                continue
+            rendered_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": str(tool.get("name") or ""),
+                        "description": str(tool.get("description") or ""),
+                        "parameters": tool.get("parameters") or {},
+                    },
+                }
+            )
+        if rendered_tools:
+            rendered["tools"] = rendered_tools
+    if "tool_choice" in payload:
+        rendered["tool_choice"] = payload["tool_choice"]
+    return rendered
+
+
 def openai_to_anthropic_response(payload: dict[str, Any], model: str) -> dict[str, Any]:
     choice = (payload.get("choices") or [{}])[0]
     message = choice.get("message") or {}
@@ -344,6 +431,60 @@ def responses_to_openai_chat_response(payload: dict[str, Any], model: str) -> di
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": int(usage.get("total_tokens") or prompt_tokens + completion_tokens),
+        },
+    }
+
+
+def openai_chat_to_responses_response(payload: dict[str, Any], model: str) -> dict[str, Any]:
+    choice = (payload.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    text = str(message.get("content") or "")
+    output: list[dict[str, Any]] = []
+    if text:
+        output.append(
+            {
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        )
+    for tool_call in message.get("tool_calls") or []:
+        function = tool_call.get("function") or {}
+        output.append(
+            {
+                "id": str(tool_call.get("id") or f"fc_{uuid.uuid4().hex[:24]}"),
+                "type": "function_call",
+                "status": "completed",
+                "call_id": str(tool_call.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                "name": str(function.get("name") or ""),
+                "arguments": str(function.get("arguments") or "{}"),
+            }
+        )
+    usage = payload.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    return {
+        "id": str(payload.get("id") or f"resp_{uuid.uuid4().hex[:24]}"),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": model or str(payload.get("model") or ""),
+        "output": output or [
+            {
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "", "annotations": []}],
+            }
+        ],
+        "output_text": text,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens),
         },
     }
 
@@ -493,3 +634,138 @@ def iter_responses_sse_to_openai_chat(lines: Iterable[bytes], model: str) -> Ite
             )
     yield chunk({}, "stop")
     yield b"data: [DONE]\n\n"
+
+
+def iter_openai_chat_sse_to_responses(lines: Iterable[bytes], model: str) -> Iterator[bytes]:
+    response_id = f"resp_{uuid.uuid4().hex[:24]}"
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+    text_parts: list[str] = []
+    message_started = False
+
+    def event(name: str, data: dict[str, Any]) -> bytes:
+        payload = dict(data)
+        payload.setdefault("type", name)
+        return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    response = {
+        "id": response_id,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "in_progress",
+        "model": model,
+        "output": [],
+    }
+    yield event("response.created", {"type": "response.created", "response": response})
+
+    for raw_line in lines:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if line == "[DONE]":
+            break
+        try:
+            chunk = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        choice = (chunk.get("choices") or [{}])[0]
+        delta = choice.get("delta") or {}
+        text = str(delta.get("content") or "")
+        if not text:
+            continue
+        if not message_started:
+            message_started = True
+            yield event(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {
+                        "id": message_id,
+                        "type": "message",
+                        "status": "in_progress",
+                        "role": "assistant",
+                        "content": [],
+                    },
+                },
+            )
+            yield event(
+                "response.content_part.added",
+                {
+                    "type": "response.content_part.added",
+                    "item_id": message_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []},
+                },
+            )
+        text_parts.append(text)
+        yield event(
+            "response.output_text.delta",
+            {
+                "type": "response.output_text.delta",
+                "item_id": message_id,
+                "output_index": 0,
+                "content_index": 0,
+                "delta": text,
+            },
+        )
+
+    output_text = "".join(text_parts)
+    if not message_started:
+        yield event(
+            "response.output_item.added",
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": message_id,
+                    "type": "message",
+                    "status": "in_progress",
+                    "role": "assistant",
+                    "content": [],
+                },
+            },
+        )
+    yield event(
+        "response.output_text.done",
+        {
+            "type": "response.output_text.done",
+            "item_id": message_id,
+            "output_index": 0,
+            "content_index": 0,
+            "text": output_text,
+        },
+    )
+    yield event(
+        "response.output_item.done",
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": message_id,
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+            },
+        },
+    )
+    completed_response = dict(response)
+    completed_response.update(
+        {
+            "status": "completed",
+            "output": [
+                {
+                    "id": message_id,
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": output_text, "annotations": []}],
+                }
+            ],
+            "output_text": output_text,
+        }
+    )
+    yield event("response.completed", {"type": "response.completed", "response": completed_response})
