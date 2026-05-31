@@ -79,12 +79,14 @@ from codex_switch.storage import (
 from codex_switch.ui.dialogs import (
     ChatSettingsDialog,
     McpConfigDialog,
+    McpSelectionDialog,
     McpServerDialog,
     ModelBatchTestDialog,
     ProfileDialog,
     ProjectDialog,
     SuccessfulModelsDialog,
 )
+from codex_switch.ui.global_logic import resolve_global_mcp_server_names, resolve_global_profile_id
 from codex_switch.ui.styles import (
     BOOTSTRAP_THEME,
     BootstrapWindow,
@@ -124,7 +126,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_codex_wire_api_override_for_project,
     route_proxy_rules_for_project,
 )
-from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, resolve_mcp_editor_text
+from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url
 
 
 _SINGLE_INSTANCE_HANDLE = None
@@ -483,6 +485,9 @@ class CodexSwitchApp:
             )
             raw_model_batch_cache_by_profile = load_state[10] if len(load_state) >= 11 else {}
             self.route_proxy_settings = load_state[11] if len(load_state) >= 12 else RouteProxySettings()
+            self.global_mcp_server_names = load_state[12] if len(load_state) >= 13 else None
+            raw_codex_global_profile_id = load_state[13] if len(load_state) >= 14 else None
+            raw_claude_global_profile_id = load_state[14] if len(load_state) >= 15 else None
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -491,10 +496,25 @@ class CodexSwitchApp:
             self.global_mcp_toml = load_default_global_mcp_toml()
             self.applied_global_mcp_server_names = []
             self.global_mcp_opt_out = False
+            self.global_mcp_server_names = None
             self.agents_doc_text = load_default_agents_doc_text()
             self.model_batch_concurrency = DEFAULT_MODEL_BATCH_CONCURRENCY
             raw_model_batch_cache_by_profile = {}
             self.route_proxy_settings = RouteProxySettings()
+            raw_codex_global_profile_id = None
+            raw_claude_global_profile_id = None
+        self.global_codex_profile_id = resolve_global_profile_id(
+            raw_codex_global_profile_id,
+            self.selected_profile_id,
+            self.profiles,
+            profile_supports_codex,
+        )
+        self.global_claude_profile_id = resolve_global_profile_id(
+            raw_claude_global_profile_id,
+            self.selected_profile_id,
+            self.profiles,
+            profile_supports_claude,
+        )
         self.mcp_page_servers: dict[str, dict] = {}
         self.route_proxy_server = RouteProxyServer(
             lambda: self.route_proxy_settings,
@@ -537,8 +557,10 @@ class CodexSwitchApp:
         self.current_key_var = tk.StringVar(value="-")
         self.current_mcp_var = tk.StringVar(value="-")
         self.global_mcp_var = tk.StringVar(value="-")
-        self.global_profile_choice_var = tk.StringVar(value="")
-        self.global_profile_summary_var = tk.StringVar(value="尚未选择全局 API 配置。")
+        self.global_codex_profile_choice_var = tk.StringVar(value="")
+        self.global_claude_profile_choice_var = tk.StringVar(value="")
+        self.global_codex_profile_summary_var = tk.StringVar(value="尚未选择 Codex 全局 API 配置。")
+        self.global_claude_profile_summary_var = tk.StringVar(value="尚未选择 Claude 全局 API 配置。")
         self.current_match_var = tk.StringVar(value="未匹配")
         self.global_total_var = tk.StringVar(value="0")
         self.global_healthy_var = tk.StringVar(value="0")
@@ -792,34 +814,59 @@ class CodexSwitchApp:
         self.current_status_badge.grid(row=4, column=0, sticky="w")
 
         tk.Label(right, text="全局 API 设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=5, column=0, sticky="w", pady=(18, 8))
-        global_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
-        global_profile_row.grid(row=6, column=0, sticky="ew")
-        global_profile_row.columnconfigure(0, weight=1)
-        self.global_profile_combo = ttk.Combobox(
-            global_profile_row,
-            textvariable=self.global_profile_choice_var,
+        codex_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
+        codex_profile_row.grid(row=6, column=0, sticky="ew")
+        codex_profile_row.columnconfigure(0, weight=1)
+        tk.Label(codex_profile_row, text="Codex", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.small_font).grid(row=0, column=0, sticky="w")
+        self.global_codex_profile_combo = ttk.Combobox(
+            codex_profile_row,
+            textvariable=self.global_codex_profile_choice_var,
             state="readonly",
             width=40,
         )
-        self.global_profile_combo.grid(row=0, column=0, sticky="ew")
-        self.global_profile_combo.bind("<<ComboboxSelected>>", self._on_global_profile_choice_changed)
+        self.global_codex_profile_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.global_codex_profile_combo.bind("<<ComboboxSelected>>", lambda event: self._on_global_profile_choice_changed(VENDOR_CODEX, event))
         tk.Label(
             right,
-            textvariable=self.global_profile_summary_var,
+            textvariable=self.global_codex_profile_summary_var,
             bg=PALETTE["card_bg"],
             fg=PALETTE["muted"],
             font=self.small_font,
             justify="left",
             wraplength=360,
-        ).grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=7, column=0, sticky="w", pady=(6, 10))
+
+        claude_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
+        claude_profile_row.grid(row=8, column=0, sticky="ew")
+        claude_profile_row.columnconfigure(0, weight=1)
+        tk.Label(claude_profile_row, text="Claude", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.small_font).grid(row=0, column=0, sticky="w")
+        self.global_claude_profile_combo = ttk.Combobox(
+            claude_profile_row,
+            textvariable=self.global_claude_profile_choice_var,
+            state="readonly",
+            width=40,
+        )
+        self.global_claude_profile_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.global_claude_profile_combo.bind("<<ComboboxSelected>>", lambda event: self._on_global_profile_choice_changed(VENDOR_CLAUDE, event))
+        tk.Label(
+            right,
+            textvariable=self.global_claude_profile_summary_var,
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            justify="left",
+            wraplength=360,
+        ).grid(row=9, column=0, sticky="w", pady=(6, 0))
 
         global_api_actions = tk.Frame(right, bg=PALETTE["card_bg"])
-        global_api_actions.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        global_api_actions.grid(row=10, column=0, sticky="ew", pady=(12, 0))
         for column in range(3):
             global_api_actions.columnconfigure(column, weight=1)
         make_button(global_api_actions, text="新增 API", variant="secondary", command=self.add_profile).grid(row=0, column=0, sticky="ew", padx=(0, 8))
         make_button(global_api_actions, text="编辑 API", variant="secondary", command=self.edit_profile).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         make_button(global_api_actions, text="写入全局配置", variant="primary", command=self.apply_global_profile).grid(row=0, column=2, sticky="ew")
+        make_button(global_api_actions, text="打开 Codex 配置", variant="secondary", command=self.open_global_codex_config).grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(8, 0))
+        make_button(global_api_actions, text="打开 Claude 配置", variant="secondary", command=self.open_global_claude_config).grid(row=1, column=2, sticky="ew", pady=(8, 0))
 
         mcp_card = self._make_card(content)
         mcp_card.grid(row=0, column=1, sticky="nsew")
@@ -840,8 +887,8 @@ class CodexSwitchApp:
         actions.grid(row=3, column=0, sticky="ew", pady=(18, 0))
         for column in range(3):
             actions.columnconfigure(column, weight=1)
-        make_button(actions, text="编辑 MCP", variant="primary", command=self.edit_global_mcp).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="清空 MCP", variant="danger", command=self.clear_global_mcp).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="选择 MCP", variant="primary", command=self.select_global_mcp).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="禁用 MCP", variant="danger", command=self.clear_global_mcp).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         make_button(actions, text="刷新", variant="secondary", command=self.refresh_all).grid(row=0, column=2, sticky="ew")
 
     def _build_library_tab(self, parent: tk.Misc) -> None:
@@ -1616,43 +1663,88 @@ class CodexSwitchApp:
         models = self._profile_model_summary(profile).replace("\n", " / ")
         return f"{profile.name} | {profile.vendor_label} | {compact_text(models, 34)} | {compact_text(profile.base_url, 42)}"
 
-    def _profile_from_global_choice(self) -> Profile | None:
-        choice = self.global_profile_choice_var.get().strip()
-        for profile in self.profiles:
-            if not (profile_supports_codex(profile) or profile_supports_claude(profile)):
-                continue
+    def _profiles_for_global_target(self, target: str) -> list[Profile]:
+        if target == VENDOR_CODEX:
+            return [profile for profile in self.profiles if profile_supports_codex(profile)]
+        if target == VENDOR_CLAUDE:
+            return [profile for profile in self.profiles if profile_supports_claude(profile)]
+        return []
+
+    def _global_profile_choice_var_for(self, target: str) -> tk.StringVar:
+        return self.global_codex_profile_choice_var if target == VENDOR_CODEX else self.global_claude_profile_choice_var
+
+    def _global_profile_combo_for(self, target: str):
+        return self.global_codex_profile_combo if target == VENDOR_CODEX else self.global_claude_profile_combo
+
+    def _global_profile_summary_var_for(self, target: str) -> tk.StringVar:
+        return self.global_codex_profile_summary_var if target == VENDOR_CODEX else self.global_claude_profile_summary_var
+
+    def _global_profile_id_for(self, target: str) -> str | None:
+        return self.global_codex_profile_id if target == VENDOR_CODEX else self.global_claude_profile_id
+
+    def _set_global_profile_id_for(self, target: str, profile_id: str | None) -> None:
+        if target == VENDOR_CODEX:
+            self.global_codex_profile_id = profile_id
+        else:
+            self.global_claude_profile_id = profile_id
+
+    def _profile_from_global_choice(self, target: str) -> Profile | None:
+        choice = self._global_profile_choice_var_for(target).get().strip()
+        for profile in self._profiles_for_global_target(target):
             if self._global_profile_choice_label(profile) == choice:
                 return profile
-        selected = self.get_selected_profile()
-        if selected and (profile_supports_codex(selected) or profile_supports_claude(selected)):
+        selected = self._profile_by_id(self._global_profile_id_for(target))
+        if selected and selected in self._profiles_for_global_target(target):
             return selected
         return None
 
+    def _normalize_global_profile_ids(self) -> None:
+        self.global_codex_profile_id = resolve_global_profile_id(
+            self.global_codex_profile_id,
+            None,
+            self.profiles,
+            profile_supports_codex,
+        )
+        self.global_claude_profile_id = resolve_global_profile_id(
+            self.global_claude_profile_id,
+            None,
+            self.profiles,
+            profile_supports_claude,
+        )
+
     def _sync_global_profile_choice(self) -> None:
-        if not hasattr(self, "global_profile_combo"):
+        self._sync_global_profile_target(VENDOR_CODEX)
+        self._sync_global_profile_target(VENDOR_CLAUDE)
+
+    def _sync_global_profile_target(self, target: str) -> None:
+        if target == VENDOR_CODEX and not hasattr(self, "global_codex_profile_combo"):
             return
-        profiles = [
-            profile
-            for profile in self.profiles
-            if profile_supports_codex(profile) or profile_supports_claude(profile)
-        ]
+        if target == VENDOR_CLAUDE and not hasattr(self, "global_claude_profile_combo"):
+            return
+        combo = self._global_profile_combo_for(target)
+        choice_var = self._global_profile_choice_var_for(target)
+        summary_var = self._global_profile_summary_var_for(target)
+        profiles = self._profiles_for_global_target(target)
         labels = tuple(self._global_profile_choice_label(profile) for profile in profiles)
-        self.global_profile_combo.configure(values=labels, state="readonly" if labels else "disabled")
-        profile = self.get_selected_profile()
-        if not profile or not (profile_supports_codex(profile) or profile_supports_claude(profile)):
+        combo.configure(values=labels, state="readonly" if labels else "disabled")
+        profile = self._profile_by_id(self._global_profile_id_for(target))
+        if profile not in profiles:
             profile = profiles[0] if profiles else None
         if not profile:
-            self.global_profile_choice_var.set("")
-            self.global_profile_summary_var.set("尚未选择全局 API 配置。")
+            choice_var.set("")
+            summary_var.set(
+                "尚未选择 Codex 全局 API 配置。"
+                if target == VENDOR_CODEX
+                else "尚未选择 Claude 全局 API 配置。"
+            )
             return
-        self.global_profile_choice_var.set(self._global_profile_choice_label(profile))
-        targets: list[str] = []
-        if profile_supports_codex(profile):
-            targets.append(f"Codex：{profile.provider_name} / {profile.wire_api} / {profile.codex_display_model or '-'}")
-        if profile_supports_claude(profile):
-            targets.append(f"Claude：anthropic_messages / {profile.claude_display_model or '-'}")
-        self.global_profile_summary_var.set(
-            f"将写入：{'; '.join(targets)}\n"
+        choice_var.set(self._global_profile_choice_label(profile))
+        if target == VENDOR_CODEX:
+            target_text = f"Codex：{profile.provider_name} / {profile.wire_api} / {profile.codex_display_model or '-'}"
+        else:
+            target_text = f"Claude：anthropic_messages / {profile.claude_display_model or '-'}"
+        summary_var.set(
+            f"将写入：{target_text}\n"
             f"API：{profile.base_url}\n"
             f"活动 Key：{self._profile_key_summary(profile)}"
         )
@@ -1783,12 +1875,28 @@ class CodexSwitchApp:
         except ValueError:
             return []
 
-    def _effective_global_mcp_toml(self) -> str:
-        if self.global_mcp_opt_out:
-            return ""
+    def _global_mcp_source_toml(self) -> str:
         if self.global_mcp_toml.strip():
             return self.global_mcp_toml
         return load_default_global_mcp_toml()
+
+    def _selected_global_mcp_server_names(self) -> list[str]:
+        return resolve_global_mcp_server_names(
+            self.global_mcp_server_names,
+            opt_out=self.global_mcp_opt_out,
+            available_names=self._safe_mcp_server_names(self._global_mcp_source_toml()),
+        )
+
+    def _effective_global_mcp_toml(self) -> str:
+        if self.global_mcp_opt_out:
+            return ""
+        source_toml = self._global_mcp_source_toml()
+        if self.global_mcp_server_names is None:
+            return source_toml
+        return self.project_template_service.select_project_mcp_toml(
+            source_toml,
+            self._selected_global_mcp_server_names(),
+        )
 
     def _effective_project_mcp_toml(self, project: ProjectRecord | None) -> str:
         if not project:
@@ -1803,7 +1911,7 @@ class CodexSwitchApp:
         return self._effective_global_mcp_toml()
 
     def _available_mcp_server_names(self) -> list[str]:
-        return self._safe_mcp_server_names(self._effective_global_mcp_toml())
+        return self._safe_mcp_server_names(self._global_mcp_source_toml())
 
     def _project_mcp_selection_summary(self, project: ProjectRecord | None) -> str:
         if not project:
@@ -1885,10 +1993,11 @@ class CodexSwitchApp:
             self._refresh_library_detail()
             self._refresh_test_detail()
 
-    def _on_global_profile_choice_changed(self, _event: object | None = None) -> None:
-        profile = self._profile_from_global_choice()
+    def _on_global_profile_choice_changed(self, target: str, _event: object | None = None) -> None:
+        profile = self._profile_from_global_choice(target)
         if not profile:
             return
+        self._set_global_profile_id_for(target, profile.id)
         self.selected_profile_id = profile.id
         self.persist_state()
         self._sync_profile_tree_selection()
@@ -2141,6 +2250,23 @@ class CodexSwitchApp:
             return
         webbrowser.open(url)
 
+    def _open_existing_file(self, path: Path, label: str) -> None:
+        if not path.exists():
+            messagebox.showinfo("提示", f"{label} 文件尚不存在：\n{path}", parent=self.root)
+            return
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"打开 {label} 文件失败：\n{exc}", parent=self.root)
+            return
+        self.status_var.set(f"已打开 {label} 文件：{path}")
+
+    def open_global_codex_config(self) -> None:
+        self._open_existing_file(self.manager.config_path, "Codex config.toml")
+
+    def open_global_claude_config(self) -> None:
+        self._open_existing_file(self.claude_manager.settings_path, "Claude settings.json")
+
     def _open_selected_api_url(self) -> None:
         self._open_link(self.library_selected_api_var.get())
 
@@ -2345,7 +2471,7 @@ class CodexSwitchApp:
         selected_name = self._mcp_selected_name()
         if reload_from_state:
             try:
-                self.mcp_page_servers = parse_mcp_servers_toml(self._effective_global_mcp_toml())
+                self.mcp_page_servers = parse_mcp_servers_toml(self._global_mcp_source_toml())
             except ValueError as exc:
                 self.mcp_page_servers = {}
                 self.mcp_hint_var.set(f"MCP 配置解析失败：{exc}")
@@ -2579,6 +2705,9 @@ class CodexSwitchApp:
                 }
             ),
             self.route_proxy_settings,
+            global_mcp_server_names=self.global_mcp_server_names,
+            selected_codex_global_profile_id=self.global_codex_profile_id,
+            selected_claude_global_profile_id=self.global_claude_profile_id,
         )
 
     def save_settings(self) -> None:
@@ -2706,35 +2835,39 @@ class CodexSwitchApp:
         except tk.TclError:
             pass
 
-    def edit_global_mcp(self) -> None:
-        dialog = McpConfigDialog(
+    def select_global_mcp(self) -> None:
+        available_names = self._available_mcp_server_names()
+        if not available_names:
+            messagebox.showinfo("提示", "尚未保存 MCP 工具，请先到 MCP 配置页新增并保存。", parent=self.root)
+            return
+        dialog = McpSelectionDialog(
             self.root,
-            title="编辑全局 MCP",
-            subtitle="只支持 [mcp_servers.<name>] 相关 TOML 配置。为空时会回退到默认全局 MCP；如需显式禁用，请使用“清空 MCP”。",
-            initial_text=resolve_mcp_editor_text(self.global_mcp_toml, load_default_global_mcp_toml()),
+            available_names,
+            selected_names=self._selected_global_mcp_server_names(),
+            title="选择全局 MCP",
+            subtitle="从已保存的 MCP 工具中选择要写入 Codex 全局配置的服务。",
         )
         self.root.wait_window(dialog)
         if dialog.result is None:
             return
-        self.global_mcp_toml = dialog.result or load_default_global_mcp_toml()
-        self.global_mcp_opt_out = False
+        self.global_mcp_server_names = dialog.result
+        self.global_mcp_opt_out = not bool(dialog.result)
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_project_tab()
         self.refresh_mcp_tab()
-        self.status_var.set("已更新全局 MCP 配置。")
+        self.status_var.set("已更新全局 MCP 选择。")
 
     def clear_global_mcp(self) -> None:
-        if not messagebox.askyesno("确认清空", "清空后将显式禁用默认全局 MCP 注入，是否继续？", parent=self.root):
+        if not messagebox.askyesno("确认禁用", "禁用后将不会向 Codex 全局配置注入托管 MCP，是否继续？", parent=self.root):
             return
-        self.global_mcp_toml = ""
+        self.global_mcp_server_names = []
         self.global_mcp_opt_out = True
-        self.applied_global_mcp_server_names = []
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_project_tab()
         self.refresh_mcp_tab()
-        self.status_var.set("已清空全局 MCP 配置。")
+        self.status_var.set("已禁用全局 MCP。")
 
     def add_mcp_server(self) -> None:
         dialog = McpServerDialog(self.root)
@@ -2787,7 +2920,16 @@ class CodexSwitchApp:
 
     def save_mcp_servers(self) -> None:
         self.global_mcp_toml = render_mcp_servers_toml(self.mcp_page_servers)
-        self.global_mcp_opt_out = not bool(self.mcp_page_servers)
+        available_names = sorted(self.mcp_page_servers)
+        if self.global_mcp_server_names is not None:
+            self.global_mcp_server_names = [
+                server_name
+                for server_name in self.global_mcp_server_names
+                if server_name in self.mcp_page_servers
+            ]
+            self.global_mcp_opt_out = not bool(self.global_mcp_server_names)
+        else:
+            self.global_mcp_opt_out = not bool(available_names)
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_project_tab()
@@ -2799,6 +2941,7 @@ class CodexSwitchApp:
             return
         self.global_mcp_toml = load_default_global_mcp_toml()
         self.global_mcp_opt_out = False
+        self.global_mcp_server_names = None
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_project_tab()
@@ -2867,6 +3010,7 @@ class CodexSwitchApp:
         )
         self.profiles = [updated if item.id == updated.id else item for item in self.profiles]
         self.selected_profile_id = updated.id
+        self._normalize_global_profile_ids()
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_library_tab()
@@ -2892,6 +3036,7 @@ class CodexSwitchApp:
         self.profiles = [item for item in self.profiles if item.id != profile.id]
         if self.selected_profile_id == profile.id:
             self.selected_profile_id = self.profiles[0].id if self.profiles else None
+        self._normalize_global_profile_ids()
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_library_tab()
@@ -3043,6 +3188,33 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已删除项目：{project.name}")
 
+    def _apply_codex_profile_to_global_config(self, profile: Profile, result: GlobalApplyResult) -> bool:
+        effective_global_mcp = self._effective_global_mcp_toml()
+        try:
+            result.codex_backup_dir = self.manager.apply_profile(
+                profile,
+                global_mcp_toml=effective_global_mcp,
+                previous_managed_mcp_server_names=self.applied_global_mcp_server_names,
+            )
+        except Exception as exc:
+            messagebox.showerror("切换失败", f"写入 Codex 配置失败：\n{exc}", parent=self.root)
+            self.status_var.set("切换失败")
+            return False
+        self.applied_global_mcp_server_names = self._safe_mcp_server_names(effective_global_mcp)
+        self.global_codex_profile_id = profile.id
+        return True
+
+    def _apply_claude_profile_to_global_config(self, profile: Profile, result: GlobalApplyResult) -> bool:
+        try:
+            result.claude_backup_dir = self.claude_manager.apply_profile(profile)
+            result.claude_settings_path = self.claude_manager.settings_path
+        except Exception as exc:
+            messagebox.showerror("切换失败", f"写入 Claude 配置失败：\n{exc}", parent=self.root)
+            self.status_var.set("切换失败")
+            return False
+        self.global_claude_profile_id = profile.id
+        return True
+
     def _apply_profile_to_global_config(self, profile: Profile) -> GlobalApplyResult | None:
         supports_codex = profile_supports_codex(profile)
         supports_claude = profile_supports_claude(profile)
@@ -3050,28 +3222,29 @@ class CodexSwitchApp:
             messagebox.showerror("切换失败", "当前配置不能写入 Codex 或 Claude 全局配置。", parent=self.root)
             return None
         result = GlobalApplyResult()
-        effective_global_mcp = self._effective_global_mcp_toml()
-        if supports_codex:
-            try:
-                result.codex_backup_dir = self.manager.apply_profile(
-                    profile,
-                    global_mcp_toml=effective_global_mcp,
-                    previous_managed_mcp_server_names=self.applied_global_mcp_server_names,
-                )
-            except Exception as exc:
-                messagebox.showerror("切换失败", f"写入 Codex 配置失败：\n{exc}", parent=self.root)
-                self.status_var.set("切换失败")
-                return None
-            self.applied_global_mcp_server_names = self._safe_mcp_server_names(effective_global_mcp)
-        if supports_claude:
-            try:
-                result.claude_backup_dir = self.claude_manager.apply_profile(profile)
-                result.claude_settings_path = self.claude_manager.settings_path
-            except Exception as exc:
-                messagebox.showerror("切换失败", f"写入 Claude 配置失败：\n{exc}", parent=self.root)
-                self.status_var.set("切换失败")
-                return None
+        if supports_codex and not self._apply_codex_profile_to_global_config(profile, result):
+            return None
+        if supports_claude and not self._apply_claude_profile_to_global_config(profile, result):
+            return None
         self.selected_profile_id = profile.id
+        self.persist_state()
+        self.refresh_global_tab()
+        self.refresh_library_tab()
+        self.refresh_test_tab()
+        return result
+
+    def _apply_selected_global_profiles(self) -> GlobalApplyResult | None:
+        codex_profile = self._profile_from_global_choice(VENDOR_CODEX)
+        claude_profile = self._profile_from_global_choice(VENDOR_CLAUDE)
+        if not codex_profile and not claude_profile:
+            messagebox.showinfo("提示", "请先为 Codex 或 Claude 选择全局 API 配置。", parent=self.root)
+            return None
+        result = GlobalApplyResult()
+        if codex_profile and not self._apply_codex_profile_to_global_config(codex_profile, result):
+            return None
+        if claude_profile and not self._apply_claude_profile_to_global_config(claude_profile, result):
+            return None
+        self.selected_profile_id = (codex_profile or claude_profile).id
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_library_tab()
@@ -3095,16 +3268,12 @@ class CodexSwitchApp:
         return "\n\n".join(parts)
 
     def apply_global_profile(self) -> None:
-        profile = self._profile_from_global_choice()
-        if not profile:
-            messagebox.showinfo("提示", "请先新增或选择一套全局 API 配置。", parent=self.root)
-            return
-        result = self._apply_profile_to_global_config(profile)
+        result = self._apply_selected_global_profiles()
         if result is None:
             return
         targets = self._global_apply_targets(result)
-        self.status_var.set(f"已写入全局配置：{profile.name}（{targets}）")
-        messagebox.showinfo("写入成功", f"已写入全局配置“{profile.name}”。\n\n{self._global_apply_detail(result)}", parent=self.root)
+        self.status_var.set(f"已写入全局配置：{targets}")
+        messagebox.showinfo("写入成功", f"已写入全局配置：{targets}\n\n{self._global_apply_detail(result)}", parent=self.root)
 
     def apply_selected_profile(self) -> None:
         profile = self.get_selected_profile()

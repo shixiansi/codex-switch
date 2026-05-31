@@ -34,17 +34,67 @@ class ProfileStore:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.storage_path = self.root_dir / "profiles.json"
 
-    def load(self) -> tuple[list[Profile], str | None, list[ProjectRecord], str | None, bool, str, list[str], bool, str, int, dict, RouteProxySettings]:
+    def load(
+        self,
+    ) -> tuple[
+        list[Profile],
+        str | None,
+        list[ProjectRecord],
+        str | None,
+        bool,
+        str,
+        list[str],
+        bool,
+        str,
+        int,
+        dict,
+        RouteProxySettings,
+        list[str] | None,
+        str | None,
+        str | None,
+    ]:
         default_global_mcp_toml = load_default_global_mcp_toml()
         default_agents_doc_text = load_default_agents_doc_text()
         if not self.storage_path.exists():
-            return [], None, [], None, False, default_global_mcp_toml, [], False, default_agents_doc_text, DEFAULT_MODEL_BATCH_CONCURRENCY, {}, RouteProxySettings()
+            return (
+                [],
+                None,
+                [],
+                None,
+                False,
+                default_global_mcp_toml,
+                [],
+                False,
+                default_agents_doc_text,
+                DEFAULT_MODEL_BATCH_CONCURRENCY,
+                {},
+                RouteProxySettings(),
+                None,
+                None,
+                None,
+            )
 
         try:
             with self.storage_path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except (json.JSONDecodeError, OSError):
-            return [], None, [], None, False, default_global_mcp_toml, [], False, default_agents_doc_text, DEFAULT_MODEL_BATCH_CONCURRENCY, {}, RouteProxySettings()
+            return (
+                [],
+                None,
+                [],
+                None,
+                False,
+                default_global_mcp_toml,
+                [],
+                False,
+                default_agents_doc_text,
+                DEFAULT_MODEL_BATCH_CONCURRENCY,
+                {},
+                RouteProxySettings(),
+                None,
+                None,
+                None,
+            )
 
         profiles = [Profile.from_dict(item) for item in payload.get("profiles", [])]
         selected_profile_id = payload.get("selected_profile_id")
@@ -60,6 +110,9 @@ class ProfileStore:
         global_mcp_toml = default_global_mcp_toml
         applied_global_mcp_server_names: list[str] = []
         global_mcp_opt_out = False
+        global_mcp_server_names: list[str] | None = None
+        selected_codex_global_profile_id: str | None = None
+        selected_claude_global_profile_id: str | None = None
         agents_doc_text = default_agents_doc_text
         model_batch_concurrency = DEFAULT_MODEL_BATCH_CONCURRENCY
         model_batch_cache_by_profile: dict = {}
@@ -75,6 +128,14 @@ class ProfileStore:
             applied_names = settings_payload.get("applied_global_mcp_server_names", [])
             if isinstance(applied_names, list):
                 applied_global_mcp_server_names = [str(item) for item in applied_names if str(item).strip()]
+            if "global_mcp_server_names" in settings_payload:
+                selected_names = settings_payload.get("global_mcp_server_names")
+                if isinstance(selected_names, list):
+                    global_mcp_server_names = [str(item) for item in selected_names if str(item).strip()]
+                elif selected_names is None:
+                    global_mcp_server_names = None
+            selected_codex_global_profile_id = str(settings_payload.get("selected_codex_global_profile_id") or "") or None
+            selected_claude_global_profile_id = str(settings_payload.get("selected_claude_global_profile_id") or "") or None
             if "agents_doc_text" in settings_payload:
                 agents_doc_text = str(settings_payload.get("agents_doc_text") or "")
             model_batch_concurrency = clamp_model_batch_concurrency(
@@ -97,6 +158,9 @@ class ProfileStore:
             model_batch_concurrency,
             model_batch_cache_by_profile,
             route_proxy_settings,
+            global_mcp_server_names,
+            selected_codex_global_profile_id,
+            selected_claude_global_profile_id,
         )
 
     def save(
@@ -113,6 +177,9 @@ class ProfileStore:
         model_batch_concurrency: int = DEFAULT_MODEL_BATCH_CONCURRENCY,
         model_batch_cache_by_profile: dict | None = None,
         route_proxy_settings: RouteProxySettings | None = None,
+        global_mcp_server_names: list[str] | None = None,
+        selected_codex_global_profile_id: str | None = None,
+        selected_claude_global_profile_id: str | None = None,
     ) -> None:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
@@ -131,6 +198,11 @@ class ProfileStore:
                 "global_mcp_toml": global_mcp_toml,
                 "applied_global_mcp_server_names": list(applied_global_mcp_server_names or []),
                 "global_mcp_opt_out": global_mcp_opt_out,
+                "global_mcp_server_names": None
+                if global_mcp_server_names is None
+                else list(global_mcp_server_names),
+                "selected_codex_global_profile_id": selected_codex_global_profile_id,
+                "selected_claude_global_profile_id": selected_claude_global_profile_id,
                 "agents_doc_text": agents_doc_text,
                 "model_batch_concurrency": clamp_model_batch_concurrency(model_batch_concurrency),
                 "model_batch_cache_by_profile": dict(model_batch_cache_by_profile or {}),

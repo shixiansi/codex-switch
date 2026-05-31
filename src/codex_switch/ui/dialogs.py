@@ -1015,6 +1015,87 @@ class ProjectDialog(tk.Toplevel):
         self.destroy()
 
 
+class McpSelectionDialog(tk.Toplevel):
+    def __init__(
+        self,
+        master: tk.Misc,
+        server_names: list[str],
+        *,
+        selected_names: list[str] | None = None,
+        title: str = "选择 MCP",
+        subtitle: str = "从已保存的 MCP 工具中选择本次要启用的服务。",
+    ) -> None:
+        super().__init__(master)
+        self.title(title)
+        self.geometry("520x520")
+        self.minsize(460, 360)
+        self.configure(bg=PALETTE["app_bg"])
+        self.result: list[str] | None = None
+        selected = set(selected_names or [])
+        self.server_vars: dict[str, tk.BooleanVar] = {}
+
+        card = tk.Frame(
+            self,
+            bg=PALETTE["card_bg"],
+            highlightbackground=PALETTE["card_border"],
+            highlightthickness=1,
+            padx=20,
+            pady=18,
+        )
+        card.pack(fill="both", expand=True, padx=18, pady=18)
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(2, weight=1)
+
+        tk.Label(card, text=title, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(card, text=subtitle, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9), justify="left", wraplength=450).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(8, 12),
+        )
+
+        options = tk.Frame(card, bg=PALETTE["card_bg"])
+        options.grid(row=2, column=0, sticky="nsew")
+        options.columnconfigure(0, weight=1)
+        options.columnconfigure(1, weight=1)
+        for index, server_name in enumerate(server_names):
+            variable = tk.BooleanVar(value=server_name in selected)
+            self.server_vars[server_name] = variable
+            ttk.Checkbutton(options, text=server_name, variable=variable).grid(
+                row=index // 2,
+                column=index % 2,
+                sticky="w",
+                padx=(0, 12),
+                pady=4,
+            )
+
+        buttons = ttk.Frame(card)
+        buttons.grid(row=3, column=0, sticky="e", pady=(16, 0))
+        make_button(buttons, text="全选", variant="secondary", command=self._select_all).grid(row=0, column=0, padx=(0, 8))
+        make_button(buttons, text="清空", variant="secondary", command=self._clear_all).grid(row=0, column=1, padx=(0, 8))
+        make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=2, padx=(0, 8))
+        make_button(buttons, text="保存选择", variant="primary", command=self._on_submit).grid(row=0, column=3)
+
+        self.transient(master)
+        self.grab_set()
+
+    def _select_all(self) -> None:
+        for variable in self.server_vars.values():
+            variable.set(True)
+
+    def _clear_all(self) -> None:
+        for variable in self.server_vars.values():
+            variable.set(False)
+
+    def _on_submit(self) -> None:
+        self.result = [
+            server_name
+            for server_name, variable in self.server_vars.items()
+            if variable.get()
+        ]
+        self.destroy()
+
+
 class McpConfigDialog(tk.Toplevel):
     def __init__(
         self,

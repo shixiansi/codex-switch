@@ -48,6 +48,9 @@ class ProfileStoreTests(unittest.TestCase):
                 model_batch_concurrency,
                 model_batch_cache_by_profile,
                 route_proxy_settings,
+                global_mcp_server_names,
+                selected_codex_global_profile_id,
+                selected_claude_global_profile_id,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -70,6 +73,9 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(model_batch_concurrency, DEFAULT_MODEL_BATCH_CONCURRENCY)
             self.assertEqual(model_batch_cache_by_profile, {})
             self.assertFalse(route_proxy_settings.enabled)
+            self.assertIsNone(global_mcp_server_names)
+            self.assertIsNone(selected_codex_global_profile_id)
+            self.assertIsNone(selected_claude_global_profile_id)
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -108,6 +114,27 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.rules[0].project_id, "project-1")
             self.assertEqual(loaded.rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
             self.assertEqual(payload["settings"]["route_proxy"]["rules"][0]["primary_profile_id"], "profile-1")
+
+    def test_store_persists_global_profile_and_mcp_selection(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+
+            store.save(
+                [],
+                None,
+                global_mcp_server_names=["filesystem", "serena"],
+                selected_codex_global_profile_id="codex-profile",
+                selected_claude_global_profile_id="claude-profile",
+            )
+            loaded = store.load()
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(loaded[12], ["filesystem", "serena"])
+            self.assertEqual(loaded[13], "codex-profile")
+            self.assertEqual(loaded[14], "claude-profile")
+            self.assertEqual(payload["settings"]["global_mcp_server_names"], ["filesystem", "serena"])
+            self.assertEqual(payload["settings"]["selected_codex_global_profile_id"], "codex-profile")
+            self.assertEqual(payload["settings"]["selected_claude_global_profile_id"], "claude-profile")
 
     def test_store_persists_project_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:

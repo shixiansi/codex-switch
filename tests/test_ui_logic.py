@@ -52,6 +52,7 @@ from codex_switch.ui.app import (
     successful_model_batch_models,
     visible_profiles_for_filter,
 )
+from codex_switch.ui.global_logic import resolve_global_mcp_server_names, resolve_global_profile_id
 from codex_switch.ui.project_logic import (
     claude_project_template_options,
     codex_project_template_options,
@@ -114,6 +115,26 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_CODEX), [codex, generic])
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_CLAUDE), [claude, generic])
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_OTHER), [other])
+
+    def test_global_profile_ids_are_resolved_per_target(self) -> None:
+        codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        generic = Profile.create("generic", "https://generic.example.com", "sk-generic", vendor=VENDOR_GENERIC)
+        profiles = [codex, claude, generic]
+
+        self.assertEqual(resolve_global_profile_id(None, generic.id, profiles, profile_supports_codex), generic.id)
+        self.assertEqual(resolve_global_profile_id(claude.id, generic.id, profiles, profile_supports_codex), generic.id)
+        self.assertEqual(resolve_global_profile_id(claude.id, codex.id, profiles, profile_supports_claude), claude.id)
+
+    def test_global_mcp_selection_filters_saved_names(self) -> None:
+        available = ["filesystem", "serena", "context7"]
+
+        self.assertEqual(resolve_global_mcp_server_names(None, opt_out=False, available_names=available), available)
+        self.assertEqual(
+            resolve_global_mcp_server_names(["serena", "missing"], opt_out=False, available_names=available),
+            ["serena"],
+        )
+        self.assertEqual(resolve_global_mcp_server_names(["serena"], opt_out=True, available_names=available), [])
 
     def test_profile_library_sort_key_prioritizes_unsigned_profiles(self) -> None:
         signed = Profile.create(
