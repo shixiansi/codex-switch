@@ -556,7 +556,10 @@ class CodexSwitchApp:
     def _init_variables(self) -> None:
         self.status_var = tk.StringVar(value="准备就绪")
 
-        self.global_stats_var = tk.StringVar(value="配置 0 · 健康 0 · 受限 0 · 异常 0")
+        self.global_total_var = tk.StringVar(value="0")
+        self.global_healthy_var = tk.StringVar(value="0")
+        self.global_error_var = tk.StringVar(value="0")
+        self.global_degraded_var = tk.StringVar(value="0")
         self.codex_current_api_var = tk.StringVar(value="API 地址：-")
         self.codex_current_models_var = tk.StringVar(value="模型：-")
         self.claude_current_api_var = tk.StringVar(value="API 地址：-")
@@ -755,13 +758,13 @@ class CodexSwitchApp:
         )
 
     def _make_metric_card(self, parent: tk.Misc, title: str, value_var: tk.StringVar, foreground: str, background: str) -> tk.Frame:
-        card = self._make_card(parent, 14, 14)
+        card = self._make_card(parent, 10, 8)
         card.columnconfigure(0, weight=1)
-        tk.Frame(card, bg=foreground, height=4).grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        tk.Frame(card, bg=foreground, height=4).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         tk.Label(card, text=title, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w")
-        tk.Label(card, textvariable=value_var, bg=PALETTE["card_bg"], fg=foreground, font=("Microsoft YaHei UI", 20, "bold")).grid(row=2, column=0, sticky="w", pady=(10, 0))
-        badge = tk.Label(card, text="配置统计", bg=background, fg=foreground, font=("Microsoft YaHei UI", 8, "bold"), padx=10, pady=4)
-        badge.grid(row=3, column=0, sticky="w", pady=(10, 0))
+        tk.Label(card, textvariable=value_var, bg=PALETTE["card_bg"], fg=foreground, font=("Microsoft YaHei UI", 20, "bold")).grid(row=2, column=0, sticky="w", pady=(6, 0))
+        badge = tk.Label(card, text="配置统计", bg=background, fg=foreground, font=("Microsoft YaHei UI", 8, "bold"), padx=8, pady=2)
+        badge.grid(row=3, column=0, sticky="w", pady=(6, 0))
         return card
 
     def _build_global_tab(self, parent: tk.Misc) -> None:
@@ -770,15 +773,13 @@ class CodexSwitchApp:
 
         metrics = tk.Frame(parent, bg=PALETTE["panel_bg"])
         metrics.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        metrics.columnconfigure(0, weight=1)
-        tk.Label(
-            metrics,
-            textvariable=self.global_stats_var,
-            bg=PALETTE["panel_bg"],
-            fg=PALETTE["muted"],
-            font=self.small_font,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew")
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1)
+
+        self._make_metric_card(metrics, "配置总数", self.global_total_var, PALETTE["text"], PALETTE["neutral_soft"]).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self._make_metric_card(metrics, "健康配置", self.global_healthy_var, PALETTE["success"], PALETTE["success_soft"]).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self._make_metric_card(metrics, "受限配置", self.global_degraded_var, PALETTE["warning"], PALETTE["warning_soft"]).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        self._make_metric_card(metrics, "异常配置", self.global_error_var, PALETTE["danger"], PALETTE["danger_soft"]).grid(row=0, column=3, sticky="ew")
 
         content = tk.Frame(parent, bg=PALETTE["panel_bg"])
         content.grid(row=1, column=0, sticky="nsew")
@@ -2070,7 +2071,10 @@ class CodexSwitchApp:
         self.current_config = self.manager.read_current_config()
         total, healthy, degraded, error = self._current_status_counts()
 
-        self.global_stats_var.set(f"配置 {total} · 健康 {healthy} · 受限 {degraded} · 异常 {error}")
+        self.global_total_var.set(str(total))
+        self.global_healthy_var.set(str(healthy))
+        self.global_degraded_var.set(str(degraded))
+        self.global_error_var.set(str(error))
         self.codex_current_api_var.set(f"API 地址：{self.current_config.base_url or '-'}")
 
         model_lines: list[str] = []
