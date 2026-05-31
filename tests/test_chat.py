@@ -72,6 +72,7 @@ class ChatTesterTests(unittest.TestCase):
                     self.send_response(404)
                     self.end_headers()
                     return
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 body = json.dumps({"choices": [{"message": {"content": "chat completion ok"}}]}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -107,6 +108,7 @@ class ChatTesterTests(unittest.TestCase):
     def test_send_message_returns_full_response_when_responses_text_is_missing(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 body = json.dumps(
                     {
                         "id": "resp_123",
@@ -143,6 +145,7 @@ class ChatTesterTests(unittest.TestCase):
     def test_send_message_returns_full_response_when_chat_content_is_missing(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 body = json.dumps({"choices": [{"message": {"tool_calls": [{"id": "call_1"}]}}]}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

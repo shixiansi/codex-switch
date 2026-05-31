@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -49,6 +50,13 @@ from codex_switch.ui.app import (
     run_model_batch_requests,
     successful_model_batch_models,
     visible_profiles_for_filter,
+)
+from codex_switch.ui.project_logic import (
+    project_bound_profile_ids,
+    project_claude_binding_changed,
+    project_claude_profile_id,
+    project_codex_binding_changed,
+    project_codex_profile_id,
 )
 from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
@@ -216,6 +224,38 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(all(status == "success" for _, status, _, _ in results))
         self.assertTrue(all(duration_ms >= 0 for _, _, _, duration_ms in results))
         self.assertEqual(tester.max_active, 3)
+
+    def test_project_binding_helpers_keep_legacy_profile_fallback(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "legacy-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        legacy_project = replace(project, codex_profile_id="", claude_profile_id="")
+
+        self.assertEqual(project_codex_profile_id(project), "codex-profile")
+        self.assertEqual(project_claude_profile_id(project), "claude-profile")
+        self.assertEqual(project_codex_profile_id(legacy_project), "legacy-profile")
+        self.assertEqual(project_claude_profile_id(legacy_project), "legacy-profile")
+        self.assertEqual(project_bound_profile_ids(project), {"legacy-profile", "codex-profile", "claude-profile"})
+
+    def test_project_binding_change_helpers_match_sync_boundaries(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+
+        self.assertFalse(project_codex_binding_changed(project, replace(project, name="renamed")))
+        self.assertFalse(project_claude_binding_changed(project, replace(project, name="renamed")))
+        self.assertTrue(project_codex_binding_changed(project, replace(project, codex_profile_id="new-codex")))
+        self.assertFalse(project_claude_binding_changed(project, replace(project, codex_profile_id="new-codex")))
+        self.assertFalse(project_codex_binding_changed(project, replace(project, claude_profile_id="new-claude")))
+        self.assertTrue(project_claude_binding_changed(project, replace(project, claude_profile_id="new-claude")))
+        self.assertTrue(project_codex_binding_changed(project, replace(project, project_dir=str(Path.cwd() / "next"))))
+        self.assertTrue(project_claude_binding_changed(project, replace(project, project_dir=str(Path.cwd() / "next"))))
 
     def test_route_proxy_rules_keep_claude_binding_for_openai_conversion(self) -> None:
         project = ProjectRecord.create(

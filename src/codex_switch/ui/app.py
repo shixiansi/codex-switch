@@ -92,6 +92,13 @@ from codex_switch.ui.styles import (
     make_status_badge,
     ttk,
 )
+from codex_switch.ui.project_logic import (
+    project_bound_profile_ids,
+    project_claude_binding_changed,
+    project_claude_profile_id,
+    project_codex_binding_changed,
+    project_codex_profile_id,
+)
 from codex_switch.ui.route_proxy_logic import (
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_PROTOCOLS,
@@ -2131,8 +2138,8 @@ class CodexSwitchApp:
             for item in self.project_tree.get_children():
                 self.project_tree.delete(item)
             for project in self.projects:
-                codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
-                claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+                codex_profile = self._profile_by_id(project_codex_profile_id(project))
+                claude_profile = self._profile_by_id(project_claude_profile_id(project))
                 codex_name = codex_profile.name if codex_profile else "配置已删除"
                 claude_name = claude_profile.name if claude_profile else "配置已删除"
                 self.project_tree.insert(
@@ -2175,8 +2182,8 @@ class CodexSwitchApp:
             for item in self.proxy_project_tree.get_children():
                 self.proxy_project_tree.delete(item)
             for project in self.projects:
-                codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
-                claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+                codex_profile = self._profile_by_id(project_codex_profile_id(project))
+                claude_profile = self._profile_by_id(project_claude_profile_id(project))
                 self.proxy_project_tree.insert(
                     "",
                     "end",
@@ -2250,8 +2257,8 @@ class CodexSwitchApp:
         self.project_script_var.set(str(self._get_project_script_path(project)))
         self.project_mcp_var.set(self._project_mcp_selection_summary(project))
 
-        codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
-        claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        codex_profile = self._profile_by_id(project_codex_profile_id(project))
+        claude_profile = self._profile_by_id(project_claude_profile_id(project))
         if codex_profile:
             self.project_selected_codex_profile_var.set(f"{codex_profile.name} / {codex_profile.vendor_label}")
             self.project_selected_codex_model_var.set(codex_profile.codex_display_model)
@@ -2598,14 +2605,14 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        codex_profile_id = project.codex_profile_id or project.profile_id
+        codex_profile_id = project_codex_profile_id(project)
         codex_profile = self._profile_by_id(codex_profile_id)
         if codex_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
         codex_protocol = self.proxy_codex_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_OPENAI
         claude_protocol = self.proxy_claude_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_ANTHROPIC
-        claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        claude_profile = self._profile_by_id(project_claude_profile_id(project))
         if claude_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
@@ -2830,7 +2837,7 @@ class CodexSwitchApp:
         bound_projects = [
             project.name
             for project in self.projects
-            if profile.id in {project.profile_id, project.codex_profile_id, project.claude_profile_id}
+            if profile.id in project_bound_profile_ids(project)
         ]
         if bound_projects:
             messagebox.showerror("无法删除", f"以下项目仍绑定此配置：\n{', '.join(bound_projects)}", parent=self.root)
@@ -2889,7 +2896,7 @@ class CodexSwitchApp:
         updated_paths: list[Path] = []
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         if sync_codex:
-            codex_profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
+            codex_profile = self._profile_by_id(project_codex_profile_id(project))
             if codex_profile is None:
                 messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
                 return False
@@ -2908,7 +2915,7 @@ class CodexSwitchApp:
                 return False
 
         if sync_claude:
-            claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+            claude_profile = self._profile_by_id(project_claude_profile_id(project))
             if claude_profile is None:
                 messagebox.showerror("无法同步", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
                 return False
@@ -2960,15 +2967,8 @@ class CodexSwitchApp:
             mcp_server_names=dialog.result["mcp_server_names"],
             updated_at=now_iso(),
         )
-        api_binding_changed = (
-            updated.profile_id != project.profile_id
-            or updated.codex_profile_id != project.codex_profile_id
-            or updated.project_dir != project.project_dir
-        )
-        claude_binding_changed = (
-            updated.claude_profile_id != project.claude_profile_id
-            or updated.project_dir != project.project_dir
-        )
+        api_binding_changed = project_codex_binding_changed(project, updated)
+        claude_binding_changed = project_claude_binding_changed(project, updated)
         self.projects = [updated if item.id == updated.id else item for item in self.projects]
         self.selected_project_id = updated.id
         self.persist_state()
@@ -3050,11 +3050,11 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        profile = self._profile_by_id(project.codex_profile_id or project.profile_id)
+        profile = self._profile_by_id(project_codex_profile_id(project))
         if not profile:
             messagebox.showerror("无法生成", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
-        claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        claude_profile = self._profile_by_id(project_claude_profile_id(project))
         project_mcp_toml = self._effective_project_mcp_toml(project)
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         try:
@@ -3085,7 +3085,7 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        profile = self._profile_by_id(project_claude_profile_id(project))
         if not profile:
             messagebox.showerror("无法生成", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
@@ -3206,7 +3206,7 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
+        profile = self._profile_by_id(project_claude_profile_id(project))
         if not profile:
             messagebox.showerror("启动失败", "项目绑定的 Claude 配置已删除。", parent=self.root)
             return
