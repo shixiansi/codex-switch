@@ -5,9 +5,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib import parse
+import gzip
 import http.client
 import json
 import threading
+import zlib
 
 from codex_switch.models import (
     Profile,
@@ -191,6 +193,7 @@ class RouteProxyServer:
                 response_headers.pop("content-length", None)
                 return upstream_response.status, response_headers, None, stream_transform(upstream_response)
             response_body = upstream_response.read()
+            response_body = self._decode_response_body(response_body, response_headers)
             if response_transform is not None and response_body:
                 payload = json.loads(response_body.decode("utf-8"))
                 response_body = json.dumps(response_transform(payload), ensure_ascii=False).encode("utf-8")
@@ -238,6 +241,7 @@ class RouteProxyServer:
                 continue
             rendered[name] = value
         rendered["Content-Type"] = "application/json"
+        rendered["Accept-Encoding"] = "identity"
         if protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC:
             rendered["x-api-key"] = profile.api_key
             rendered.setdefault("anthropic-version", headers.get("anthropic-version", "2023-06-01"))
@@ -253,6 +257,20 @@ class RouteProxyServer:
                 continue
             headers[lowered] = value
         return headers
+
+    def _decode_response_body(self, body: bytes, headers: dict[str, str]) -> bytes:
+        encoding = headers.get("content-encoding", "").casefold().strip()
+        if not body or not encoding or encoding == "identity":
+            return body
+        if encoding == "gzip":
+            decoded = gzip.decompress(body)
+        elif encoding == "deflate":
+            decoded = zlib.decompress(body)
+        else:
+            return body
+        headers.pop("content-encoding", None)
+        headers["content-length"] = str(len(decoded))
+        return decoded
 
     def _replace_path_endpoint(self, path: str, endpoint: str) -> str:
         parsed = parse.urlparse(path)

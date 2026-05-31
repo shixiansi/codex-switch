@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import gzip
 import json
 import shutil
 import threading
@@ -1346,6 +1347,59 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(response_payload["type"], "message")
         self.assertEqual(response_payload["content"], [{"type": "text", "text": "converted ok"}])
         self.assertEqual(response_payload["usage"], {"input_tokens": 3, "output_tokens": 2})
+
+    def test_anthropic_to_openai_route_decodes_gzip_response(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["accept_encoding"] = self.headers.get("Accept-Encoding")
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                raw_body = json.dumps(
+                    {
+                        "id": "chatcmpl_gzip",
+                        "choices": [{"finish_reason": "stop", "message": {"content": "gzip ok"}}],
+                    }
+                ).encode("utf-8")
+                body = gzip.compress(raw_body)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("openai", f"http://127.0.0.1:{upstream.server_port}", "sk-openai", codex_model="gpt-5")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "claude-sonnet", "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={"Accept-Encoding": "gzip, deflate"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(captured["accept_encoding"], "identity")
+        self.assertIsNone(headers.get("content-encoding"))
+        self.assertEqual(response_payload["content"], [{"type": "text", "text": "gzip ok"}])
 
     def test_anthropic_to_openai_route_converts_streaming_response(self) -> None:
         class Handler(BaseHTTPRequestHandler):
