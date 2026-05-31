@@ -17,6 +17,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PLACEHOLDER_KEY,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     VENDOR_CLAUDE,
@@ -30,6 +31,7 @@ from codex_switch.proxy import (
     openai_to_anthropic_response,
     responses_to_openai_chat_response,
 )
+from codex_switch.proxy.protocol_matrix import PROTOCOL_TRANSLATIONS, translation_for_protocol
 from codex_switch.proxy.translator import iter_openai_chat_sse_to_responses, iter_openai_sse_to_anthropic
 
 
@@ -39,6 +41,28 @@ class RouteProxyTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return server
+
+    def test_protocol_matrix_selects_conversion_by_protocol_and_endpoint(self) -> None:
+        self.assertEqual(
+            [item.protocol for item in PROTOCOL_TRANSLATIONS],
+            [
+                ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+                ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+            ],
+        )
+        anthropic = translation_for_protocol(ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI, "/v1/messages?stream=true")
+        chat_to_responses = translation_for_protocol(ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES, "/v1/chat/completions")
+        responses_to_chat = translation_for_protocol(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT, "/v1/responses")
+
+        self.assertIsNotNone(anthropic)
+        self.assertIsNotNone(chat_to_responses)
+        self.assertIsNotNone(responses_to_chat)
+        self.assertEqual(anthropic.upstream_endpoint, "/v1/chat/completions")
+        self.assertEqual(chat_to_responses.upstream_endpoint, "/v1/responses")
+        self.assertEqual(responses_to_chat.upstream_endpoint, "/v1/chat/completions")
+        self.assertIsNone(translation_for_protocol(ROUTE_PROXY_PROTOCOL_OPENAI, "/v1/responses"))
+        self.assertIsNone(translation_for_protocol(ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES, "/v1/responses"))
 
     def test_openai_passthrough_rewrites_auth_and_preserves_query_once(self) -> None:
         captured: dict[str, str | None] = {}

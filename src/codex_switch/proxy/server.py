@@ -19,24 +19,10 @@ from codex_switch.models import (
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
-    ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
-    ROUTE_PROXY_PROTOCOL_OPENAI,
-    ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
-    ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
 )
+from codex_switch.proxy.protocol_matrix import translation_for_protocol
 from codex_switch.proxy.sanitize import sanitize_text
-from codex_switch.proxy.translator import (
-    TranslationError,
-    anthropic_to_openai_request,
-    iter_openai_chat_sse_to_responses,
-    iter_openai_sse_to_anthropic,
-    iter_responses_sse_to_openai_chat,
-    openai_chat_to_responses_response,
-    openai_chat_to_responses_request,
-    openai_responses_to_chat_request,
-    openai_to_anthropic_response,
-    responses_to_openai_chat_response,
-)
+from codex_switch.proxy.translator import TranslationError
 
 
 HOP_BY_HOP_HEADERS = {
@@ -179,30 +165,13 @@ class RouteProxyServer:
         response_transform = None
         stream_transform = None
         upstream_model = route.upstream_model or profile.codex_display_model or model
-        if protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI:
-            rendered_path = self._replace_path_endpoint(upstream_path, "/v1/chat/completions")
-            converted = anthropic_to_openai_request(request_payload, upstream_model)
+        translation = translation_for_protocol(protocol, rendered_path)
+        if translation is not None:
+            rendered_path = self._replace_path_endpoint(upstream_path, translation.upstream_endpoint)
+            converted = translation.request(request_payload, upstream_model)
             rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
-            response_transform = lambda payload: openai_to_anthropic_response(payload, model or upstream_model)
-            stream_transform = lambda chunks: list(iter_openai_sse_to_anthropic(chunks, model or upstream_model))
-        elif (
-            protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES
-            and parse.urlparse(rendered_path).path == "/v1/chat/completions"
-        ):
-            rendered_path = self._replace_path_endpoint(upstream_path, "/v1/responses")
-            converted = openai_chat_to_responses_request(request_payload, upstream_model)
-            rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
-            response_transform = lambda payload: responses_to_openai_chat_response(payload, model or upstream_model)
-            stream_transform = lambda chunks: list(iter_responses_sse_to_openai_chat(chunks, model or upstream_model))
-        elif (
-            protocol == ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT
-            and parse.urlparse(rendered_path).path == "/v1/responses"
-        ):
-            rendered_path = self._replace_path_endpoint(upstream_path, "/v1/chat/completions")
-            converted = openai_responses_to_chat_request(request_payload, upstream_model)
-            rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
-            response_transform = lambda payload: openai_chat_to_responses_response(payload, model or upstream_model)
-            stream_transform = lambda chunks: list(iter_openai_chat_sse_to_responses(chunks, model or upstream_model))
+            response_transform = lambda payload: translation.response(payload, model or upstream_model)
+            stream_transform = lambda chunks: list(translation.stream(chunks, model or upstream_model))
 
         parsed_base = parse.urlparse(profile.base_url.rstrip("/"))
         if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
