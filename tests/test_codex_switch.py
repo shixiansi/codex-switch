@@ -38,6 +38,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PLACEHOLDER_KEY,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -47,7 +48,13 @@ from codex_switch.models import (
     profile_supports_codex,
     today_iso,
 )
-from codex_switch.proxy import RouteProxyServer, anthropic_to_openai_request, openai_to_anthropic_response
+from codex_switch.proxy import (
+    RouteProxyServer,
+    anthropic_to_openai_request,
+    openai_chat_to_responses_request,
+    openai_to_anthropic_response,
+    responses_to_openai_chat_response,
+)
 from codex_switch.proxy.translator import iter_openai_sse_to_anthropic
 from codex_switch.project_template import (
     CLAUDE_API_KEY_ENV_KEY,
@@ -547,10 +554,13 @@ class UiFilterTests(unittest.TestCase):
             project,
             codex_profile,
             claude_profile,
+            ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
             ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
         )
 
         self.assertEqual(rules[0].primary_profile_id, "codex-profile")
+        self.assertEqual(rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES)
+        self.assertEqual(rules[0].upstream_model, "gpt-codex")
         self.assertEqual(rules[1].primary_profile_id, "claude-profile")
         self.assertEqual(rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(rules[1].upstream_model, "mimo-v2.5-pro")
@@ -1160,6 +1170,122 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["authorization"], "Bearer sk-upstream")
         self.assertIsNone(captured["x_api_key"])
         self.assertEqual(events[-1].client_type, ROUTE_PROXY_CLIENT_CODEX)
+
+    def test_openai_chat_to_responses_converts_request_and_response(self) -> None:
+        converted = openai_chat_to_responses_request(
+            {
+                "model": "chat-model",
+                "messages": [
+                    {"role": "system", "content": "be helpful"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "max_tokens": 32,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "description": "Lookup data",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            },
+            "responses-model",
+        )
+
+        self.assertEqual(converted["model"], "responses-model")
+        self.assertEqual(converted["instructions"], "be helpful")
+        self.assertEqual(converted["input"], [{"role": "user", "content": "hello"}])
+        self.assertEqual(converted["max_output_tokens"], 32)
+        self.assertEqual(converted["tools"][0]["name"], "lookup")
+
+        chat = responses_to_openai_chat_response(
+            {
+                "id": "resp_1",
+                "model": "responses-model",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "hello back"}],
+                    }
+                ],
+                "usage": {"input_tokens": 4, "output_tokens": 5},
+            },
+            "chat-model",
+        )
+
+        self.assertEqual(chat["object"], "chat.completion")
+        self.assertEqual(chat["model"], "chat-model")
+        self.assertEqual(chat["choices"][0]["message"]["content"], "hello back")
+        self.assertEqual(chat["usage"]["prompt_tokens"], 4)
+        self.assertEqual(chat["usage"]["completion_tokens"], 5)
+
+    def test_openai_chat_to_responses_route_converts_request_and_response(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "resp_1",
+                        "model": "responses-model",
+                        "output_text": "responses ok",
+                        "usage": {"input_tokens": 2, "output_tokens": 3},
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("responses", f"http://127.0.0.1:{upstream.server_port}", "sk-responses", codex_model="responses-model")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+                    upstream_model="responses-model",
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps(
+            {
+                "model": "chat-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 64,
+            }
+        ).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/chat/completions",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(captured["path"], "/v1/responses")
+        self.assertEqual(captured["authorization"], "Bearer sk-responses")
+        self.assertEqual(captured["payload"]["model"], "responses-model")
+        self.assertEqual(captured["payload"]["input"], [{"role": "user", "content": "hello"}])
+        self.assertEqual(captured["payload"]["max_output_tokens"], 64)
+        self.assertEqual(response_payload["choices"][0]["message"]["content"], "responses ok")
+        self.assertEqual(response_payload["usage"]["completion_tokens"], 3)
 
     def test_anthropic_passthrough_uses_x_api_key(self) -> None:
         captured: dict[str, object] = {}

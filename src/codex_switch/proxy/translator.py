@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from typing import Any
 import json
+import time
 import uuid
 
 
@@ -68,6 +69,26 @@ def _openai_arguments_to_dict(value: Any) -> dict:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _chat_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type in {"text", "input_text", "output_text"}:
+                    parts.append(str(block.get("text") or ""))
+                else:
+                    parts.append(json.dumps(block, ensure_ascii=False))
+            else:
+                parts.append(str(block))
+        return "\n".join(part for part in parts if part)
+    if content is None:
+        return ""
+    return str(content)
 
 
 def anthropic_to_openai_request(payload: dict[str, Any], upstream_model: str) -> dict[str, Any]:
@@ -169,6 +190,76 @@ def anthropic_to_openai_request(payload: dict[str, Any], upstream_model: str) ->
     return rendered
 
 
+def openai_chat_to_responses_request(payload: dict[str, Any], upstream_model: str) -> dict[str, Any]:
+    instructions: list[str] = []
+    input_items: list[dict[str, Any]] = []
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            raise TranslationError("OpenAI chat message must be an object.")
+        role = str(message.get("role") or "user")
+        content_text = _chat_content_to_text(message.get("content", ""))
+        if role in {"system", "developer"}:
+            if content_text:
+                instructions.append(content_text)
+            continue
+        if role == "tool":
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(message.get("tool_call_id") or ""),
+                    "output": content_text,
+                }
+            )
+            continue
+        input_items.append({"role": role, "content": content_text})
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function") or {}
+            input_items.append(
+                {
+                    "type": "function_call",
+                    "call_id": str(tool_call.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                    "name": str(function.get("name") or ""),
+                    "arguments": str(function.get("arguments") or "{}"),
+                }
+            )
+
+    rendered: dict[str, Any] = {
+        "model": upstream_model or str(payload.get("model") or ""),
+        "input": input_items or "",
+    }
+    if instructions:
+        rendered["instructions"] = "\n".join(instructions)
+    for source, target in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("stream", "stream"),
+    ):
+        if source in payload:
+            rendered[target] = payload[source]
+    if "max_tokens" in payload:
+        rendered["max_output_tokens"] = payload["max_tokens"]
+    if "stop" in payload:
+        rendered["stop"] = payload["stop"]
+
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        rendered["tools"] = [
+            {
+                "type": "function",
+                "name": str((tool.get("function") or {}).get("name") or ""),
+                "description": str((tool.get("function") or {}).get("description") or ""),
+                "parameters": (tool.get("function") or {}).get("parameters") or {},
+            }
+            for tool in tools
+            if isinstance(tool, dict) and tool.get("type") == "function"
+        ]
+    if "tool_choice" in payload:
+        rendered["tool_choice"] = payload["tool_choice"]
+    return rendered
+
+
 def openai_to_anthropic_response(payload: dict[str, Any], model: str) -> dict[str, Any]:
     choice = (payload.get("choices") or [{}])[0]
     message = choice.get("message") or {}
@@ -204,6 +295,55 @@ def openai_to_anthropic_response(payload: dict[str, Any], model: str) -> dict[st
         "usage": {
             "input_tokens": int(usage.get("prompt_tokens") or 0),
             "output_tokens": int(usage.get("completion_tokens") or 0),
+        },
+    }
+
+
+def responses_to_openai_chat_response(payload: dict[str, Any], model: str) -> dict[str, Any]:
+    text = str(payload.get("output_text") or "")
+    collect_output_text = not text
+    tool_calls: list[dict[str, Any]] = []
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "message":
+            for block in item.get("content") or []:
+                if collect_output_text and isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
+                    text += str(block.get("text") or "")
+        elif item_type == "function_call":
+            tool_calls.append(
+                {
+                    "id": str(item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                    "type": "function",
+                    "function": {
+                        "name": str(item.get("name") or ""),
+                        "arguments": str(item.get("arguments") or "{}"),
+                    },
+                }
+            )
+    message: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    usage = payload.get("usage") or {}
+    prompt_tokens = int(usage.get("input_tokens") or 0)
+    completion_tokens = int(usage.get("output_tokens") or 0)
+    return {
+        "id": str(payload.get("id") or f"chatcmpl_{uuid.uuid4().hex[:24]}"),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model or str(payload.get("model") or ""),
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": int(usage.get("total_tokens") or prompt_tokens + completion_tokens),
         },
     }
 
@@ -309,3 +449,47 @@ def iter_openai_sse_to_anthropic(lines: Iterable[bytes], model: str) -> Iterator
     stop_reason = "tool_use" if tool_blocks else "end_turn"
     yield event("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": output_tokens}})
     yield event("message_stop", {"type": "message_stop"})
+
+
+def iter_responses_sse_to_openai_chat(lines: Iterable[bytes], model: str) -> Iterator[bytes]:
+    chunk_id = f"chatcmpl_{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+
+    def chunk(delta: dict[str, Any], finish_reason: str | None = None) -> bytes:
+        payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    yield chunk({"role": "assistant"})
+    for raw_line in lines:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type == "response.output_text.delta" and event.get("delta"):
+            yield chunk({"content": str(event.get("delta") or "")})
+        elif event_type == "response.function_call_arguments.delta":
+            yield chunk(
+                {
+                    "tool_calls": [
+                        {
+                            "index": int(event.get("output_index") or 0),
+                            "function": {"arguments": str(event.get("delta") or "")},
+                        }
+                    ]
+                }
+            )
+    yield chunk({}, "stop")
+    yield b"data: [DONE]\n\n"

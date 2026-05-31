@@ -43,6 +43,8 @@ from codex_switch.models import (
     ROUTE_PROXY_PLACEHOLDER_KEY,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -181,8 +183,14 @@ def route_proxy_rules_for_project(
     project: ProjectRecord,
     codex_profile: Profile,
     claude_profile: Profile,
+    codex_protocol: str,
     claude_protocol: str,
 ) -> list[RouteProxyRule]:
+    codex_upstream_model = (
+        codex_profile.codex_display_model
+        if codex_protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES
+        else ""
+    )
     claude_upstream_model = (
         claude_profile.claude_display_model
         if claude_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
@@ -193,6 +201,8 @@ def route_proxy_rules_for_project(
             project_id=project.id,
             client_type=ROUTE_PROXY_CLIENT_CODEX,
             primary_profile_id=codex_profile.id,
+            upstream_protocol=codex_protocol,
+            upstream_model=codex_upstream_model,
         ),
         RouteProxyRule.create(
             project_id=project.id,
@@ -569,6 +579,7 @@ class CodexSwitchApp:
         self.proxy_hint_var = tk.StringVar(value="项目级代理默认关闭。启用项目后生成模板会指向本地代理。")
         self.proxy_selected_project_var = tk.StringVar(value="未选择项目")
         self.proxy_selected_rules_var = tk.StringVar(value="-")
+        self.proxy_codex_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_OPENAI)
         self.proxy_claude_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_ANTHROPIC)
 
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
@@ -1090,14 +1101,22 @@ class CodexSwitchApp:
         ttk.Entry(settings, textvariable=self.proxy_host_var, width=18).grid(row=0, column=1, sticky="w", pady=4)
         tk.Label(settings, text="端口", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w", padx=(16, 10), pady=4)
         ttk.Entry(settings, textvariable=self.proxy_port_var, width=8).grid(row=0, column=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="Codex 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Combobox(
+            settings,
+            textvariable=self.proxy_codex_protocol_var,
+            values=(ROUTE_PROXY_PROTOCOL_OPENAI, ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES),
+            state="readonly",
+            width=28,
+        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
             values=(ROUTE_PROXY_PROTOCOL_ANTHROPIC, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI),
             state="readonly",
             width=28,
-        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
+        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
 
         proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
         proxy_tree_wrap.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
@@ -2219,6 +2238,10 @@ class CodexSwitchApp:
             return
         summaries: list[str] = []
         for rule in rules:
+            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
+            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+                self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
             profile = self._profile_by_id(rule.primary_profile_id)
             profile_name = profile.name if profile else "配置已删除"
             summaries.append(f"{rule.client_type} / {rule.model_pattern} / {rule.upstream_protocol} -> {profile_name}")
@@ -2613,13 +2636,14 @@ class CodexSwitchApp:
         if codex_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
+        codex_protocol = self.proxy_codex_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_OPENAI
         claude_protocol = self.proxy_claude_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_ANTHROPIC
         claude_profile = self._profile_by_id(project.claude_profile_id or project.profile_id)
         if claude_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
         self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
-        self.route_proxy_settings.rules.extend(route_proxy_rules_for_project(project, codex_profile, claude_profile, claude_protocol))
+        self.route_proxy_settings.rules.extend(route_proxy_rules_for_project(project, codex_profile, claude_profile, codex_protocol, claude_protocol))
         self.persist_state()
         self.refresh_proxy_tab()
         if self._sync_project_api_binding(project):
