@@ -93,11 +93,19 @@ from codex_switch.ui.styles import (
     ttk,
 )
 from codex_switch.ui.project_logic import (
+    preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
+    project_claude_cmd_command,
     project_claude_profile_id,
+    project_codex_cmd_command,
     project_codex_binding_changed,
     project_codex_profile_id,
+    project_codex_script_paths,
+    project_codex_vscode_command,
+    project_custom_run_command,
+    project_root_path,
+    project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
@@ -106,7 +114,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_codex_wire_api_override_for_project,
     route_proxy_rules_for_project,
 )
-from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, project_start_script_paths, resolve_mcp_editor_text
+from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url, resolve_mcp_editor_text
 
 
 _SINGLE_INSTANCE_HANDLE = None
@@ -3164,17 +3172,14 @@ class CodexSwitchApp:
         )
 
     def _get_project_script_path(self, project: ProjectRecord) -> Path:
-        ps1_path, cmd_path = project_start_script_paths(project.project_dir)
-        if cmd_path.exists():
-            return cmd_path
-        return ps1_path
+        return preferred_project_script_path(project)
 
     def open_project_folder(self) -> None:
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        project_root = Path(project.project_dir)
+        project_root = project_root_path(project)
         if not project_root.exists():
             messagebox.showerror("打开失败", "项目目录不存在。", parent=self.root)
             return
@@ -3192,7 +3197,7 @@ class CodexSwitchApp:
             return
         try:
             subprocess.Popen(
-                ["cmd.exe", "/c", "code.cmd", str(Path(project.project_dir))],
+                project_vscode_open_command(project),
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
@@ -3229,7 +3234,7 @@ class CodexSwitchApp:
             env[CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
         try:
             subprocess.Popen(
-                ["cmd.exe", "/k", "claude"],
+                project_claude_cmd_command(),
                 cwd=project.project_dir,
                 env=env,
                 creationflags=_CREATE_NEW_CONSOLE,
@@ -3244,10 +3249,11 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        if project.run_command.strip():
+        run_command = project_custom_run_command(project)
+        if run_command:
             try:
                 subprocess.Popen(
-                    ["cmd.exe", "/k", project.run_command],
+                    run_command,
                     cwd=project.project_dir,
                     creationflags=_CREATE_NEW_CONSOLE,
                 )
@@ -3263,13 +3269,13 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        ps1_path, _cmd_path = project_start_script_paths(project.project_dir)
+        ps1_path, _cmd_path = project_codex_script_paths(project)
         if not ps1_path.exists():
             messagebox.showinfo("提示", "尚未找到 start-codex.ps1，请先生成项目模板。", parent=self.root)
             return
         try:
             subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1_path)],
+                project_codex_vscode_command(ps1_path),
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
@@ -3283,13 +3289,13 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        _ps1_path, cmd_path = project_start_script_paths(project.project_dir)
+        _ps1_path, cmd_path = project_codex_script_paths(project)
         if not cmd_path.exists():
             messagebox.showinfo("提示", "尚未找到 start-codex.cmd，请先生成项目模板。", parent=self.root)
             return
         try:
             subprocess.Popen(
-                ["cmd.exe", "/k", str(cmd_path)],
+                project_codex_cmd_command(cmd_path),
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )

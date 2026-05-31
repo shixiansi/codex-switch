@@ -36,6 +36,7 @@ from codex_switch.models import (
     profile_supports_codex,
     today_iso,
 )
+from codex_switch.project_template import CODEX_SCRIPT_DIRNAME
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.ui.app import (
     LIBRARY_VIEW_ALL,
@@ -52,11 +53,19 @@ from codex_switch.ui.app import (
     visible_profiles_for_filter,
 )
 from codex_switch.ui.project_logic import (
+    preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
+    project_claude_cmd_command,
     project_claude_profile_id,
+    project_codex_cmd_command,
     project_codex_binding_changed,
     project_codex_profile_id,
+    project_codex_script_paths,
+    project_codex_vscode_command,
+    project_custom_run_command,
+    project_root_path,
+    project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
@@ -256,6 +265,34 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(project_claude_binding_changed(project, replace(project, claude_profile_id="new-claude")))
         self.assertTrue(project_codex_binding_changed(project, replace(project, project_dir=str(Path.cwd() / "next"))))
         self.assertTrue(project_claude_binding_changed(project, replace(project, project_dir=str(Path.cwd() / "next"))))
+
+    def test_project_launch_helpers_build_paths_and_commands(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            project = ProjectRecord.create(str(temp_dir), "profile-id")
+            ps1_path, cmd_path = project_codex_script_paths(project)
+            script_root = temp_dir / CODEX_SCRIPT_DIRNAME
+
+            self.assertEqual(project_root_path(project), temp_dir)
+            self.assertEqual(ps1_path, script_root / "start-codex.ps1")
+            self.assertEqual(cmd_path, script_root / "start-codex.cmd")
+            self.assertEqual(preferred_project_script_path(project), ps1_path)
+
+            cmd_path.parent.mkdir(parents=True, exist_ok=True)
+            cmd_path.write_text("@echo off\n", encoding="utf-8")
+
+            self.assertEqual(preferred_project_script_path(project), cmd_path)
+            self.assertEqual(project_vscode_open_command(project), ("cmd.exe", "/c", "code.cmd", str(temp_dir)))
+            self.assertIsNone(project_custom_run_command(project))
+            self.assertEqual(
+                project_custom_run_command(replace(project, run_command=" npm run dev ")),
+                ("cmd.exe", "/k", "npm run dev"),
+            )
+            self.assertEqual(
+                project_codex_vscode_command(ps1_path),
+                ("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1_path)),
+            )
+            self.assertEqual(project_codex_cmd_command(cmd_path), ("cmd.exe", "/k", str(cmd_path)))
+            self.assertEqual(project_claude_cmd_command(), ("cmd.exe", "/k", "claude"))
 
     def test_route_proxy_rules_keep_claude_binding_for_openai_conversion(self) -> None:
         project = ProjectRecord.create(

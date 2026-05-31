@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from codex_switch.models import ProjectRecord
+from codex_switch.ui.utils import project_start_script_paths
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -36,3 +39,41 @@ def project_claude_binding_changed(previous: ProjectRecord, updated: ProjectReco
         updated.claude_profile_id != previous.claude_profile_id
         or updated.project_dir != previous.project_dir
     )
+
+
+def project_root_path(project: ProjectRecord) -> Path:
+    return Path(project.project_dir)
+
+
+def project_codex_script_paths(project: ProjectRecord) -> tuple[Path, Path]:
+    return project_start_script_paths(project.project_dir)
+
+
+def preferred_project_script_path(project: ProjectRecord) -> Path:
+    ps1_path, cmd_path = project_codex_script_paths(project)
+    if cmd_path.exists():
+        return cmd_path
+    return ps1_path
+
+
+def project_vscode_open_command(project: ProjectRecord) -> tuple[str, ...]:
+    return ("cmd.exe", "/c", "code.cmd", str(project_root_path(project)))
+
+
+def project_custom_run_command(project: ProjectRecord) -> tuple[str, ...] | None:
+    run_command = project.run_command.strip()
+    if not run_command:
+        return None
+    return ("cmd.exe", "/k", run_command)
+
+
+def project_codex_vscode_command(ps1_path: Path) -> tuple[str, ...]:
+    return ("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1_path))
+
+
+def project_codex_cmd_command(cmd_path: Path) -> tuple[str, ...]:
+    return ("cmd.exe", "/k", str(cmd_path))
+
+
+def project_claude_cmd_command() -> tuple[str, ...]:
+    return ("cmd.exe", "/k", "claude")
