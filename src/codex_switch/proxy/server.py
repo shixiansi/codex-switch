@@ -53,6 +53,12 @@ AUTH_HEADERS = {
     "api-key",
     "anthropic-api-key",
 }
+OPENAI_PATH_ALIASES = {
+    "/responses": "/v1/responses",
+    "/chat/completions": "/v1/chat/completions",
+    "/models": "/v1/models",
+}
+OPENAI_PROXY_PATHS = set(OPENAI_PATH_ALIASES) | set(OPENAI_PATH_ALIASES.values())
 
 
 class RouteProxyServer:
@@ -165,7 +171,7 @@ class RouteProxyServer:
     ) -> tuple[int, dict[str, str], bytes | None, list[bytes] | None]:
         protocol = route.upstream_protocol
         rendered_body = body
-        rendered_path = upstream_path
+        rendered_path = self._canonical_openai_path(upstream_path) if route.client_type == ROUTE_PROXY_CLIENT_CODEX else upstream_path
         response_transform = None
         stream_transform = None
         upstream_model = route.upstream_model or profile.codex_display_model or model
@@ -177,7 +183,7 @@ class RouteProxyServer:
             stream_transform = lambda chunks: list(iter_openai_sse_to_anthropic(chunks, model or upstream_model))
         elif (
             protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES
-            and parse.urlparse(upstream_path).path.endswith("/v1/chat/completions")
+            and parse.urlparse(rendered_path).path == "/v1/chat/completions"
         ):
             rendered_path = self._replace_path_endpoint(upstream_path, "/v1/responses")
             converted = openai_chat_to_responses_request(request_payload, upstream_model)
@@ -189,7 +195,7 @@ class RouteProxyServer:
         if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
             raise ValueError("Invalid upstream base_url.")
         parsed_rendered_path = parse.urlparse(rendered_path)
-        upstream_target = f"{parsed_base.path.rstrip('/')}{parsed_rendered_path.path}"
+        upstream_target = self._join_upstream_path(parsed_base.path, parsed_rendered_path.path)
         if parsed_rendered_path.query:
             upstream_target = f"{upstream_target}?{parsed_rendered_path.query}"
         rendered_headers = self._render_headers(headers, profile, protocol)
@@ -231,7 +237,7 @@ class RouteProxyServer:
         parsed_path = parse.urlparse(path).path
         if parsed_path.endswith("/v1/messages"):
             return ROUTE_PROXY_CLIENT_CLAUDE
-        if parsed_path.endswith(("/v1/responses", "/v1/chat/completions", "/v1/models")):
+        if parsed_path in OPENAI_PROXY_PATHS:
             return ROUTE_PROXY_CLIENT_CODEX
         return None
 
@@ -291,6 +297,24 @@ class RouteProxyServer:
         if parsed.query:
             rendered = f"{rendered}?{parsed.query}"
         return rendered
+
+    def _canonical_openai_path(self, path: str) -> str:
+        parsed = parse.urlparse(path)
+        rendered = OPENAI_PATH_ALIASES.get(parsed.path, parsed.path)
+        if parsed.query:
+            rendered = f"{rendered}?{parsed.query}"
+        return rendered
+
+    def _join_upstream_path(self, base_path: str, request_path: str) -> str:
+        normalized_base = (base_path or "").rstrip("/")
+        if normalized_base == "/":
+            normalized_base = ""
+        normalized_request = request_path if request_path.startswith("/") else f"/{request_path}"
+        if normalized_base.endswith("/v1") and normalized_request.startswith("/v1/"):
+            normalized_request = normalized_request[len("/v1") :]
+        if not normalized_base:
+            return normalized_request or "/"
+        return f"{normalized_base}{normalized_request}"
 
     def _json_response(self, status: HTTPStatus, payload: dict[str, Any]) -> tuple[int, dict[str, str], bytes, None]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
