@@ -65,6 +65,8 @@ from codex_switch.project_template import (
     CODEX_SCRIPT_DIRNAME,
     CLAUDE_API_KEY_ENV_KEY,
     CLAUDE_BASE_URL_ENV_KEY,
+    CLAUDE_FALLBACK_MODEL_ENV_KEY,
+    CLAUDE_MODEL_ENV_KEY,
     ProjectTemplateService,
     apply_claude_profile_env,
     load_default_agents_doc_text,
@@ -86,7 +88,13 @@ from codex_switch.ui.dialogs import (
     ProjectDialog,
     SuccessfulModelsDialog,
 )
-from codex_switch.ui.global_logic import resolve_global_mcp_server_names, resolve_global_profile_id
+from codex_switch.ui.global_logic import (
+    claude_settings_env_values,
+    global_profile_choice_names,
+    profile_for_choice_index,
+    resolve_global_mcp_server_names,
+    resolve_global_profile_id,
+)
 from codex_switch.ui.styles import (
     BOOTSTRAP_THEME,
     BootstrapWindow,
@@ -548,24 +556,15 @@ class CodexSwitchApp:
     def _init_variables(self) -> None:
         self.status_var = tk.StringVar(value="准备就绪")
 
-        self.current_name_var = tk.StringVar(value="正在读取当前配置...")
-        self.current_meta_var = tk.StringVar(value="")
-        self.current_api_var = tk.StringVar(value="")
-        self.current_auth_var = tk.StringVar(value="")
-        self.current_models_var = tk.StringVar(value="")
+        self.global_stats_var = tk.StringVar(value="配置 0 · 健康 0 · 受限 0 · 异常 0")
+        self.codex_current_api_var = tk.StringVar(value="API 地址：-")
+        self.codex_current_models_var = tk.StringVar(value="模型：-")
+        self.claude_current_api_var = tk.StringVar(value="API 地址：-")
+        self.claude_current_models_var = tk.StringVar(value="模型：-")
         self.current_path_var = tk.StringVar(value="")
-        self.current_key_var = tk.StringVar(value="-")
-        self.current_mcp_var = tk.StringVar(value="-")
         self.global_mcp_var = tk.StringVar(value="-")
         self.global_codex_profile_choice_var = tk.StringVar(value="")
         self.global_claude_profile_choice_var = tk.StringVar(value="")
-        self.global_codex_profile_summary_var = tk.StringVar(value="尚未选择 Codex 全局 API 配置。")
-        self.global_claude_profile_summary_var = tk.StringVar(value="尚未选择 Claude 全局 API 配置。")
-        self.current_match_var = tk.StringVar(value="未匹配")
-        self.global_total_var = tk.StringVar(value="0")
-        self.global_healthy_var = tk.StringVar(value="0")
-        self.global_error_var = tk.StringVar(value="0")
-        self.global_degraded_var = tk.StringVar(value="0")
 
         self.library_hint_var = tk.StringVar(value="还没有保存的配置。")
         self.library_selected_name_var = tk.StringVar(value="未选择配置")
@@ -770,14 +769,16 @@ class CodexSwitchApp:
         parent.rowconfigure(1, weight=1)
 
         metrics = tk.Frame(parent, bg=PALETTE["panel_bg"])
-        metrics.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        for column in range(4):
-            metrics.columnconfigure(column, weight=1)
-
-        self._make_metric_card(metrics, "配置总数", self.global_total_var, PALETTE["text"], PALETTE["neutral_soft"]).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self._make_metric_card(metrics, "健康配置", self.global_healthy_var, PALETTE["success"], PALETTE["success_soft"]).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        self._make_metric_card(metrics, "受限配置", self.global_degraded_var, PALETTE["warning"], PALETTE["warning_soft"]).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        self._make_metric_card(metrics, "异常配置", self.global_error_var, PALETTE["danger"], PALETTE["danger_soft"]).grid(row=0, column=3, sticky="ew")
+        metrics.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        metrics.columnconfigure(0, weight=1)
+        tk.Label(
+            metrics,
+            textvariable=self.global_stats_var,
+            bg=PALETTE["panel_bg"],
+            fg=PALETTE["muted"],
+            font=self.small_font,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
 
         content = tk.Frame(parent, bg=PALETTE["panel_bg"])
         content.grid(row=1, column=0, sticky="nsew")
@@ -793,29 +794,23 @@ class CodexSwitchApp:
         left = tk.Frame(current, bg=PALETTE["card_bg"])
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
         left.columnconfigure(0, weight=1)
-        tk.Label(left, text="当前生效配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
-        tk.Label(left, textvariable=self.current_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=1, column=0, sticky="w", pady=(8, 2))
-        tk.Label(left, textvariable=self.current_meta_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font, justify="left").grid(row=2, column=0, sticky="w")
-        tk.Label(left, textvariable=self.current_api_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=420).grid(row=3, column=0, sticky="w", pady=(10, 4))
-        tk.Label(left, textvariable=self.current_auth_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font, justify="left").grid(row=4, column=0, sticky="w")
-        tk.Label(left, text="当前 API Key", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=5, column=0, sticky="w", pady=(14, 4))
-        tk.Label(left, textvariable=self.current_key_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font).grid(row=6, column=0, sticky="w")
-        tk.Label(left, text="当前模型", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=7, column=0, sticky="w", pady=(14, 4))
-        tk.Label(left, textvariable=self.current_models_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font, justify="left", wraplength=420).grid(row=8, column=0, sticky="w")
+        tk.Label(left, text="Codex 当前生效配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+        tk.Label(left, textvariable=self.codex_current_models_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=420).grid(row=1, column=0, sticky="w", pady=(8, 4))
+        tk.Label(left, textvariable=self.codex_current_api_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font, justify="left", wraplength=420).grid(row=2, column=0, sticky="w")
+
+        tk.Label(left, text="Claude 当前生成配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=3, column=0, sticky="w", pady=(22, 0))
+        tk.Label(left, textvariable=self.claude_current_models_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=420).grid(row=4, column=0, sticky="w", pady=(8, 4))
+        tk.Label(left, textvariable=self.claude_current_api_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font, justify="left", wraplength=420).grid(row=5, column=0, sticky="w")
 
         right = tk.Frame(current, bg=PALETTE["card_bg"])
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
         tk.Label(right, text="配置文件位置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
         tk.Label(right, textvariable=self.current_path_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font, justify="left", wraplength=360).grid(row=1, column=0, sticky="w", pady=(10, 12))
-        tk.Label(right, text="当前 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=2, column=0, sticky="w")
-        tk.Label(right, textvariable=self.current_mcp_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.body_font, justify="left", wraplength=360).grid(row=3, column=0, sticky="w", pady=(10, 12))
-        self.current_status_badge = make_status_badge(right, textvariable=self.current_match_var)
-        self.current_status_badge.grid(row=4, column=0, sticky="w")
 
-        tk.Label(right, text="全局 API 设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=5, column=0, sticky="w", pady=(18, 8))
+        tk.Label(right, text="全局 API 设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=2, column=0, sticky="w", pady=(18, 8))
         codex_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
-        codex_profile_row.grid(row=6, column=0, sticky="ew")
+        codex_profile_row.grid(row=3, column=0, sticky="ew")
         codex_profile_row.columnconfigure(0, weight=1)
         tk.Label(codex_profile_row, text="Codex", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.small_font).grid(row=0, column=0, sticky="w")
         self.global_codex_profile_combo = ttk.Combobox(
@@ -826,18 +821,8 @@ class CodexSwitchApp:
         )
         self.global_codex_profile_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.global_codex_profile_combo.bind("<<ComboboxSelected>>", lambda event: self._on_global_profile_choice_changed(VENDOR_CODEX, event))
-        tk.Label(
-            right,
-            textvariable=self.global_codex_profile_summary_var,
-            bg=PALETTE["card_bg"],
-            fg=PALETTE["muted"],
-            font=self.small_font,
-            justify="left",
-            wraplength=360,
-        ).grid(row=7, column=0, sticky="w", pady=(6, 10))
-
         claude_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
-        claude_profile_row.grid(row=8, column=0, sticky="ew")
+        claude_profile_row.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         claude_profile_row.columnconfigure(0, weight=1)
         tk.Label(claude_profile_row, text="Claude", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.small_font).grid(row=0, column=0, sticky="w")
         self.global_claude_profile_combo = ttk.Combobox(
@@ -848,25 +833,13 @@ class CodexSwitchApp:
         )
         self.global_claude_profile_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.global_claude_profile_combo.bind("<<ComboboxSelected>>", lambda event: self._on_global_profile_choice_changed(VENDOR_CLAUDE, event))
-        tk.Label(
-            right,
-            textvariable=self.global_claude_profile_summary_var,
-            bg=PALETTE["card_bg"],
-            fg=PALETTE["muted"],
-            font=self.small_font,
-            justify="left",
-            wraplength=360,
-        ).grid(row=9, column=0, sticky="w", pady=(6, 0))
-
         global_api_actions = tk.Frame(right, bg=PALETTE["card_bg"])
-        global_api_actions.grid(row=10, column=0, sticky="ew", pady=(12, 0))
+        global_api_actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
         for column in range(3):
             global_api_actions.columnconfigure(column, weight=1)
-        make_button(global_api_actions, text="新增 API", variant="secondary", command=self.add_profile).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(global_api_actions, text="编辑 API", variant="secondary", command=self.edit_profile).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(global_api_actions, text="写入全局配置", variant="primary", command=self.apply_global_profile).grid(row=0, column=2, sticky="ew")
-        make_button(global_api_actions, text="打开 Codex 配置", variant="secondary", command=self.open_global_codex_config).grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(8, 0))
-        make_button(global_api_actions, text="打开 Claude 配置", variant="secondary", command=self.open_global_claude_config).grid(row=1, column=2, sticky="ew", pady=(8, 0))
+        make_button(global_api_actions, text="写入全局配置", variant="primary", command=self.apply_global_profile).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(global_api_actions, text="打开 Codex 配置", variant="secondary", command=self.open_global_codex_config).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(global_api_actions, text="打开 Claude 配置", variant="secondary", command=self.open_global_claude_config).grid(row=0, column=2, sticky="ew")
 
         mcp_card = self._make_card(content)
         mcp_card.grid(row=0, column=1, sticky="nsew")
@@ -1659,10 +1632,6 @@ class CodexSwitchApp:
             return f"{profile.codex_display_model} / {profile.claude_display_model}"
         return "-"
 
-    def _global_profile_choice_label(self, profile: Profile) -> str:
-        models = self._profile_model_summary(profile).replace("\n", " / ")
-        return f"{profile.name} | {profile.vendor_label} | {compact_text(models, 34)} | {compact_text(profile.base_url, 42)}"
-
     def _profiles_for_global_target(self, target: str) -> list[Profile]:
         if target == VENDOR_CODEX:
             return [profile for profile in self.profiles if profile_supports_codex(profile)]
@@ -1676,9 +1645,6 @@ class CodexSwitchApp:
     def _global_profile_combo_for(self, target: str):
         return self.global_codex_profile_combo if target == VENDOR_CODEX else self.global_claude_profile_combo
 
-    def _global_profile_summary_var_for(self, target: str) -> tk.StringVar:
-        return self.global_codex_profile_summary_var if target == VENDOR_CODEX else self.global_claude_profile_summary_var
-
     def _global_profile_id_for(self, target: str) -> str | None:
         return self.global_codex_profile_id if target == VENDOR_CODEX else self.global_claude_profile_id
 
@@ -1689,12 +1655,12 @@ class CodexSwitchApp:
             self.global_claude_profile_id = profile_id
 
     def _profile_from_global_choice(self, target: str) -> Profile | None:
-        choice = self._global_profile_choice_var_for(target).get().strip()
-        for profile in self._profiles_for_global_target(target):
-            if self._global_profile_choice_label(profile) == choice:
-                return profile
+        profiles = self._profiles_for_global_target(target)
+        profile = profile_for_choice_index(profiles, self._global_profile_combo_for(target).current())
+        if profile is not None:
+            return profile
         selected = self._profile_by_id(self._global_profile_id_for(target))
-        if selected and selected in self._profiles_for_global_target(target):
+        if selected and selected in profiles:
             return selected
         return None
 
@@ -1723,31 +1689,18 @@ class CodexSwitchApp:
             return
         combo = self._global_profile_combo_for(target)
         choice_var = self._global_profile_choice_var_for(target)
-        summary_var = self._global_profile_summary_var_for(target)
         profiles = self._profiles_for_global_target(target)
-        labels = tuple(self._global_profile_choice_label(profile) for profile in profiles)
+        labels = global_profile_choice_names(profiles)
         combo.configure(values=labels, state="readonly" if labels else "disabled")
         profile = self._profile_by_id(self._global_profile_id_for(target))
         if profile not in profiles:
             profile = profiles[0] if profiles else None
         if not profile:
             choice_var.set("")
-            summary_var.set(
-                "尚未选择 Codex 全局 API 配置。"
-                if target == VENDOR_CODEX
-                else "尚未选择 Claude 全局 API 配置。"
-            )
             return
-        choice_var.set(self._global_profile_choice_label(profile))
-        if target == VENDOR_CODEX:
-            target_text = f"Codex：{profile.provider_name} / {profile.wire_api} / {profile.codex_display_model or '-'}"
-        else:
-            target_text = f"Claude：anthropic_messages / {profile.claude_display_model or '-'}"
-        summary_var.set(
-            f"将写入：{target_text}\n"
-            f"API：{profile.base_url}\n"
-            f"活动 Key：{self._profile_key_summary(profile)}"
-        )
+        index = profiles.index(profile)
+        choice_var.set(profile.name)
+        combo.current(index)
 
     def _project_by_id(self, project_id: str | None) -> ProjectRecord | None:
         return next((item for item in self.projects if item.id == project_id), None)
@@ -2115,38 +2068,33 @@ class CodexSwitchApp:
 
     def refresh_global_tab(self) -> None:
         self.current_config = self.manager.read_current_config()
-        matched = self.find_matching_profile(self.current_config)
         total, healthy, degraded, error = self._current_status_counts()
 
-        self.global_total_var.set(str(total))
-        self.global_healthy_var.set(str(healthy))
-        self.global_degraded_var.set(str(degraded))
-        self.global_error_var.set(str(error))
-
-        self.current_name_var.set(matched.name if matched else "未匹配到已保存配置")
-        self.current_meta_var.set(f"提供方：{self.current_config.model_provider or '-'}    Wire API：{self.current_config.wire_api or '-'}")
-        self.current_api_var.set(f"API 地址：{self.current_config.base_url or '-'}")
-        auth_loaded = "已加载" if self.current_config.api_key_loaded else "未加载"
-        self.current_auth_var.set(f"鉴权：{self.current_config.auth_mode or '-'}    状态：{auth_loaded}")
-        self.current_key_var.set(hidden_secret(self.current_config.api_key))
-        self.current_path_var.set(f"config.toml\n{self.current_config.config_path}\n\nauth.json\n{self.current_config.auth_path}")
+        self.global_stats_var.set(f"配置 {total} · 健康 {healthy} · 受限 {degraded} · 异常 {error}")
+        self.codex_current_api_var.set(f"API 地址：{self.current_config.base_url or '-'}")
 
         model_lines: list[str] = []
         if self.current_config.model:
             model_lines.append(f"主模型：{self.current_config.model}")
         if self.current_config.review_model and self.current_config.review_model != self.current_config.model:
             model_lines.append(f"评审模型：{self.current_config.review_model}")
-        self.current_models_var.set("\n".join(model_lines) if model_lines else "当前配置里没有模型信息。")
-        self.current_mcp_var.set(self._mcp_summary(self._effective_global_mcp_toml()) if self.current_config.mcp_server_names else "当前配置未启用托管 MCP")
+        self.codex_current_models_var.set("\n".join(model_lines) if model_lines else "模型：-")
+
+        claude_base_url, claude_model, claude_fallback_model = claude_settings_env_values(
+            self.claude_manager.load_settings(),
+            base_url_key=CLAUDE_BASE_URL_ENV_KEY,
+            model_key=CLAUDE_MODEL_ENV_KEY,
+            fallback_model_key=CLAUDE_FALLBACK_MODEL_ENV_KEY,
+        )
+        self.claude_current_api_var.set(f"API 地址：{claude_base_url}")
+        self.claude_current_models_var.set(f"主模型：{claude_model}\n兜底模型：{claude_fallback_model}")
+        self.current_path_var.set(
+            f"Codex config.toml\n{self.current_config.config_path}\n\n"
+            f"Codex auth.json\n{self.current_config.auth_path}\n\n"
+            f"Claude settings.json\n{self.claude_manager.settings_path}"
+        )
         self.global_mcp_var.set(self._mcp_summary(self._effective_global_mcp_toml()))
         self._sync_global_profile_choice()
-
-        if matched:
-            self.current_match_var.set("已匹配本地配置库")
-            self.current_status_badge.configure(bg=PALETTE["success_soft"], fg=PALETTE["success"])
-        else:
-            self.current_match_var.set("当前配置未收录")
-            self.current_status_badge.configure(bg=PALETTE["warning_soft"], fg=PALETTE["warning"])
 
     def refresh_library_tab(self) -> None:
         self.hide_error_button_var.set("显示异常" if self.hide_error_profiles else "隐藏异常")

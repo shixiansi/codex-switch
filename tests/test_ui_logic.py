@@ -36,7 +36,12 @@ from codex_switch.models import (
     profile_supports_codex,
     today_iso,
 )
-from codex_switch.project_template import CODEX_SCRIPT_DIRNAME
+from codex_switch.project_template import (
+    CODEX_SCRIPT_DIRNAME,
+    CLAUDE_BASE_URL_ENV_KEY,
+    CLAUDE_FALLBACK_MODEL_ENV_KEY,
+    CLAUDE_MODEL_ENV_KEY,
+)
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.ui.app import (
     LIBRARY_VIEW_ALL,
@@ -52,7 +57,13 @@ from codex_switch.ui.app import (
     successful_model_batch_models,
     visible_profiles_for_filter,
 )
-from codex_switch.ui.global_logic import resolve_global_mcp_server_names, resolve_global_profile_id
+from codex_switch.ui.global_logic import (
+    claude_settings_env_values,
+    global_profile_choice_names,
+    profile_for_choice_index,
+    resolve_global_mcp_server_names,
+    resolve_global_profile_id,
+)
 from codex_switch.ui.project_logic import (
     claude_project_template_options,
     codex_project_template_options,
@@ -135,6 +146,44 @@ class UiFilterTests(unittest.TestCase):
             ["serena"],
         )
         self.assertEqual(resolve_global_mcp_server_names(["serena"], opt_out=True, available_names=available), [])
+
+    def test_global_profile_choice_names_show_only_names_and_keep_index_identity(self) -> None:
+        first = Profile.create("same", "https://first.example.com", "sk-first", vendor=VENDOR_CODEX)
+        second = Profile.create("same", "https://second.example.com", "sk-second", vendor=VENDOR_CODEX)
+        profiles = [first, second]
+
+        self.assertEqual(global_profile_choice_names(profiles), ("same", "same"))
+        self.assertIs(profile_for_choice_index(profiles, 1), second)
+        self.assertIsNone(profile_for_choice_index(profiles, -1))
+        self.assertIsNone(profile_for_choice_index(profiles, 2))
+
+    def test_claude_settings_env_values_read_api_and_models(self) -> None:
+        settings = {
+            "env": {
+                CLAUDE_BASE_URL_ENV_KEY: "https://claude.example.com",
+                CLAUDE_MODEL_ENV_KEY: "sonnet",
+                CLAUDE_FALLBACK_MODEL_ENV_KEY: "haiku",
+            }
+        }
+
+        self.assertEqual(
+            claude_settings_env_values(
+                settings,
+                base_url_key=CLAUDE_BASE_URL_ENV_KEY,
+                model_key=CLAUDE_MODEL_ENV_KEY,
+                fallback_model_key=CLAUDE_FALLBACK_MODEL_ENV_KEY,
+            ),
+            ("https://claude.example.com", "sonnet", "haiku"),
+        )
+        self.assertEqual(
+            claude_settings_env_values(
+                {},
+                base_url_key=CLAUDE_BASE_URL_ENV_KEY,
+                model_key=CLAUDE_MODEL_ENV_KEY,
+                fallback_model_key=CLAUDE_FALLBACK_MODEL_ENV_KEY,
+            ),
+            ("-", "-", "-"),
+        )
 
     def test_profile_library_sort_key_prioritizes_unsigned_profiles(self) -> None:
         signed = Profile.create(

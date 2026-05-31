@@ -31,3 +31,35 @@ def resolve_global_mcp_server_names(
         return list(available_names)
     available = set(available_names)
     return [name for name in selected_names if name in available]
+
+
+def global_profile_choice_names(profiles: list[Profile]) -> tuple[str, ...]:
+    return tuple(profile.name for profile in profiles)
+
+
+def profile_for_choice_index(profiles: list[Profile], index: int) -> Profile | None:
+    if 0 <= index < len(profiles):
+        return profiles[index]
+    return None
+
+
+def claude_settings_env_values(
+    settings: dict,
+    *,
+    base_url_key: str,
+    model_key: str,
+    fallback_model_key: str,
+) -> tuple[str, str, str]:
+    env = settings.get("env", {})
+    if not isinstance(env, dict):
+        env = {}
+    return (
+        _clean_display_value(env.get(base_url_key)),
+        _clean_display_value(env.get(model_key)),
+        _clean_display_value(env.get(fallback_model_key)),
+    )
+
+
+def _clean_display_value(value) -> str:
+    text = str(value or "").strip()
+    return text or "-"
