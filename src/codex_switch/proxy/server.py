@@ -181,6 +181,7 @@ class RouteProxyServer:
         if parsed_rendered_path.query:
             upstream_target = f"{upstream_target}?{parsed_rendered_path.query}"
         rendered_headers = self._render_headers(headers, profile, protocol)
+        upstream_url = self._format_upstream_url(parsed_base, upstream_target)
 
         connection_cls = http.client.HTTPSConnection if parsed_base.scheme == "https" else http.client.HTTPConnection
         connection = connection_cls(parsed_base.netloc, timeout=90)
@@ -207,6 +208,8 @@ class RouteProxyServer:
                 response_headers["content-type"] = "application/json"
                 response_headers["content-length"] = str(len(response_body))
             return upstream_response.status, response_headers, response_body, None
+        except OSError as exc:
+            raise OSError(f"{exc} (upstream: {upstream_url})") from exc
         finally:
             if close_connection:
                 connection.close()
@@ -314,6 +317,19 @@ class RouteProxyServer:
         if not normalized_base:
             return normalized_request or "/"
         return f"{normalized_base}{normalized_request}"
+
+    def _format_upstream_url(self, parsed_base: parse.ParseResult, upstream_target: str) -> str:
+        parsed_target = parse.urlparse(upstream_target or "/")
+        return parse.urlunparse(
+            (
+                parsed_base.scheme,
+                parsed_base.netloc,
+                parsed_target.path or "/",
+                "",
+                parsed_target.query,
+                "",
+            )
+        )
 
     def _json_response(self, status: HTTPStatus, payload: dict[str, Any]) -> tuple[int, dict[str, str], bytes, None]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

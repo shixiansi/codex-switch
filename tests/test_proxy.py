@@ -157,6 +157,35 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["path"], "/v1/responses")
         self.assertEqual(captured["authorization"], "Bearer sk-upstream")
 
+    def test_openai_proxy_error_includes_rendered_upstream_url(self) -> None:
+        profile = Profile.create("closed", "http://127.0.0.1:1/root", "sk-closed")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                )
+            ]
+        )
+        events = []
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile], events.append)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses?stream=true",
+            headers={},
+            body=request_body,
+        )
+
+        error_text = json.loads(body.decode("utf-8") if body else "{}")["error"]
+        expected_url = "upstream: http://127.0.0.1:1/root/v1/responses?stream=true"
+        self.assertEqual(status, 502)
+        self.assertIsNone(chunks)
+        self.assertIn(expected_url, error_text)
+        self.assertIn(expected_url, events[-1].message)
+
     def test_openai_chat_to_responses_converts_request_and_response(self) -> None:
         converted = openai_chat_to_responses_request(
             {
