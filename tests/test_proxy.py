@@ -33,6 +33,7 @@ from codex_switch.proxy import (
 )
 from codex_switch.proxy.protocol_matrix import PROTOCOL_TRANSLATIONS, translation_for_protocol
 from codex_switch.proxy.translator import iter_openai_chat_sse_to_responses, iter_openai_sse_to_anthropic
+from codex_switch.ui.route_proxy_logic import route_proxy_rules_for_project_profiles
 
 
 class RouteProxyTests(unittest.TestCase):
@@ -424,6 +425,60 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["max_tokens"], 64)
         self.assertEqual(response_payload["output_text"], "chat ok")
         self.assertEqual(response_payload["usage"]["output_tokens"], 3)
+
+    def test_chat_only_upstream_with_v1_base_accepts_responses_client_route(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "chatcmpl_1",
+                        "model": "chat-model",
+                        "choices": [{"finish_reason": "stop", "message": {"content": "chat ok"}}],
+                    }
+                ).encode("utf-8")
+                self.send_response(200 if self.path == "/v1/chat/completions" else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        project = ProjectRecord.create("project-root", "profile-id")
+        profile = Profile.create(
+            "zero-bug",
+            f"http://127.0.0.1:{upstream.server_port}/v1",
+            "sk-zero",
+            codex_model="chat-model",
+            wire_api="chat_completions",
+        )
+        profile.id = "profile-id"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        settings = RouteProxySettings(rules=route_proxy_rules_for_project_profiles(project, profile, claude_profile))
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile, claude_profile])
+        request_body = json.dumps({"model": "responses-model", "input": "hello"}).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path=f"/project/{project.id}/responses",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(headers["content-type"], "application/json")
+        self.assertEqual(captured["path"], "/v1/chat/completions")
+        self.assertEqual(captured["payload"]["model"], "chat-model")
+        self.assertEqual(captured["payload"]["messages"], [{"role": "user", "content": "hello"}])
+        self.assertEqual(response_payload["output_text"], "chat ok")
 
     def test_anthropic_passthrough_uses_x_api_key(self) -> None:
         captured: dict[str, object] = {}

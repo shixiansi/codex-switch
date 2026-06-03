@@ -82,6 +82,20 @@ def route_proxy_rules_for_project(
     ]
 
 
+def route_proxy_rules_for_project_profiles(
+    project: ProjectRecord,
+    codex_profile: Profile,
+    claude_profile: Profile,
+) -> list[RouteProxyRule]:
+    return route_proxy_rules_for_project(
+        project,
+        codex_profile,
+        claude_profile,
+        route_proxy_codex_protocol_for_profile(codex_profile),
+        route_proxy_claude_protocol_for_profile(claude_profile),
+    )
+
+
 def refresh_route_proxy_rules_for_project(
     settings: RouteProxySettings,
     project: ProjectRecord,
@@ -90,16 +104,12 @@ def refresh_route_proxy_rules_for_project(
 ) -> RouteProxySettings:
     if not settings.project_enabled(project.id):
         return settings
-    codex_protocol = route_proxy_codex_protocol_for_profile(codex_profile)
-    claude_protocol = route_proxy_claude_protocol_for_profile(claude_profile)
     refreshed = settings.without_project_rules(project.id)
     refreshed.rules.extend(
-        route_proxy_rules_for_project(
+        route_proxy_rules_for_project_profiles(
             project,
             codex_profile,
             claude_profile,
-            codex_protocol,
-            claude_protocol,
         )
     )
     return refreshed

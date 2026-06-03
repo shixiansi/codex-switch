@@ -90,6 +90,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_codex_wire_api_override,
     route_proxy_codex_wire_api_override_for_project,
     route_proxy_rules_for_project,
+    route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui.utils import resolve_mcp_editor_text
 
@@ -452,6 +453,19 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual(route_proxy_codex_protocol_for_profile(responses_profile), ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES)
         self.assertEqual(route_proxy_codex_protocol_for_profile(chat_profile), ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+
+    def test_route_proxy_rules_for_project_profiles_bridge_chat_upstream(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "chat-profile")
+        chat_profile = Profile.create("chat", "https://chat.example.com/v1", "sk-chat", wire_api="chat_completions")
+        chat_profile.id = "chat-profile"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+
+        rules = route_proxy_rules_for_project_profiles(project, chat_profile, claude_profile)
+
+        codex_rule = next(rule for rule in rules if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
+        self.assertEqual(codex_rule.primary_profile_id, "chat-profile")
+        self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        self.assertEqual(codex_rule.upstream_model, "gpt-5.4")
 
     def test_route_proxy_project_helpers_follow_enabled_codex_rule(self) -> None:
         project = ProjectRecord.create(str(Path.cwd()), "profile-id")

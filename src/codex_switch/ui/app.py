@@ -132,8 +132,8 @@ from codex_switch.ui.route_proxy_logic import (
     CODEX_ROUTE_PROXY_PROTOCOLS,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
+    route_proxy_rules_for_project_profiles,
     route_proxy_codex_wire_api_override_for_project,
-    route_proxy_rules_for_project,
 )
 from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url
 
@@ -2762,14 +2762,18 @@ class CodexSwitchApp:
         if codex_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
-        codex_protocol = self.proxy_codex_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_OPENAI
-        claude_protocol = self.proxy_claude_protocol_var.get().strip() or ROUTE_PROXY_PROTOCOL_ANTHROPIC
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
         if claude_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
+        rules = route_proxy_rules_for_project_profiles(project, codex_profile, claude_profile)
+        for rule in rules:
+            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
+            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+                self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
         self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
-        self.route_proxy_settings.rules.extend(route_proxy_rules_for_project(project, codex_profile, claude_profile, codex_protocol, claude_protocol))
+        self.route_proxy_settings.rules.extend(rules)
         self.persist_state()
         self.refresh_proxy_tab()
         if self._sync_project_api_binding(project):
