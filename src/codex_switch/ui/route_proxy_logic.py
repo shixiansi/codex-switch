@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from codex_switch.chat import (
+    WIRE_API_ANTHROPIC_MESSAGES,
+    WIRE_API_CHAT_COMPLETIONS,
+    WIRE_API_RESPONSES,
+    default_wire_api_for_profile,
+)
 from codex_switch.models import (
     Profile,
     ProjectRecord,
@@ -26,16 +32,19 @@ CLAUDE_ROUTE_PROXY_PROTOCOLS = (
 )
 
 
-def _route_proxy_protocol_for_project(
-    settings: RouteProxySettings,
-    project_id: str,
-    client_type: str,
-    default_protocol: str,
-) -> str:
-    for rule in settings.rules_for_project(project_id):
-        if rule.client_type == client_type:
-            return rule.upstream_protocol
-    return default_protocol
+def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
+    wire_api = default_wire_api_for_profile(profile)
+    if wire_api == WIRE_API_RESPONSES:
+        return ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES
+    if wire_api == WIRE_API_CHAT_COMPLETIONS:
+        return ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT
+    return ROUTE_PROXY_PROTOCOL_OPENAI
+
+
+def route_proxy_claude_protocol_for_profile(profile: Profile) -> str:
+    if default_wire_api_for_profile(profile) == WIRE_API_ANTHROPIC_MESSAGES:
+        return ROUTE_PROXY_PROTOCOL_ANTHROPIC
+    return ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
 
 
 def route_proxy_rules_for_project(
@@ -81,18 +90,8 @@ def refresh_route_proxy_rules_for_project(
 ) -> RouteProxySettings:
     if not settings.project_enabled(project.id):
         return settings
-    codex_protocol = _route_proxy_protocol_for_project(
-        settings,
-        project.id,
-        ROUTE_PROXY_CLIENT_CODEX,
-        ROUTE_PROXY_PROTOCOL_OPENAI,
-    )
-    claude_protocol = _route_proxy_protocol_for_project(
-        settings,
-        project.id,
-        ROUTE_PROXY_CLIENT_CLAUDE,
-        ROUTE_PROXY_PROTOCOL_ANTHROPIC,
-    )
+    codex_protocol = route_proxy_codex_protocol_for_profile(codex_profile)
+    claude_protocol = route_proxy_claude_protocol_for_profile(claude_profile)
     refreshed = settings.without_project_rules(project.id)
     refreshed.rules.extend(
         route_proxy_rules_for_project(

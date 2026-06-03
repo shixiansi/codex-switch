@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -95,7 +95,7 @@ class RouteProxyServer:
         raw_path: str,
         headers: dict[str, str],
         body: bytes,
-    ) -> tuple[int, dict[str, str], bytes | None, list[bytes] | None]:
+    ) -> tuple[int, dict[str, str], bytes | None, Iterable[bytes] | None]:
         project_id, upstream_path = self._split_project_path(raw_path)
         if not project_id:
             return self._json_response(HTTPStatus.NOT_FOUND, {"error": "Missing /project/<id> proxy prefix."})
@@ -158,7 +158,7 @@ class RouteProxyServer:
         route: RouteProxyRule,
         profile: Profile,
         model: str,
-    ) -> tuple[int, dict[str, str], bytes | None, list[bytes] | None]:
+    ) -> tuple[int, dict[str, str], bytes | None, Iterable[bytes] | None]:
         protocol = route.upstream_protocol
         rendered_body = body
         rendered_path = self._canonical_openai_path(upstream_path) if route.client_type == ROUTE_PROXY_CLIENT_CODEX else upstream_path
@@ -171,7 +171,7 @@ class RouteProxyServer:
             converted = translation.request(request_payload, upstream_model)
             rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
             response_transform = lambda payload: translation.response(payload, model or upstream_model)
-            stream_transform = lambda chunks: list(translation.stream(chunks, model or upstream_model))
+            stream_transform = lambda chunks: translation.stream(chunks, model or upstream_model)
 
         parsed_base = parse.urlparse(profile.base_url.rstrip("/"))
         if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
@@ -184,15 +184,21 @@ class RouteProxyServer:
 
         connection_cls = http.client.HTTPSConnection if parsed_base.scheme == "https" else http.client.HTTPConnection
         connection = connection_cls(parsed_base.netloc, timeout=90)
+        close_connection = True
         try:
             connection.request(method, upstream_target or "/", body=rendered_body if method != "GET" else None, headers=rendered_headers)
             upstream_response = connection.getresponse()
             response_headers = self._response_headers(upstream_response)
             is_stream = "text/event-stream" in response_headers.get("content-type", "")
-            if is_stream and stream_transform is not None:
+            if is_stream:
                 response_headers["content-type"] = "text/event-stream"
                 response_headers.pop("content-length", None)
-                return upstream_response.status, response_headers, None, stream_transform(upstream_response)
+                close_connection = False
+                response_chunks = stream_transform(upstream_response) if stream_transform is not None else upstream_response
+                return upstream_response.status, response_headers, None, self._closing_stream(
+                    connection,
+                    response_chunks,
+                )
             response_body = upstream_response.read()
             response_body = self._decode_response_body(response_body, response_headers)
             if response_transform is not None and response_body:
@@ -201,6 +207,17 @@ class RouteProxyServer:
                 response_headers["content-type"] = "application/json"
                 response_headers["content-length"] = str(len(response_body))
             return upstream_response.status, response_headers, response_body, None
+        finally:
+            if close_connection:
+                connection.close()
+
+    def _closing_stream(
+        self,
+        connection: http.client.HTTPConnection,
+        chunks: Iterable[bytes],
+    ) -> Iterable[bytes]:
+        try:
+            yield from chunks
         finally:
             connection.close()
 

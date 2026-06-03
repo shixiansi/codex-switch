@@ -25,6 +25,7 @@ from codex_switch.models import (
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     VENDOR_CLAUDE,
@@ -85,6 +86,7 @@ from codex_switch.ui.project_logic import (
 from codex_switch.ui.route_proxy_logic import (
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
+    route_proxy_codex_protocol_for_profile,
     route_proxy_codex_wire_api_override,
     route_proxy_codex_wire_api_override_for_project,
     route_proxy_rules_for_project,
@@ -444,6 +446,13 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT), "responses")
         self.assertIsNone(route_proxy_codex_wire_api_override("openai_passthrough"))
 
+    def test_route_proxy_codex_protocol_tracks_upstream_wire_api(self) -> None:
+        responses_profile = Profile.create("responses", "https://responses.example.com", "sk-responses", wire_api="responses")
+        chat_profile = Profile.create("chat", "https://chat.example.com", "sk-chat", wire_api="chat_completions")
+
+        self.assertEqual(route_proxy_codex_protocol_for_profile(responses_profile), ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES)
+        self.assertEqual(route_proxy_codex_protocol_for_profile(chat_profile), ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+
     def test_route_proxy_project_helpers_follow_enabled_codex_rule(self) -> None:
         project = ProjectRecord.create(str(Path.cwd()), "profile-id")
         disabled_rule = RouteProxyRule.create(
@@ -512,6 +521,28 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(project_rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(project_rules[1].upstream_model, "sonnet-new")
         self.assertEqual(refreshed.rules_for_project("other-project"), [other_rule])
+
+    def test_refresh_route_proxy_rules_for_project_bridges_new_chat_api(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "old-profile")
+        old_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="old-profile",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+        )
+        settings = RouteProxySettings(rules=[old_rule])
+        chat_profile = Profile.create("chat", "https://chat.example.com", "sk-chat", wire_api="chat_completions")
+        chat_profile.id = "chat-profile"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude_profile.id = "claude-profile"
+        updated_project = replace(project, profile_id="chat-profile", codex_profile_id="chat-profile", claude_profile_id="claude-profile")
+
+        refreshed = refresh_route_proxy_rules_for_project(settings, updated_project, chat_profile, claude_profile)
+
+        codex_rule = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
+        self.assertEqual(codex_rule.primary_profile_id, "chat-profile")
+        self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        self.assertEqual(route_proxy_codex_wire_api_override_for_project(refreshed, updated_project), "responses")
 
 
 class McpEditorPrefillTests(unittest.TestCase):

@@ -716,14 +716,61 @@ class RouteProxyTests(unittest.TestCase):
             body=request_body,
         )
 
-        rendered = b"".join(chunks or []).decode("utf-8")
         self.assertEqual(status, 200)
         self.assertIsNone(body)
         self.assertEqual(headers["content-type"], "text/event-stream")
+        self.assertIsNotNone(chunks)
+        self.assertNotIsInstance(chunks, list)
+        rendered = b"".join(chunks or []).decode("utf-8")
         self.assertIn("event: message_start", rendered)
         self.assertIn("\"text\": \"stream \"", rendered)
         self.assertIn("\"text\": \"ok\"", rendered)
         self.assertIn("event: message_stop", rendered)
+
+    def test_openai_passthrough_streaming_response_is_returned_lazy(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\ndata: [DONE]\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("openai", f"http://127.0.0.1:{upstream.server_port}", "sk-openai")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "gpt-5", "input": "hi", "stream": True}).encode("utf-8")
+
+        status, headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(body)
+        self.assertEqual(headers["content-type"], "text/event-stream")
+        self.assertIsNotNone(chunks)
+        self.assertNotIsInstance(chunks, list)
+        rendered = b"".join(chunks or []).decode("utf-8")
+        self.assertIn("\"delta\":\"ok\"", rendered)
+        self.assertIn("data: [DONE]", rendered)
 
     def test_anthropic_to_openai_rejects_unsupported_multimodal_blocks(self) -> None:
         profile = Profile.create("openai", "http://127.0.0.1:1", "sk-openai")
