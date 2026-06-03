@@ -83,6 +83,7 @@ from codex_switch.ui.project_logic import (
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
+    refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
     route_proxy_codex_wire_api_override,
     route_proxy_codex_wire_api_override_for_project,
@@ -463,6 +464,54 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(route_proxy_base_url_for_project(settings, project), settings.project_base_url(project.id))
         self.assertEqual(route_proxy_codex_wire_api_override_for_project(settings, project), "responses")
         self.assertIsNone(route_proxy_base_url_for_project(RouteProxySettings(), project))
+
+    def test_refresh_route_proxy_rules_for_project_uses_latest_bindings(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "old-codex",
+            codex_profile_id="old-codex",
+            claude_profile_id="old-claude",
+        )
+        codex_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="old-codex",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+        )
+        claude_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+            primary_profile_id="old-claude",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+        )
+        other_rule = RouteProxyRule.create(
+            project_id="other-project",
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="other-profile",
+        )
+        settings = RouteProxySettings(rules=[codex_rule, claude_rule, other_rule])
+        updated_project = replace(
+            project,
+            profile_id="new-codex",
+            codex_profile_id="new-codex",
+            claude_profile_id="new-claude",
+        )
+        codex_profile = Profile.create("new-codex", "https://codex.example.com", "sk-codex", codex_model="gpt-new")
+        codex_profile.id = "new-codex"
+        claude_profile = Profile.create("new-claude", "https://claude.example.com", "sk-claude", claude_model="sonnet-new")
+        claude_profile.id = "new-claude"
+
+        refreshed = refresh_route_proxy_rules_for_project(settings, updated_project, codex_profile, claude_profile)
+        project_rules = refreshed.rules_for_project(project.id)
+
+        self.assertEqual(len(project_rules), 2)
+        self.assertEqual(project_rules[0].primary_profile_id, "new-codex")
+        self.assertEqual(project_rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES)
+        self.assertEqual(project_rules[0].upstream_model, "gpt-new")
+        self.assertEqual(project_rules[1].primary_profile_id, "new-claude")
+        self.assertEqual(project_rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+        self.assertEqual(project_rules[1].upstream_model, "sonnet-new")
+        self.assertEqual(refreshed.rules_for_project("other-project"), [other_rule])
 
 
 class McpEditorPrefillTests(unittest.TestCase):

@@ -130,6 +130,7 @@ from codex_switch.ui.project_logic import (
 from codex_switch.ui.route_proxy_logic import (
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_PROTOCOLS,
+    refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
     route_proxy_codex_wire_api_override_for_project,
     route_proxy_rules_for_project,
@@ -2694,6 +2695,21 @@ class CodexSwitchApp:
     def _route_proxy_base_url_for_project(self, project: ProjectRecord) -> str | None:
         return route_proxy_base_url_for_project(self.route_proxy_settings, project)
 
+    def _refresh_route_proxy_rules_for_project(self, project: ProjectRecord) -> bool:
+        if not self.route_proxy_settings.project_enabled(project.id):
+            return False
+        codex_profile = self._profile_by_id(project_codex_profile_id(project))
+        claude_profile = self._profile_by_id(project_claude_profile_id(project))
+        if codex_profile is None or claude_profile is None:
+            return False
+        self.route_proxy_settings = refresh_route_proxy_rules_for_project(
+            self.route_proxy_settings,
+            project,
+            codex_profile,
+            claude_profile,
+        )
+        return True
+
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
         self.root.after(0, self._render_proxy_log)
@@ -3122,10 +3138,15 @@ class CodexSwitchApp:
         )
         api_binding_changed = project_codex_binding_changed(project, updated)
         claude_binding_changed = project_claude_binding_changed(project, updated)
+        route_proxy_rules_changed = False
+        if api_binding_changed or claude_binding_changed:
+            route_proxy_rules_changed = self._refresh_route_proxy_rules_for_project(updated)
         self.projects = [updated if item.id == updated.id else item for item in self.projects]
         self.selected_project_id = updated.id
         self.persist_state()
         self.refresh_project_tab()
+        if route_proxy_rules_changed:
+            self.refresh_proxy_tab()
         if api_binding_changed or claude_binding_changed:
             if self._sync_project_api_binding(
                 updated,
@@ -3133,6 +3154,9 @@ class CodexSwitchApp:
                 sync_claude=claude_binding_changed,
             ):
                 self.refresh_project_tab()
+                if route_proxy_rules_changed:
+                    self.refresh_proxy_tab()
+                    self.status_var.set(f"已同步项目配置并刷新路由代理：{updated.name}")
             return
         self.status_var.set(f"已更新项目：{updated.name}")
 

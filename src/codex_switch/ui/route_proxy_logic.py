@@ -26,6 +26,18 @@ CLAUDE_ROUTE_PROXY_PROTOCOLS = (
 )
 
 
+def _route_proxy_protocol_for_project(
+    settings: RouteProxySettings,
+    project_id: str,
+    client_type: str,
+    default_protocol: str,
+) -> str:
+    for rule in settings.rules_for_project(project_id):
+        if rule.client_type == client_type:
+            return rule.upstream_protocol
+    return default_protocol
+
+
 def route_proxy_rules_for_project(
     project: ProjectRecord,
     codex_profile: Profile,
@@ -59,6 +71,39 @@ def route_proxy_rules_for_project(
             upstream_model=claude_upstream_model,
         ),
     ]
+
+
+def refresh_route_proxy_rules_for_project(
+    settings: RouteProxySettings,
+    project: ProjectRecord,
+    codex_profile: Profile,
+    claude_profile: Profile,
+) -> RouteProxySettings:
+    if not settings.project_enabled(project.id):
+        return settings
+    codex_protocol = _route_proxy_protocol_for_project(
+        settings,
+        project.id,
+        ROUTE_PROXY_CLIENT_CODEX,
+        ROUTE_PROXY_PROTOCOL_OPENAI,
+    )
+    claude_protocol = _route_proxy_protocol_for_project(
+        settings,
+        project.id,
+        ROUTE_PROXY_CLIENT_CLAUDE,
+        ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+    )
+    refreshed = settings.without_project_rules(project.id)
+    refreshed.rules.extend(
+        route_proxy_rules_for_project(
+            project,
+            codex_profile,
+            claude_profile,
+            codex_protocol,
+            claude_protocol,
+        )
+    )
+    return refreshed
 
 
 def route_proxy_base_url_for_project(settings: RouteProxySettings, project: ProjectRecord) -> str | None:
