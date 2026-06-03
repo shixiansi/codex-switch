@@ -27,7 +27,6 @@ GLOBAL_BASE_CONFIG: dict = {
         "OpenAI": {
             "name": "OpenAI",
             "base_url": "https://api.openai.com",
-            "wire_api": "responses",
             "requires_openai_auth": True,
         }
     },
@@ -257,12 +256,10 @@ def build_provider_payload(
     env_key: str | None = None,
     include_requires_openai_auth: bool = True,
     base_url_override: str | None = None,
-    wire_api_override: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "name": profile.provider_name,
         "base_url": (base_url_override or profile.base_url).rstrip("/"),
-        "wire_api": (wire_api_override or profile.wire_api).strip() or profile.wire_api,
     }
     if env_key:
         payload["env_key"] = env_key
@@ -364,7 +361,6 @@ def render_project_runtime_config(
     global_mcp_toml: str = "",
     project_root: str | Path | None = None,
     base_url_override: str | None = None,
-    wire_api_override: str | None = None,
 ) -> dict:
     config = render_project_base_config()
     codex_model = profile.codex_display_model
@@ -377,7 +373,6 @@ def render_project_runtime_config(
             env_key=PROJECT_ENV_KEY,
             include_requires_openai_auth=False,
             base_url_override=base_url_override,
-            wire_api_override=wire_api_override,
         )
     }
     merge_mcp_servers(

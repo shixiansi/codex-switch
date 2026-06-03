@@ -87,8 +87,6 @@ from codex_switch.ui.route_proxy_logic import (
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
     route_proxy_codex_protocol_for_profile,
-    route_proxy_codex_wire_api_override,
-    route_proxy_codex_wire_api_override_for_project,
     route_proxy_rules_for_project,
     route_proxy_rules_for_project_profiles,
 )
@@ -383,7 +381,6 @@ class UiFilterTests(unittest.TestCase):
             project_mcp_toml="mcp-toml",
             agents_doc_text="# Agents\n",
             route_proxy_base_url="http://127.0.0.1:15721/project/p1",
-            codex_wire_api_override="responses",
         )
         claude_options = claude_project_template_options(
             project,
@@ -397,7 +394,6 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(codex_options.project_mcp_toml, "mcp-toml")
         self.assertEqual(codex_options.agents_doc_text, "# Agents\n")
         self.assertEqual(codex_options.route_proxy_base_url, "http://127.0.0.1:15721/project/p1")
-        self.assertEqual(codex_options.codex_wire_api_override, "responses")
         self.assertEqual(claude_options.project_root, Path.cwd())
         self.assertEqual(claude_options.project_mcp_toml, "mcp-toml")
         self.assertEqual(claude_options.agents_doc_text, "# Agents\n")
@@ -442,16 +438,11 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(rules[1].upstream_model, "mimo-v2.5-pro")
 
-    def test_route_proxy_codex_protocol_selects_project_wire_api(self) -> None:
-        self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES), "chat_completions")
-        self.assertEqual(route_proxy_codex_wire_api_override(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT), "responses")
-        self.assertIsNone(route_proxy_codex_wire_api_override("openai_passthrough"))
-
     def test_route_proxy_codex_protocol_tracks_upstream_wire_api(self) -> None:
         responses_profile = Profile.create("responses", "https://responses.example.com", "sk-responses", wire_api="responses")
         chat_profile = Profile.create("chat", "https://chat.example.com", "sk-chat", wire_api="chat_completions")
 
-        self.assertEqual(route_proxy_codex_protocol_for_profile(responses_profile), ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES)
+        self.assertEqual(route_proxy_codex_protocol_for_profile(responses_profile), ROUTE_PROXY_PROTOCOL_OPENAI)
         self.assertEqual(route_proxy_codex_protocol_for_profile(chat_profile), ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
 
     def test_route_proxy_rules_for_project_profiles_bridge_chat_upstream(self) -> None:
@@ -485,7 +476,6 @@ class UiFilterTests(unittest.TestCase):
         settings = RouteProxySettings(rules=[disabled_rule, enabled_rule])
 
         self.assertEqual(route_proxy_base_url_for_project(settings, project), settings.project_base_url(project.id))
-        self.assertEqual(route_proxy_codex_wire_api_override_for_project(settings, project), "responses")
         self.assertIsNone(route_proxy_base_url_for_project(RouteProxySettings(), project))
 
     def test_refresh_route_proxy_rules_for_project_uses_latest_bindings(self) -> None:
@@ -529,8 +519,8 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual(len(project_rules), 2)
         self.assertEqual(project_rules[0].primary_profile_id, "new-codex")
-        self.assertEqual(project_rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES)
-        self.assertEqual(project_rules[0].upstream_model, "gpt-new")
+        self.assertEqual(project_rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI)
+        self.assertEqual(project_rules[0].upstream_model, "")
         self.assertEqual(project_rules[1].primary_profile_id, "new-claude")
         self.assertEqual(project_rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(project_rules[1].upstream_model, "sonnet-new")
@@ -556,7 +546,6 @@ class UiFilterTests(unittest.TestCase):
         codex_rule = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
         self.assertEqual(codex_rule.primary_profile_id, "chat-profile")
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
-        self.assertEqual(route_proxy_codex_wire_api_override_for_project(refreshed, updated_project), "responses")
 
 
 class McpEditorPrefillTests(unittest.TestCase):

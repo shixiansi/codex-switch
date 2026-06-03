@@ -133,7 +133,6 @@ from codex_switch.ui.route_proxy_logic import (
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
     route_proxy_rules_for_project_profiles,
-    route_proxy_codex_wire_api_override_for_project,
 )
 from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url
 
@@ -3055,9 +3054,6 @@ class CodexSwitchApp:
         self.refresh_project_tab()
         self.status_var.set(f"已新增项目：{project.name}")
 
-    def _route_proxy_codex_wire_api_override_for_project(self, project: ProjectRecord) -> str | None:
-        return route_proxy_codex_wire_api_override_for_project(self.route_proxy_settings, project)
-
     def _sync_project_api_binding(
         self,
         project: ProjectRecord,
@@ -3079,7 +3075,6 @@ class CodexSwitchApp:
                         project_root,
                         codex_profile,
                         route_proxy_base_url=route_proxy_base_url,
-                        wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
                     )
                 )
             except Exception as exc:
@@ -3296,7 +3291,6 @@ class CodexSwitchApp:
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=self.agents_doc_text,
             route_proxy_base_url=self._route_proxy_base_url_for_project(project),
-            codex_wire_api_override=self._route_proxy_codex_wire_api_override_for_project(project),
         )
         try:
             result = self.project_template_service.generate(
@@ -3307,7 +3301,6 @@ class CodexSwitchApp:
                 agents_doc_text=template_options.agents_doc_text,
                 claude_profile=claude_profile,
                 route_proxy_base_url=template_options.route_proxy_base_url,
-                codex_wire_api_override=template_options.codex_wire_api_override,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)

@@ -35,7 +35,7 @@ CLAUDE_ROUTE_PROXY_PROTOCOLS = (
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
     wire_api = default_wire_api_for_profile(profile)
     if wire_api == WIRE_API_RESPONSES:
-        return ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES
+        return ROUTE_PROXY_PROTOCOL_OPENAI
     if wire_api == WIRE_API_CHAT_COMPLETIONS:
         return ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT
     return ROUTE_PROXY_PROTOCOL_OPENAI
@@ -119,21 +119,3 @@ def route_proxy_base_url_for_project(settings: RouteProxySettings, project: Proj
     if not settings.project_enabled(project.id):
         return None
     return settings.project_base_url(project.id)
-
-
-def route_proxy_codex_wire_api_override(protocol: str) -> str | None:
-    if protocol == ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES:
-        return "chat_completions"
-    if protocol == ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT:
-        return "responses"
-    return None
-
-
-def route_proxy_codex_wire_api_override_for_project(
-    settings: RouteProxySettings,
-    project: ProjectRecord,
-) -> str | None:
-    for rule in settings.rules_for_project(project.id):
-        if rule.enabled and rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-            return route_proxy_codex_wire_api_override(rule.upstream_protocol)
-    return None

@@ -158,7 +158,6 @@ class ProjectTemplateService:
         profile: Profile,
         *,
         route_proxy_base_url: str | None = None,
-        wire_api_override: str | None = None,
     ) -> list[Path]:
         project_root = project_root.resolve()
         repo_config_path = project_root / ".codex" / "config.toml"
@@ -183,8 +182,8 @@ class ProjectTemplateService:
             provider = providers.setdefault(PROJECT_PROVIDER_ID, {})
             provider.setdefault("name", profile.provider_name)
             provider["base_url"] = (route_proxy_base_url or profile.base_url).rstrip("/")
-            provider["wire_api"] = wire_api_override or profile.wire_api
             provider["env_key"] = PROJECT_ENV_KEY
+            provider.pop("wire_api", None)
             provider.pop("requires_openai_auth", None)
             runtime_config_path.write_text(dumps_toml(config), encoding="utf-8")
             updated_paths.append(runtime_config_path)
@@ -220,7 +219,6 @@ class ProjectTemplateService:
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
-        codex_wire_api_override: str | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         codex_dir = project_root / ".codex"
@@ -238,7 +236,6 @@ class ProjectTemplateService:
             agents_doc_text=agents_doc_text,
             claude_profile=claude_profile,
             route_proxy_base_url=route_proxy_base_url,
-            codex_wire_api_override=codex_wire_api_override,
         )
 
         generated_paths: list[Path] = []
@@ -343,7 +340,6 @@ class ProjectTemplateService:
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
-        codex_wire_api_override: str | None = None,
     ) -> dict[str, str]:
         effective_project_mcp_toml = project_mcp_toml or global_mcp_toml
         agents_content = self._render_agents_file(agents_doc_text)
@@ -368,7 +364,6 @@ class ProjectTemplateService:
                     global_mcp_toml=effective_project_mcp_toml,
                     project_root=project_root,
                     base_url_override=route_proxy_base_url,
-                    wire_api_override=codex_wire_api_override,
                 )
             ),
             ".codex/home/AGENTS.md": agents_content,

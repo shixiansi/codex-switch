@@ -14,7 +14,6 @@ class CodexProjectTemplateOptions:
     project_mcp_toml: str
     agents_doc_text: str
     route_proxy_base_url: str | None
-    codex_wire_api_override: str | None
 
 
 @dataclass(frozen=True)
@@ -74,7 +73,6 @@ def codex_project_template_options(
     project_mcp_toml: str,
     agents_doc_text: str,
     route_proxy_base_url: str | None,
-    codex_wire_api_override: str | None,
 ) -> CodexProjectTemplateOptions:
     return CodexProjectTemplateOptions(
         project_root=project_root_path(project),
@@ -82,7 +80,6 @@ def codex_project_template_options(
         project_mcp_toml=project_mcp_toml,
         agents_doc_text=agents_doc_text,
         route_proxy_base_url=route_proxy_base_url,
-        codex_wire_api_override=codex_wire_api_override,
     )
 
 

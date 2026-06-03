@@ -60,6 +60,7 @@ class CodexConfigManagerTests(unittest.TestCase):
                 config_data["model_providers"]["OpenAI"]["base_url"],
                 "https://gateway.example.com",
             )
+            self.assertNotIn("wire_api", config_data["model_providers"]["OpenAI"])
 
             auth_data = json.loads(manager.auth_path.read_text(encoding="utf-8"))
             self.assertEqual(auth_data["auth_mode"], "apikey")
@@ -335,7 +336,6 @@ args = ["-y", "server", "/tmp"]
                 codex_profile,
                 claude_profile=claude_profile,
                 route_proxy_base_url="http://127.0.0.1:15721/project/p1",
-                codex_wire_api_override="chat_completions",
             )
 
             runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
@@ -343,7 +343,7 @@ args = ["-y", "server", "/tmp"]
             claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
 
             self.assertEqual(provider["base_url"], "http://127.0.0.1:15721/project/p1")
-            self.assertEqual(provider["wire_api"], "chat_completions")
+            self.assertNotIn("wire_api", provider)
             self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
             self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], "http://127.0.0.1:15721/project/p1")
             self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
@@ -417,7 +417,7 @@ command = "tool"
             self.assertEqual(runtime_config_data["model"], "new-model")
             self.assertEqual(runtime_config_data["review_model"], "new-model")
             self.assertEqual(provider["base_url"], "https://new.example.com/v1")
-            self.assertEqual(provider["wire_api"], "chat_completions")
+            self.assertNotIn("wire_api", provider)
             self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)
             self.assertNotIn("requires_openai_auth", provider)
             self.assertEqual(env_path.read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}=sk-new-active\nEXTRA=value\n")
@@ -436,7 +436,7 @@ command = "tool"
             service.generate(temp_dir, codex_profile, claude_profile=claude_profile)
             route_proxy_base_url = "http://127.0.0.1:15721/project/project-1"
 
-            service.sync_api_binding(temp_dir, codex_profile, route_proxy_base_url=route_proxy_base_url, wire_api_override="responses")
+            service.sync_api_binding(temp_dir, codex_profile, route_proxy_base_url=route_proxy_base_url)
             service.sync_claude_binding(temp_dir, claude_profile, route_proxy_base_url=route_proxy_base_url)
 
             runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
@@ -444,7 +444,7 @@ command = "tool"
             claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
 
             self.assertEqual(provider["base_url"], route_proxy_base_url)
-            self.assertEqual(provider["wire_api"], "responses")
+            self.assertNotIn("wire_api", provider)
             self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
             self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], route_proxy_base_url)
             self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
