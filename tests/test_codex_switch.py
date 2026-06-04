@@ -14,6 +14,7 @@ if str(TESTS_DIR) not in sys.path:
 
 SPLIT_TEST_MODULES = (
     "test_storage",
+    "test_skills",
     "test_ui_logic",
     "test_project_template",
     "test_proxy",

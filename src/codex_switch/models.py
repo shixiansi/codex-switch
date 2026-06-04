@@ -548,6 +548,7 @@ class ProjectRecord:
     mcp_toml: str = ""
     run_command: str = ""
     mcp_server_names: list[str] | None = None
+    skill_names: list[str] | None = None
 
     @classmethod
     def create(
@@ -557,6 +558,7 @@ class ProjectRecord:
         name: str | None = None,
         run_command: str = "",
         mcp_server_names: list[str] | None = None,
+        skill_names: list[str] | None = None,
         codex_profile_id: str | None = None,
         claude_profile_id: str | None = None,
     ) -> "ProjectRecord":
@@ -577,6 +579,7 @@ class ProjectRecord:
             mcp_toml="",
             run_command=run_command.strip(),
             mcp_server_names=list(mcp_server_names) if mcp_server_names is not None else None,
+            skill_names=list(skill_names) if skill_names is not None else None,
         )
 
     @classmethod
@@ -594,6 +597,14 @@ class ProjectRecord:
                 for item in raw_mcp_server_names
                 if str(item).strip()
             ]
+        raw_skill_names = data.get("skill_names")
+        skill_names = None
+        if isinstance(raw_skill_names, list):
+            skill_names = [
+                str(item).strip()
+                for item in raw_skill_names
+                if str(item).strip()
+            ]
         return cls(
             id=data["id"],
             name=data.get("name") or "未命名项目",
@@ -606,6 +617,7 @@ class ProjectRecord:
             mcp_toml=data.get("mcp_toml", ""),
             run_command=str(data.get("run_command", "") or "").strip(),
             mcp_server_names=mcp_server_names,
+            skill_names=skill_names,
         )
 
     def to_dict(self) -> dict[str, Any]:

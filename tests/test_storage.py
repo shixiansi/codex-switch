@@ -86,7 +86,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 8)
+            self.assertEqual(payload["version"], 9)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_route_proxy_settings(self) -> None:
@@ -136,7 +136,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(payload["settings"]["selected_codex_global_profile_id"], "codex-profile")
             self.assertEqual(payload["settings"]["selected_claude_global_profile_id"], "claude-profile")
 
-    def test_store_persists_project_mcp_selection(self) -> None:
+    def test_store_persists_project_mcp_and_skill_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
             store = ProfileStore(temp_dir)
             project = ProjectRecord.create(
@@ -144,6 +144,7 @@ class ProfileStoreTests(unittest.TestCase):
                 "codex-profile",
                 name="project",
                 mcp_server_names=["filesystem", "serena"],
+                skill_names=["frontend-dev", "fullstack-dev"],
                 codex_profile_id="codex-profile",
                 claude_profile_id="claude-profile",
             )
@@ -153,10 +154,12 @@ class ProfileStoreTests(unittest.TestCase):
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
 
             self.assertEqual(loaded_projects[0].mcp_server_names, ["filesystem", "serena"])
+            self.assertEqual(loaded_projects[0].skill_names, ["frontend-dev", "fullstack-dev"])
             self.assertEqual(loaded_projects[0].profile_id, "codex-profile")
             self.assertEqual(loaded_projects[0].codex_profile_id, "codex-profile")
             self.assertEqual(loaded_projects[0].claude_profile_id, "claude-profile")
             self.assertEqual(payload["projects"][0]["mcp_server_names"], ["filesystem", "serena"])
+            self.assertEqual(payload["projects"][0]["skill_names"], ["frontend-dev", "fullstack-dev"])
             self.assertEqual(payload["projects"][0]["codex_profile_id"], "codex-profile")
             self.assertEqual(payload["projects"][0]["claude_profile_id"], "claude-profile")
 
@@ -187,6 +190,7 @@ class ProfileStoreTests(unittest.TestCase):
             loaded_project = store.load()[2][0]
 
             self.assertIsNone(loaded_project.mcp_server_names)
+            self.assertIsNone(loaded_project.skill_names)
             self.assertEqual(loaded_project.profile_id, "profile-1")
             self.assertEqual(loaded_project.codex_profile_id, "profile-1")
             self.assertEqual(loaded_project.claude_profile_id, "profile-1")

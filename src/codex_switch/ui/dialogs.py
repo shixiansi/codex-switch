@@ -21,6 +21,7 @@ from codex_switch.models import (
     profile_supports_claude,
     profile_supports_codex,
 )
+from codex_switch.skills import SkillSource
 from codex_switch.ui.styles import PALETTE, make_button, ttk
 from codex_switch.ui.utils import compact_text, is_http_url
 
@@ -808,6 +809,7 @@ class ProjectDialog(tk.Toplevel):
         master: tk.Misc,
         profiles: list[Profile],
         mcp_server_names: list[str] | None = None,
+        skill_sources: list[SkillSource] | None = None,
         project: ProjectRecord | None = None,
         initial_project_dir: str = "",
     ) -> None:
@@ -820,6 +822,8 @@ class ProjectDialog(tk.Toplevel):
         self.claude_profile_values: dict[str, str] = {}
         self.mcp_server_names = list(mcp_server_names or [])
         self.mcp_server_vars: dict[str, tk.BooleanVar] = {}
+        self.skill_sources = list(skill_sources or [])
+        self.skill_vars: dict[str, tk.BooleanVar] = {}
         codex_profiles = [profile for profile in profiles if profile_supports_codex(profile)]
         claude_profiles = [profile for profile in profiles if profile_supports_claude(profile)]
 
@@ -831,6 +835,7 @@ class ProjectDialog(tk.Toplevel):
             default_claude_profile_id = claude_profiles[0].id if claude_profiles else default_profile_id
             default_run_command = ""
             default_mcp_server_names = list(self.mcp_server_names)
+            default_skill_names = [source.name for source in self.skill_sources]
         else:
             default_name = project.name
             default_project_dir = project.project_dir
@@ -842,6 +847,11 @@ class ProjectDialog(tk.Toplevel):
                 list(project.mcp_server_names)
                 if project.mcp_server_names is not None
                 else list(self.mcp_server_names)
+            )
+            default_skill_names = (
+                list(project.skill_names)
+                if project.skill_names is not None
+                else [source.name for source in self.skill_sources]
             )
         self.name_var = tk.StringVar(value=default_name)
         self.project_dir_var = tk.StringVar(value=default_project_dir)
@@ -951,8 +961,36 @@ class ProjectDialog(tk.Toplevel):
                 font=("Microsoft YaHei UI", 9),
             ).grid(row=0, column=0, sticky="w")
 
+        tk.Label(card, text="项目 Skills", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=9, column=0, sticky="nw", pady=6)
+        skill_frame = tk.Frame(card, bg=PALETTE["card_bg"])
+        skill_frame.grid(row=9, column=1, columnspan=2, sticky="ew", pady=6)
+        for column in range(3):
+            skill_frame.columnconfigure(column, weight=1)
+        if self.skill_sources:
+            selected_skill_set = set(default_skill_names)
+            for index, source in enumerate(self.skill_sources):
+                var = tk.BooleanVar(value=source.name in selected_skill_set)
+                self.skill_vars[source.name] = var
+                ttk.Checkbutton(skill_frame, text=compact_text(source.display_name, 26), variable=var).grid(
+                    row=index // 3,
+                    column=index % 3,
+                    sticky="w",
+                    padx=(0, 12),
+                    pady=(0, 4),
+                )
+        else:
+            tk.Label(
+                skill_frame,
+                text="未扫描到可用 Skills。请确认 .codex/home/skills 或用户 .agents/skills 下存在 SKILL.md。",
+                bg=PALETTE["card_bg"],
+                fg=PALETTE["muted"],
+                font=("Microsoft YaHei UI", 9),
+                justify="left",
+                wraplength=420,
+            ).grid(row=0, column=0, sticky="w")
+
         buttons = ttk.Frame(card)
-        buttons.grid(row=9, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=10, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存项目", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
@@ -1009,6 +1047,11 @@ class ProjectDialog(tk.Toplevel):
             "mcp_server_names": [
                 server_name
                 for server_name, variable in self.mcp_server_vars.items()
+                if variable.get()
+            ],
+            "skill_names": [
+                skill_name
+                for skill_name, variable in self.skill_vars.items()
                 if variable.get()
             ],
         }

@@ -33,6 +33,7 @@ from codex_switch.project_template import (
     apply_claude_profile_env,
     claude_env_from_profile,
 )
+from codex_switch.skills import PROJECT_SKILLS_RELATIVE_DIR, SKILL_MANAGED_MARKER, SkillSource
 
 
 class CodexConfigManagerTests(unittest.TestCase):
@@ -230,6 +231,51 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertIn(temp_dir / ".codex" / "home" / "AGENTS.md", status.generated_paths)
             self.assertIn(temp_dir / "CLAUDE.md", status.generated_paths)
             self.assertIn(temp_dir / ".mcp.json", status.generated_paths)
+
+    def test_generate_copies_selected_project_skills(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            source = temp_dir / "skill-source" / "frontend-dev"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("frontend skill", encoding="utf-8")
+            (source / "references").mkdir()
+            (source / "references" / "guide.md").write_text("guide", encoding="utf-8")
+            service = ProjectTemplateService()
+            profile = Profile.create("project", "https://example.com", "sk-template")
+
+            result = service.generate(
+                temp_dir / "project",
+                profile,
+                skill_sources=[SkillSource("frontend-dev", "frontend-dev", source)],
+            )
+
+            target = temp_dir / "project" / PROJECT_SKILLS_RELATIVE_DIR / "frontend-dev"
+            self.assertTrue(target in result.generated_paths)
+            self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "frontend skill")
+            self.assertEqual((target / "references" / "guide.md").read_text(encoding="utf-8"), "guide")
+            self.assertTrue((target / SKILL_MANAGED_MARKER).exists())
+
+    def test_generate_removes_unselected_managed_project_skills(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            project_root = temp_dir / "project"
+            skills_root = project_root / PROJECT_SKILLS_RELATIVE_DIR
+            old = skills_root / "old"
+            old.mkdir(parents=True)
+            (old / "SKILL.md").write_text("old", encoding="utf-8")
+            (old / SKILL_MANAGED_MARKER).write_text("managed by codex-switch\n", encoding="utf-8")
+            manual = skills_root / "manual"
+            manual.mkdir()
+            (manual / "SKILL.md").write_text("manual", encoding="utf-8")
+            service = ProjectTemplateService()
+            profile = Profile.create("project", "https://example.com", "sk-template")
+
+            result = service.generate(project_root, profile, skill_sources=[])
+
+            self.assertFalse(old.exists())
+            self.assertTrue(manual.exists())
+            self.assertEqual(
+                (result.backup_dir / PROJECT_SKILLS_RELATIVE_DIR / "old" / "SKILL.md").read_text(encoding="utf-8"),
+                "old",
+            )
 
     def test_generate_updates_gitignore_idempotently(self) -> None:
         with workspace_tempdir() as temp_dir:

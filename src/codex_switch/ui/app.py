@@ -71,6 +71,12 @@ from codex_switch.project_template import (
     apply_claude_profile_env,
     load_default_agents_doc_text,
 )
+from codex_switch.skills import (
+    SkillSource,
+    default_skill_roots,
+    discover_skill_sources,
+    skill_selection_summary,
+)
 from codex_switch.storage import (
     DEFAULT_MODEL_BATCH_CONCURRENCY,
     MODEL_BATCH_CONCURRENCY_MAX,
@@ -598,6 +604,7 @@ class CodexSwitchApp:
         self.project_script_var = tk.StringVar(value="-")
         self.project_run_var = tk.StringVar(value="-")
         self.project_mcp_var = tk.StringVar(value="-")
+        self.project_skills_var = tk.StringVar(value="-")
 
         self.proxy_status_var = tk.StringVar(value="未启动")
         self.proxy_host_var = tk.StringVar(value=self.route_proxy_settings.host)
@@ -1064,7 +1071,7 @@ class CodexSwitchApp:
         tk.Label(header, textvariable=self.project_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
         self.project_status_badge = make_status_badge(header, text="未生成")
         self.project_status_badge.grid(row=0, column=1, sticky="e")
-        tk.Label(header, text="这里展示项目目录、绑定配置、模板生成状态和项目级 MCP。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+        tk.Label(header, text="这里展示项目目录、绑定配置、模板生成状态和项目级 MCP/Skills。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
             row=1,
             column=0,
             sticky="w",
@@ -1079,12 +1086,13 @@ class CodexSwitchApp:
         self._create_info_row(detail, 6, "运行脚本", self.project_script_var, wraplength=440)
         self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
         self._create_info_row(detail, 8, "项目 MCP", self.project_mcp_var, wraplength=440)
+        self._create_info_row(detail, 9, "项目 Skills", self.project_skills_var, wraplength=440)
 
         return detail
 
     def _build_project_actions(self, detail: tk.Misc) -> None:
         actions = tk.Frame(detail, bg=PALETTE["card_bg"])
-        actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        actions.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         actions.columnconfigure(0, weight=1)
 
         self._create_project_action_group(
@@ -1877,6 +1885,9 @@ class CodexSwitchApp:
     def _available_mcp_server_names(self) -> list[str]:
         return self._safe_mcp_server_names(self._global_mcp_source_toml())
 
+    def _available_skill_sources(self) -> list[SkillSource]:
+        return discover_skill_sources(default_skill_roots(self.project_root))
+
     def _project_mcp_selection_summary(self, project: ProjectRecord | None) -> str:
         if not project:
             return "-"
@@ -1887,6 +1898,11 @@ class CodexSwitchApp:
         label = ", ".join(project.mcp_server_names[:4])
         suffix = " …" if len(project.mcp_server_names) > 4 else ""
         return f"{len(project.mcp_server_names)} 个服务：{label}{suffix}"
+
+    def _project_skill_selection_summary(self, project: ProjectRecord | None) -> str:
+        if not project:
+            return "-"
+        return skill_selection_summary(self._available_skill_sources(), project.skill_names)
 
     def _mcp_contains_project_root(self, value) -> bool:
         if isinstance(value, str):
@@ -2381,6 +2397,7 @@ class CodexSwitchApp:
             self.project_script_var.set("-")
             self.project_run_var.set("-")
             self.project_mcp_var.set("-")
+            self.project_skills_var.set("-")
             self.project_status_badge.configure(text="未生成", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
             return
 
@@ -2389,6 +2406,7 @@ class CodexSwitchApp:
         self.project_run_var.set(project.run_command or "未配置")
         self.project_script_var.set(str(self._get_project_script_path(project)))
         self.project_mcp_var.set(self._project_mcp_selection_summary(project))
+        self.project_skills_var.set(self._project_skill_selection_summary(project))
 
         codex_profile = self._profile_by_id(project_codex_profile_id(project))
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
@@ -3032,7 +3050,12 @@ class CodexSwitchApp:
         if not any(profile_supports_codex(profile) for profile in profiles) or not any(profile_supports_claude(profile) for profile in profiles):
             messagebox.showinfo("提示", "请先准备可用于 Codex 和 Claude 的配置。通用配置可同时用于两侧。", parent=self.root)
             return
-        dialog = ProjectDialog(self.root, profiles=profiles, mcp_server_names=self._available_mcp_server_names())
+        dialog = ProjectDialog(
+            self.root,
+            profiles=profiles,
+            mcp_server_names=self._available_mcp_server_names(),
+            skill_sources=self._available_skill_sources(),
+        )
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -3045,6 +3068,7 @@ class CodexSwitchApp:
             name=dialog.result["name"],
             run_command=dialog.result["run_command"],
             mcp_server_names=dialog.result["mcp_server_names"],
+            skill_names=dialog.result["skill_names"],
             codex_profile_id=dialog.result["codex_profile_id"],
             claude_profile_id=dialog.result["claude_profile_id"],
         )
@@ -3115,6 +3139,7 @@ class CodexSwitchApp:
             self.root,
             profiles=self._healthy_profiles(),
             mcp_server_names=self._available_mcp_server_names(),
+            skill_sources=self._available_skill_sources(),
             project=project,
         )
         self.root.wait_window(dialog)
@@ -3133,6 +3158,7 @@ class CodexSwitchApp:
             claude_profile_id=dialog.result["claude_profile_id"],
             run_command=dialog.result["run_command"],
             mcp_server_names=dialog.result["mcp_server_names"],
+            skill_names=dialog.result["skill_names"],
             updated_at=now_iso(),
         )
         api_binding_changed = project_codex_binding_changed(project, updated)
@@ -3291,6 +3317,7 @@ class CodexSwitchApp:
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=self.agents_doc_text,
             route_proxy_base_url=self._route_proxy_base_url_for_project(project),
+            available_skill_sources=self._available_skill_sources(),
         )
         try:
             result = self.project_template_service.generate(
@@ -3301,6 +3328,7 @@ class CodexSwitchApp:
                 agents_doc_text=template_options.agents_doc_text,
                 claude_profile=claude_profile,
                 route_proxy_base_url=template_options.route_proxy_base_url,
+                skill_sources=template_options.skill_sources,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)

@@ -21,6 +21,12 @@ from codex_switch.codex_config import (
 )
 from codex_switch.models import Profile, ROUTE_PROXY_PLACEHOLDER_KEY
 from codex_switch.resources import asset_path
+from codex_switch.skills import (
+    PROJECT_SKILLS_RELATIVE_DIR,
+    SKILL_MANAGED_MARKER,
+    SkillSource,
+    sync_project_skills,
+)
 
 
 CODEX_SCRIPT_DIRNAME = "codex_scripts"
@@ -219,6 +225,7 @@ class ProjectTemplateService:
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
+        skill_sources: list[SkillSource] | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         codex_dir = project_root / ".codex"
@@ -244,6 +251,15 @@ class ProjectTemplateService:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             generated_paths.append(target)
+        if skill_sources is not None:
+            generated_paths.extend(
+                sync_project_skills(
+                    project_root,
+                    skill_sources,
+                    [source.name for source in skill_sources],
+                    backup_dir=backup_dir,
+                )
+            )
 
         return ProjectTemplateResult(
             generated_paths=generated_paths,
@@ -306,6 +322,13 @@ class ProjectTemplateService:
             for relative_path in MANAGED_TEMPLATE_FILES
             if (project_root / relative_path).exists()
         ]
+        skills_root = project_root / PROJECT_SKILLS_RELATIVE_DIR
+        if skills_root.exists():
+            generated_paths.extend(
+                path
+                for path in sorted(skills_root.iterdir(), key=lambda item: item.name.casefold())
+                if path.is_dir() and (path / SKILL_MANAGED_MARKER).exists()
+            )
         gitignore_path = project_root / ".gitignore"
         if self._has_managed_gitignore_block(gitignore_path):
             generated_paths.append(gitignore_path)

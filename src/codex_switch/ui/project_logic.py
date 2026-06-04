@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from codex_switch.models import ProjectRecord
+from codex_switch.skills import SkillSource, resolve_selected_skill_sources
 from codex_switch.ui.utils import project_start_script_paths
 
 
@@ -14,6 +15,7 @@ class CodexProjectTemplateOptions:
     project_mcp_toml: str
     agents_doc_text: str
     route_proxy_base_url: str | None
+    skill_sources: list[SkillSource]
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ def codex_project_template_options(
     project_mcp_toml: str,
     agents_doc_text: str,
     route_proxy_base_url: str | None,
+    available_skill_sources: list[SkillSource],
 ) -> CodexProjectTemplateOptions:
     return CodexProjectTemplateOptions(
         project_root=project_root_path(project),
@@ -80,6 +83,7 @@ def codex_project_template_options(
         project_mcp_toml=project_mcp_toml,
         agents_doc_text=agents_doc_text,
         route_proxy_base_url=route_proxy_base_url,
+        skill_sources=resolve_selected_skill_sources(available_skill_sources, project.skill_names),
     )
 
 

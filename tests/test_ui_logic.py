@@ -44,6 +44,7 @@ from codex_switch.project_template import (
     CLAUDE_MODEL_ENV_KEY,
 )
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
+from codex_switch.skills import SkillSource
 from codex_switch.ui.app import (
     LIBRARY_VIEW_ALL,
     ModelBatchCache,
@@ -374,13 +375,16 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(project_claude_cmd_command(), ("cmd.exe", "/k", "claude"))
 
     def test_project_template_option_helpers_build_service_inputs(self) -> None:
-        project = ProjectRecord.create(str(Path.cwd()), "profile-id")
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id", skill_names=["frontend-dev"])
+        frontend_skill = SkillSource("frontend-dev", "frontend-dev", Path.cwd() / "frontend-dev")
+        fullstack_skill = SkillSource("fullstack-dev", "fullstack-dev", Path.cwd() / "fullstack-dev")
 
         codex_options = codex_project_template_options(
             project,
             project_mcp_toml="mcp-toml",
             agents_doc_text="# Agents\n",
             route_proxy_base_url="http://127.0.0.1:15721/project/p1",
+            available_skill_sources=[frontend_skill, fullstack_skill],
         )
         claude_options = claude_project_template_options(
             project,
@@ -394,6 +398,7 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(codex_options.project_mcp_toml, "mcp-toml")
         self.assertEqual(codex_options.agents_doc_text, "# Agents\n")
         self.assertEqual(codex_options.route_proxy_base_url, "http://127.0.0.1:15721/project/p1")
+        self.assertEqual(codex_options.skill_sources, [frontend_skill])
         self.assertEqual(claude_options.project_root, Path.cwd())
         self.assertEqual(claude_options.project_mcp_toml, "mcp-toml")
         self.assertEqual(claude_options.agents_doc_text, "# Agents\n")

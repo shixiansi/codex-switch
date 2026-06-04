@@ -186,7 +186,7 @@ class ProfileStore:
         if route_proxy_settings is None:
             route_proxy_settings = RouteProxySettings()
         payload = {
-            "version": 8,
+            "version": 9,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,
