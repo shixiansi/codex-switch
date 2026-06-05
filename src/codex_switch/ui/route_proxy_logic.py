@@ -53,6 +53,10 @@ def route_proxy_rules_for_project(
     claude_profile: Profile,
     codex_protocol: str,
     claude_protocol: str,
+    *,
+    codex_compact_model: str = "",
+    codex_manual_upstream_protocol: bool = False,
+    claude_manual_upstream_protocol: bool = False,
 ) -> list[RouteProxyRule]:
     codex_conversion_protocols = {
         ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
@@ -71,6 +75,8 @@ def route_proxy_rules_for_project(
             primary_profile_id=codex_profile.id,
             upstream_protocol=codex_protocol,
             upstream_model=codex_upstream_model,
+            compact_model=codex_compact_model,
+            manual_upstream_protocol=codex_manual_upstream_protocol,
         ),
         RouteProxyRule.create(
             project_id=project.id,
@@ -78,6 +84,7 @@ def route_proxy_rules_for_project(
             primary_profile_id=claude_profile.id,
             upstream_protocol=claude_protocol,
             upstream_model=claude_upstream_model,
+            manual_upstream_protocol=claude_manual_upstream_protocol,
         ),
     ]
 
@@ -104,12 +111,40 @@ def refresh_route_proxy_rules_for_project(
 ) -> RouteProxySettings:
     if not settings.project_enabled(project.id):
         return settings
+    existing_rules = settings.rules_for_project(project.id)
+    existing_codex_rule = next(
+        (rule for rule in existing_rules if rule.client_type == ROUTE_PROXY_CLIENT_CODEX),
+        None,
+    )
+    existing_claude_rule = next(
+        (rule for rule in existing_rules if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE),
+        None,
+    )
+    codex_protocol = (
+        existing_codex_rule.upstream_protocol
+        if existing_codex_rule is not None and existing_codex_rule.manual_upstream_protocol
+        else route_proxy_codex_protocol_for_profile(codex_profile)
+    )
+    claude_protocol = (
+        existing_claude_rule.upstream_protocol
+        if existing_claude_rule is not None and existing_claude_rule.manual_upstream_protocol
+        else route_proxy_claude_protocol_for_profile(claude_profile)
+    )
     refreshed = settings.without_project_rules(project.id)
     refreshed.rules.extend(
-        route_proxy_rules_for_project_profiles(
+        route_proxy_rules_for_project(
             project,
             codex_profile,
             claude_profile,
+            codex_protocol,
+            claude_protocol,
+            codex_compact_model=existing_codex_rule.compact_model if existing_codex_rule is not None else "",
+            codex_manual_upstream_protocol=(
+                existing_codex_rule.manual_upstream_protocol if existing_codex_rule is not None else False
+            ),
+            claude_manual_upstream_protocol=(
+                existing_claude_rule.manual_upstream_protocol if existing_claude_rule is not None else False
+            ),
         )
     )
     return refreshed

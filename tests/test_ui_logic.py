@@ -46,6 +46,7 @@ from codex_switch.project_template import (
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
 from codex_switch.ui.app import (
+    CodexSwitchApp,
     LIBRARY_VIEW_ALL,
     ModelBatchCache,
     ModelBatchResult,
@@ -92,6 +93,14 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui.utils import resolve_mcp_editor_text
+
+
+class _ValueVar:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
 
 
 class UiFilterTests(unittest.TestCase):
@@ -551,6 +560,110 @@ class UiFilterTests(unittest.TestCase):
         codex_rule = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
         self.assertEqual(codex_rule.primary_profile_id, "chat-profile")
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+
+    def test_refresh_route_proxy_rules_for_project_preserves_manual_protocols_and_compact_model(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "old-codex",
+            codex_profile_id="old-codex",
+            claude_profile_id="old-claude",
+        )
+        codex_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="old-codex",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+            compact_model="gpt-4.1-compact",
+            manual_upstream_protocol=True,
+        )
+        claude_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+            primary_profile_id="old-claude",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+            manual_upstream_protocol=True,
+        )
+        settings = RouteProxySettings(rules=[codex_rule, claude_rule])
+        chat_profile = Profile.create("chat", "https://chat.example.com", "sk-chat", wire_api="chat_completions")
+        chat_profile.id = "new-codex"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude_profile.id = "new-claude"
+        updated_project = replace(
+            project,
+            profile_id="new-codex",
+            codex_profile_id="new-codex",
+            claude_profile_id="new-claude",
+        )
+
+        refreshed = refresh_route_proxy_rules_for_project(settings, updated_project, chat_profile, claude_profile)
+
+        refreshed_codex = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
+        refreshed_claude = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE)
+        self.assertEqual(refreshed_codex.primary_profile_id, "new-codex")
+        self.assertEqual(refreshed_codex.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI)
+        self.assertEqual(refreshed_codex.upstream_model, "")
+        self.assertEqual(refreshed_codex.compact_model, "gpt-4.1-compact")
+        self.assertTrue(refreshed_codex.manual_upstream_protocol)
+        self.assertEqual(refreshed_claude.primary_profile_id, "new-claude")
+        self.assertEqual(refreshed_claude.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC)
+        self.assertEqual(refreshed_claude.upstream_model, "")
+        self.assertTrue(refreshed_claude.manual_upstream_protocol)
+
+    def test_save_selected_route_proxy_project_rules_updates_protocols_and_compact_model(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        codex_profile = Profile.create(
+            "codex",
+            "https://codex.example.com",
+            "sk-codex",
+            codex_model="gpt-real",
+        )
+        codex_profile.id = "codex-profile"
+        claude_profile = Profile.create(
+            "claude",
+            "https://claude.example.com",
+            "sk-claude",
+            vendor=VENDOR_CLAUDE,
+            claude_model="sonnet-real",
+        )
+        claude_profile.id = "claude-profile"
+        app = CodexSwitchApp.__new__(CodexSwitchApp)
+        app.projects = [project]
+        app.profiles = [codex_profile, claude_profile]
+        app.selected_project_id = project.id
+        app.route_proxy_settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=codex_profile.id,
+                ),
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=claude_profile.id,
+                ),
+            ]
+        )
+        app.proxy_codex_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        app.proxy_claude_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+        app.proxy_codex_compact_model_var = _ValueVar("gpt-4.1-compact")
+
+        app._save_selected_route_proxy_project_rules()
+
+        codex_rule = next(rule for rule in app.route_proxy_settings.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
+        claude_rule = next(rule for rule in app.route_proxy_settings.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE)
+        self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        self.assertEqual(codex_rule.upstream_model, "gpt-real")
+        self.assertEqual(codex_rule.compact_model, "gpt-4.1-compact")
+        self.assertTrue(codex_rule.manual_upstream_protocol)
+        self.assertEqual(claude_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+        self.assertEqual(claude_rule.upstream_model, "sonnet-real")
+        self.assertTrue(claude_rule.manual_upstream_protocol)
 
 
 class McpEditorPrefillTests(unittest.TestCase):

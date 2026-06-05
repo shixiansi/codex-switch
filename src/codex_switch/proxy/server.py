@@ -45,10 +45,12 @@ AUTH_HEADERS = {
 }
 OPENAI_PATH_ALIASES = {
     "/responses": "/v1/responses",
+    "/responses/compact": "/v1/responses/compact",
     "/chat/completions": "/v1/chat/completions",
     "/models": "/v1/models",
 }
 OPENAI_PROXY_PATHS = set(OPENAI_PATH_ALIASES) | set(OPENAI_PATH_ALIASES.values())
+OPENAI_COMPACT_PATHS = {"/responses/compact", "/v1/responses/compact"}
 
 
 class RouteProxyServer:
@@ -172,6 +174,12 @@ class RouteProxyServer:
             rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
             response_transform = lambda payload: translation.response(payload, model or upstream_model)
             stream_transform = lambda chunks: translation.stream(chunks, model or upstream_model)
+        elif route.client_type == ROUTE_PROXY_CLIENT_CODEX and self._is_openai_compact_path(rendered_path):
+            compact_model = route.compact_model.strip()
+            if compact_model and request_payload:
+                converted = dict(request_payload)
+                converted["model"] = compact_model
+                rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
 
         parsed_base = parse.urlparse(profile.base_url.rstrip("/"))
         if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
@@ -306,6 +314,9 @@ class RouteProxyServer:
         if parsed.query:
             rendered = f"{rendered}?{parsed.query}"
         return rendered
+
+    def _is_openai_compact_path(self, path: str) -> bool:
+        return parse.urlparse(path).path in OPENAI_COMPACT_PATHS
 
     def _join_upstream_path(self, base_path: str, request_path: str) -> str:
         normalized_base = (base_path or "").rstrip("/")

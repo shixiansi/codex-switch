@@ -48,7 +48,11 @@ from codex_switch.models import (
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PLACEHOLDER_KEY,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+    ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+    ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    normalize_route_proxy_protocol,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -614,6 +618,7 @@ class CodexSwitchApp:
         self.proxy_selected_rules_var = tk.StringVar(value="-")
         self.proxy_codex_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_OPENAI)
         self.proxy_claude_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_ANTHROPIC)
+        self.proxy_codex_compact_model_var = tk.StringVar(value="")
 
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
@@ -1159,17 +1164,19 @@ class CodexSwitchApp:
             state="readonly",
             width=28,
         ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
             values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+        ).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
 
         proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        proxy_tree_wrap.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        proxy_tree_wrap.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
         proxy_tree_wrap.columnconfigure(0, weight=1)
         proxy_tree_wrap.rowconfigure(0, weight=1)
         self.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "enabled"), show="headings")
@@ -1188,7 +1195,7 @@ class CodexSwitchApp:
         self.proxy_project_tree.configure(yscrollcommand=proxy_scroll.set)
 
         actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
         make_button(actions, text="保存设置", variant="secondary", command=self.save_route_proxy_settings).grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -2355,21 +2362,25 @@ class CodexSwitchApp:
         if not project:
             self.proxy_selected_project_var.set("未选择项目")
             self.proxy_selected_rules_var.set("-")
+            self.proxy_codex_compact_model_var.set("")
             return
         self.proxy_selected_project_var.set(f"{project.name}    {project.project_dir}")
         rules = self.route_proxy_settings.rules_for_project(project.id)
         if not rules:
             self.proxy_selected_rules_var.set("未启用代理。")
+            self.proxy_codex_compact_model_var.set("")
             return
         summaries: list[str] = []
         for rule in rules:
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
                 self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
+                self.proxy_codex_compact_model_var.set(rule.compact_model)
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
                 self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
             profile = self._profile_by_id(rule.primary_profile_id)
             profile_name = profile.name if profile else "配置已删除"
-            summaries.append(f"{rule.client_type} / {rule.model_pattern} / {rule.upstream_protocol} -> {profile_name}")
+            compact_suffix = f" / compact: {rule.compact_model}" if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and rule.compact_model else ""
+            summaries.append(f"{rule.client_type} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
         self.proxy_selected_rules_var.set("\n".join(summaries))
 
     def _render_proxy_log(self) -> None:
@@ -2727,11 +2738,32 @@ class CodexSwitchApp:
         )
         return True
 
+    def _refresh_route_proxy_upstream_models(self, project: ProjectRecord) -> None:
+        codex_profile = self._profile_by_id(project_codex_profile_id(project))
+        claude_profile = self._profile_by_id(project_claude_profile_id(project))
+        codex_conversion_protocols = {
+            ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+            ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+        }
+        for rule in self.route_proxy_settings.rules_for_project(project.id):
+            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and codex_profile is not None:
+                rule.upstream_model = (
+                    codex_profile.codex_display_model
+                    if rule.upstream_protocol in codex_conversion_protocols
+                    else ""
+                )
+            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE and claude_profile is not None:
+                rule.upstream_model = (
+                    claude_profile.claude_display_model
+                    if rule.upstream_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
+                    else ""
+                )
+
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
         self.root.after(0, self._render_proxy_log)
 
-    def save_route_proxy_settings(self) -> bool:
+    def save_route_proxy_settings(self, *, save_project_rules: bool = True) -> bool:
         self.route_proxy_settings.host = self.proxy_host_var.get().strip() or self.route_proxy_settings.host
         raw_port = self.proxy_port_var.get().strip() or str(self.route_proxy_settings.port)
         try:
@@ -2740,13 +2772,42 @@ class CodexSwitchApp:
             messagebox.showerror("保存失败", "代理端口必须是数字。", parent=self.root)
             return False
         self.route_proxy_settings.port = normalize_route_proxy_port(raw_port)
+        if save_project_rules:
+            self._save_selected_route_proxy_project_rules()
         self.persist_state()
         self.refresh_proxy_tab()
         self.status_var.set("路由代理设置已保存。")
         return True
 
+    def _save_selected_route_proxy_project_rules(self) -> None:
+        project = self._selected_proxy_project()
+        if project is None:
+            return
+        codex_protocol = normalize_route_proxy_protocol(
+            self.proxy_codex_protocol_var.get(),
+            ROUTE_PROXY_CLIENT_CODEX,
+        )
+        claude_protocol = normalize_route_proxy_protocol(
+            self.proxy_claude_protocol_var.get(),
+            ROUTE_PROXY_CLIENT_CLAUDE,
+        )
+        compact_model = self.proxy_codex_compact_model_var.get().strip()
+        changed = False
+        for rule in self.route_proxy_settings.rules_for_project(project.id):
+            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                rule.upstream_protocol = codex_protocol
+                rule.compact_model = compact_model
+                rule.manual_upstream_protocol = True
+                changed = True
+            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+                rule.upstream_protocol = claude_protocol
+                rule.manual_upstream_protocol = True
+                changed = True
+        if changed:
+            self._refresh_route_proxy_upstream_models(project)
+
     def start_route_proxy(self, show_errors: bool = True) -> None:
-        if not self.save_route_proxy_settings():
+        if not self.save_route_proxy_settings(save_project_rules=show_errors):
             return
         self.route_proxy_settings.enabled = True
         try:

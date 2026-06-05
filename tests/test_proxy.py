@@ -157,6 +157,100 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["path"], "/v1/responses")
         self.assertEqual(captured["authorization"], "Bearer sk-upstream")
 
+    def test_openai_passthrough_accepts_compact_path_and_overrides_compact_model(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps({"id": "compact_1", "model": captured["payload"]["model"]}).encode("utf-8")
+                self.send_response(200 if self.path == "/v1/responses/compact" else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}/v1", "sk-upstream")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                    compact_model="gpt-4.1-compact",
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "gpt-5.5-openai-compact", "input": "history"}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/responses/compact",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(captured["path"], "/v1/responses/compact")
+        self.assertEqual(captured["authorization"], "Bearer sk-upstream")
+        self.assertEqual(captured["payload"]["model"], "gpt-4.1-compact")
+        self.assertEqual(response_payload["model"], "gpt-4.1-compact")
+
+    def test_openai_passthrough_compact_model_does_not_affect_regular_responses(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps({"id": "resp_1", "model": captured["payload"]["model"]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}/v1", "sk-upstream")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                    compact_model="gpt-4.1-compact",
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "gpt-5", "input": "hello"}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(captured["path"], "/v1/responses")
+        self.assertEqual(captured["payload"]["model"], "gpt-5")
+        self.assertEqual(response_payload["model"], "gpt-5")
+
     def test_openai_proxy_error_includes_rendered_upstream_url(self) -> None:
         profile = Profile.create("closed", "http://127.0.0.1:1/root", "sk-closed")
         settings = RouteProxySettings(

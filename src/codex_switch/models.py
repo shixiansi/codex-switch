@@ -162,6 +162,8 @@ class RouteProxyRule:
     fallback_profile_ids: list[str] = field(default_factory=list)
     upstream_protocol: str = ROUTE_PROXY_PROTOCOL_OPENAI
     upstream_model: str = ""
+    compact_model: str = ""
+    manual_upstream_protocol: bool = False
     enabled: bool = True
 
     @classmethod
@@ -175,6 +177,8 @@ class RouteProxyRule:
         fallback_profile_ids: list[str] | None = None,
         upstream_protocol: str | None = None,
         upstream_model: str = "",
+        compact_model: str = "",
+        manual_upstream_protocol: bool = False,
         enabled: bool = True,
     ) -> "RouteProxyRule":
         normalized_client = normalize_route_proxy_client(client_type)
@@ -187,6 +191,8 @@ class RouteProxyRule:
             fallback_profile_ids=[item.strip() for item in (fallback_profile_ids or []) if item.strip()],
             upstream_protocol=normalize_route_proxy_protocol(upstream_protocol, normalized_client),
             upstream_model=upstream_model.strip(),
+            compact_model=compact_model.strip(),
+            manual_upstream_protocol=manual_upstream_protocol,
             enabled=enabled,
         )
 
@@ -205,6 +211,8 @@ class RouteProxyRule:
             fallback_profile_ids=[str(item).strip() for item in fallback_profile_ids if str(item).strip()],
             upstream_protocol=normalize_route_proxy_protocol(data.get("upstream_protocol"), client_type),
             upstream_model=str(data.get("upstream_model") or "").strip(),
+            compact_model=str(data.get("compact_model") or "").strip(),
+            manual_upstream_protocol=bool(data.get("manual_upstream_protocol", False)),
             enabled=bool(data.get("enabled", True)),
         )
 
