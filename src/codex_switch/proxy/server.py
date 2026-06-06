@@ -462,17 +462,8 @@ class RouteProxyServer:
 
     def _route_log_context(self, *, project_id: str, upstream_source: str, channel_name: str) -> str:
         project_name = self._project_name(project_id) or project_id or "-"
-        mode = (
-            "account_pool_proxy"
-            if upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
-            else "profile_proxy"
-        )
-        return (
-            f"[project={project_name} "
-            f"project_id={project_id or '-'} "
-            f"mode={mode} "
-            f"channel={channel_name or '-'}]"
-        )
+        mode = "号池" if upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL else "代理"
+        return f"[{project_name}][{mode}][{channel_name or '-'}]"
 
     def _is_account_pool_unavailable_status(self, status: int) -> bool:
         return status in ACCOUNT_POOL_UNAVAILABLE_STATUSES
@@ -494,7 +485,7 @@ class RouteProxyServer:
                 pool.mark_recovered(channel.id)
                 self._record(
                     "info",
-                    f"[mode=account_pool_proxy channel={channel.name}] recovered",
+                    f"[号池][{channel.name}] recovered",
                     profile_id=channel.id,
                 )
             else:

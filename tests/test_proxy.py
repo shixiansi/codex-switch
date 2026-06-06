@@ -403,9 +403,7 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(counts, {"bad": 1, "good": 2})
         self.assertFalse(bad_channel.is_normal)
         self.assertIn("HTTP 503", bad_channel.failure_reason)
-        self.assertIn("project=Pool Project", events[0].message)
-        self.assertIn("mode=account_pool_proxy", events[0].message)
-        self.assertIn("channel=bad", events[0].message)
+        self.assertIn("[Pool Project][号池][bad]", events[0].message)
         self.assertIn("unavailable", events[0].message)
 
     def test_account_pool_recovery_checks_failed_channels_after_interval(self) -> None:
@@ -515,9 +513,7 @@ class RouteProxyTests(unittest.TestCase):
 
         self.assertEqual(captured["project_id"], "project-1")
         self.assertEqual(captured["project_name"], "Header Project")
-        self.assertIn("project=Header Project", events[-1].message)
-        self.assertIn("mode=profile_proxy", events[-1].message)
-        self.assertIn("channel=upstream", events[-1].message)
+        self.assertIn("[Header Project][代理][upstream]", events[-1].message)
 
     def test_route_proxy_percent_encodes_non_latin_project_header(self) -> None:
         captured: dict[str, str | None] = {}
