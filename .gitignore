@@ -12,6 +12,8 @@ artifacts/
 .codex/
 .serena/
 .recovered/
+.claude/
+.mcp.json
 .pmnote/
 pmnote/
 /AGENTS.md

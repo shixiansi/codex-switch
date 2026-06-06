@@ -62,6 +62,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 ### 文档配置
 
 - 内置 `AGENTS.md` 模板编辑器。
+- 默认模板已补充 PMNote 项目连续性规则、MCP 服务调用约束和中文编码安全流程，生成新项目模板时会同步带上这些协作规范。
 - 保存后的模板会写入应用配置库，并用于后续项目模板生成。
 - “恢复默认”只恢复包内默认模板预览，点击“保存文档”后才会生效。
 - 不会直接修改当前仓库根目录的 `AGENTS.md`。
@@ -179,7 +180,7 @@ Windows 本地打包：
 ## 安全说明
 
 - Codex Switch 不会把 API Key 上传到网络服务；Key 只在本地配置文件和你主动调用的 API 请求中使用。
-- 提交到 GitHub 的源码不包含 `.codex/`、`.serena/`、`.recovered/`、`.pmnote/`、本地 trace/log/jsonl 或根目录 `AGENTS.md`。
+- 提交到 GitHub 的源码不包含 `.codex/`、`.serena/`、`.recovered/`、`.claude/`、`.pmnote/`、本地 `.mcp.json`、trace/log/jsonl 或根目录 `AGENTS.md`。
 - 项目模板生成的 `.codex/local.env` 含有项目 API Key，请不要手动提交到远端仓库。
 - 如果需要分享配置示例，请使用脱敏值，例如 `sk-your-key-here`。
 
