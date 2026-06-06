@@ -383,7 +383,16 @@ class RouteProxyTests(unittest.TestCase):
                 )
             ]
         )
-        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        project = ProjectRecord.create("project-root", "profile-id", name="Pool Project")
+        project.id = "project-1"
+        events = []
+        proxy = RouteProxyServer(
+            lambda: settings,
+            lambda: [],
+            events.append,
+            account_pool_provider=lambda: pool,
+            project_provider=lambda: [project],
+        )
         request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
 
         first = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
@@ -394,6 +403,10 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(counts, {"bad": 1, "good": 2})
         self.assertFalse(bad_channel.is_normal)
         self.assertIn("HTTP 503", bad_channel.failure_reason)
+        self.assertIn("project=Pool Project", events[0].message)
+        self.assertIn("mode=account_pool_proxy", events[0].message)
+        self.assertIn("channel=bad", events[0].message)
+        self.assertIn("unavailable", events[0].message)
 
     def test_account_pool_recovery_checks_failed_channels_after_interval(self) -> None:
         class RecoveredHandler(BaseHTTPRequestHandler):
@@ -494,13 +507,17 @@ class RouteProxyTests(unittest.TestCase):
                 )
             ]
         )
-        proxy = RouteProxyServer(lambda: settings, lambda: [profile], project_provider=lambda: [project])
+        events = []
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile], events.append, project_provider=lambda: [project])
         request_body = json.dumps({"model": "gpt-5"}).encode("utf-8")
 
         proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
 
         self.assertEqual(captured["project_id"], "project-1")
         self.assertEqual(captured["project_name"], "Header Project")
+        self.assertIn("project=Header Project", events[-1].message)
+        self.assertIn("mode=profile_proxy", events[-1].message)
+        self.assertIn("channel=upstream", events[-1].message)
 
     def test_route_proxy_percent_encodes_non_latin_project_header(self) -> None:
         captured: dict[str, str | None] = {}

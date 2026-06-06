@@ -27,6 +27,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
 )
 from codex_switch.health import HealthChecker
 from codex_switch.proxy.protocol_matrix import translation_for_protocol
@@ -146,6 +147,11 @@ class RouteProxyServer:
 
         last_error = ""
         for profile in self._route_profiles(route):
+            log_context = self._route_log_context(
+                project_id=project_id,
+                upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+                channel_name=profile.name,
+            )
             try:
                 response = self._forward(
                     method=method,
@@ -160,7 +166,7 @@ class RouteProxyServer:
                 )
                 self._record(
                     "info",
-                    f"{client_type} {upstream_path} -> {profile.name}",
+                    f"{log_context} {client_type} {upstream_path} -> ok",
                     project_id=project_id,
                     client_type=client_type,
                     profile_id=profile.id,
@@ -173,7 +179,7 @@ class RouteProxyServer:
                 last_error = sanitize_text(str(exc))
                 self._record(
                     "error",
-                    f"{client_type} {upstream_path} failed via {profile.name}: {last_error}",
+                    f"{log_context} {client_type} {upstream_path} failed: {last_error}",
                     project_id=project_id,
                     client_type=client_type,
                     profile_id=profile.id,
@@ -208,6 +214,11 @@ class RouteProxyServer:
             if channel is None:
                 break
             attempted_channel_ids.add(channel.id)
+            log_context = self._route_log_context(
+                project_id=project_id,
+                upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                channel_name=channel.name,
+            )
             profile = self._profile_from_account_pool_channel(channel)
             effective_route = self._account_pool_route(route, channel)
             try:
@@ -230,7 +241,7 @@ class RouteProxyServer:
                 self._notify_account_pool_updated(pool)
                 self._record(
                     "error",
-                    f"{client_type} {upstream_path} failed via pool channel {channel.name}: {last_error}",
+                    f"{log_context} {client_type} {upstream_path} failed: {last_error}",
                     project_id=project_id,
                     client_type=client_type,
                     profile_id=channel.id,
@@ -247,7 +258,7 @@ class RouteProxyServer:
                 self._notify_account_pool_updated(pool)
                 self._record(
                     "error",
-                    f"{client_type} {upstream_path} pool channel {channel.name} unavailable: {last_error}",
+                    f"{log_context} {client_type} {upstream_path} unavailable: {last_error}",
                     project_id=project_id,
                     client_type=client_type,
                     profile_id=channel.id,
@@ -259,7 +270,7 @@ class RouteProxyServer:
             self._notify_account_pool_updated(pool)
             self._record(
                 "info",
-                f"{client_type} {upstream_path} -> pool channel {channel.name}",
+                f"{log_context} {client_type} {upstream_path} -> ok",
                 project_id=project_id,
                 client_type=client_type,
                 profile_id=channel.id,
@@ -449,6 +460,20 @@ class RouteProxyServer:
             return ""
         return next((project.name for project in self.project_provider() if project.id == project_id), "")
 
+    def _route_log_context(self, *, project_id: str, upstream_source: str, channel_name: str) -> str:
+        project_name = self._project_name(project_id) or project_id or "-"
+        mode = (
+            "account_pool_proxy"
+            if upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+            else "profile_proxy"
+        )
+        return (
+            f"[project={project_name} "
+            f"project_id={project_id or '-'} "
+            f"mode={mode} "
+            f"channel={channel_name or '-'}]"
+        )
+
     def _is_account_pool_unavailable_status(self, status: int) -> bool:
         return status in ACCOUNT_POOL_UNAVAILABLE_STATUSES
 
@@ -469,7 +494,7 @@ class RouteProxyServer:
                 pool.mark_recovered(channel.id)
                 self._record(
                     "info",
-                    f"Pool channel recovered: {channel.name}",
+                    f"[mode=account_pool_proxy channel={channel.name}] recovered",
                     profile_id=channel.id,
                 )
             else:
