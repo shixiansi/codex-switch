@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import gzip
 import json
@@ -35,6 +36,7 @@ from codex_switch.proxy import (
     responses_to_openai_chat_response,
 )
 from codex_switch.proxy.protocol_matrix import PROTOCOL_TRANSLATIONS, translation_for_protocol
+from codex_switch.proxy.server import ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS
 from codex_switch.proxy.translator import iter_openai_chat_sse_to_responses, iter_openai_sse_to_anthropic
 from codex_switch.ui.route_proxy_logic import route_proxy_rules_for_project_profiles
 
@@ -406,9 +408,36 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIn("[Pool Project][号池][bad]", events[0].message)
         self.assertIn("unavailable", events[0].message)
 
+    def test_account_pool_recovery_interval_is_five_minutes(self) -> None:
+        channel = AccountPoolChannel.create(name="failed", base_url="https://api.example.com", api_key="sk-bad")
+        pool = AccountPoolSettings(
+            enabled=True,
+            channels=[channel],
+            last_recovery_checked_at="2026-06-06T10:00:00",
+        )
+        pool.mark_failed(channel.id, "old")
+        pool.last_recovery_checked_at = "2026-06-06T10:00:00"
+
+        self.assertEqual(ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS, 5 * 60)
+        self.assertFalse(
+            pool.recovery_due(
+                interval_seconds=ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS,
+                now=datetime.fromisoformat("2026-06-06T10:04:59"),
+            )
+        )
+        self.assertTrue(
+            pool.recovery_due(
+                interval_seconds=ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS,
+                now=datetime.fromisoformat("2026-06-06T10:05:00"),
+            )
+        )
+
     def test_account_pool_recovery_checks_failed_channels_after_interval(self) -> None:
+        checks = {"recovered": 0, "failed": 0}
+
         class RecoveredHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                checks["recovered"] += 1
                 body = json.dumps({"data": [{"id": "gpt-recovered"}]}).encode("utf-8")
                 self.send_response(200 if self.path == "/v1/models" else 404)
                 self.send_header("Content-Type", "application/json")
@@ -430,6 +459,7 @@ class RouteProxyTests(unittest.TestCase):
 
         class StillFailedHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                checks["failed"] += 1
                 self.send_response(401)
                 self.end_headers()
 
@@ -471,6 +501,7 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(recovered_channel.is_normal)
         self.assertFalse(failed_channel.is_normal)
+        self.assertEqual(checks, {"recovered": 1, "failed": 1})
         self.assertIn("鉴权失败", failed_channel.failure_reason)
         self.assertNotEqual(pool.last_recovery_checked_at, "2000-01-01T00:00:00")
 
