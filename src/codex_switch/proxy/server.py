@@ -389,7 +389,7 @@ class RouteProxyServer:
             lowered = name.casefold()
             if lowered in HOP_BY_HOP_HEADERS or lowered in AUTH_HEADERS:
                 continue
-            rendered[name] = value
+            rendered[name] = self._safe_header_value(value)
         rendered["Content-Type"] = "application/json"
         rendered["Accept-Encoding"] = "identity"
         if protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC:
@@ -400,7 +400,15 @@ class RouteProxyServer:
         rendered["X-Codex-Switch-Project-Id"] = project_id
         project_name = self._project_name(project_id)
         if project_name:
-            rendered["X-Codex-Switch-Project-Name"] = project_name
+            rendered["X-Codex-Switch-Project-Name"] = self._safe_header_value(project_name)
+        return rendered
+
+    def _safe_header_value(self, value: str) -> str:
+        rendered = str(value)
+        try:
+            rendered.encode("latin-1")
+        except UnicodeEncodeError:
+            return parse.quote(rendered, safe="")
         return rendered
 
     def _uses_account_pool(self, route: RouteProxyRule) -> bool:

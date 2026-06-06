@@ -502,6 +502,50 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["project_id"], "project-1")
         self.assertEqual(captured["project_name"], "Header Project")
 
+    def test_route_proxy_percent_encodes_non_latin_project_header(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["project_name"] = self.headers.get("X-Codex-Switch-Project-Name")
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b'{"id":"resp_1"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        project = ProjectRecord.create("project-root", "profile-id", name="冰")
+        project.id = "project-cn"
+        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}", "sk-upstream")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile], project_provider=lambda: [project])
+        request_body = json.dumps({"model": "gpt-5"}).encode("utf-8")
+
+        status, _headers, _body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-cn/responses",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(captured["project_name"], "%E5%86%B0")
+
     def test_openai_chat_to_responses_converts_request_and_response(self) -> None:
         converted = openai_chat_to_responses_request(
             {
