@@ -5,7 +5,7 @@ import json
 import os
 
 from codex_switch.codex_config import load_default_global_mcp_toml
-from codex_switch.models import Profile, ProjectRecord, RouteProxySettings
+from codex_switch.models import AccountPoolSettings, Profile, ProjectRecord, RouteProxySettings
 from codex_switch.project_template import load_default_agents_doc_text
 
 
@@ -52,6 +52,7 @@ class ProfileStore:
         list[str] | None,
         str | None,
         str | None,
+        AccountPoolSettings,
     ]:
         default_global_mcp_toml = load_default_global_mcp_toml()
         default_agents_doc_text = load_default_agents_doc_text()
@@ -72,6 +73,7 @@ class ProfileStore:
                 None,
                 None,
                 None,
+                AccountPoolSettings(),
             )
 
         try:
@@ -94,6 +96,7 @@ class ProfileStore:
                 None,
                 None,
                 None,
+                AccountPoolSettings(),
             )
 
         profiles = [Profile.from_dict(item) for item in payload.get("profiles", [])]
@@ -117,6 +120,7 @@ class ProfileStore:
         model_batch_concurrency = DEFAULT_MODEL_BATCH_CONCURRENCY
         model_batch_cache_by_profile: dict = {}
         route_proxy_settings = RouteProxySettings()
+        account_pool_settings = AccountPoolSettings()
         if isinstance(settings_payload, dict):
             global_mcp_opt_out = bool(settings_payload.get("global_mcp_opt_out", False))
             if "global_mcp_toml" in settings_payload:
@@ -145,6 +149,7 @@ class ProfileStore:
             if isinstance(stored_model_batch_cache, dict):
                 model_batch_cache_by_profile = stored_model_batch_cache
             route_proxy_settings = RouteProxySettings.from_dict(settings_payload.get("route_proxy"))
+            account_pool_settings = AccountPoolSettings.from_dict(settings_payload.get("account_pool"))
         return (
             profiles,
             selected_profile_id,
@@ -161,6 +166,7 @@ class ProfileStore:
             global_mcp_server_names,
             selected_codex_global_profile_id,
             selected_claude_global_profile_id,
+            account_pool_settings,
         )
 
     def save(
@@ -180,13 +186,16 @@ class ProfileStore:
         global_mcp_server_names: list[str] | None = None,
         selected_codex_global_profile_id: str | None = None,
         selected_claude_global_profile_id: str | None = None,
+        account_pool_settings: AccountPoolSettings | None = None,
     ) -> None:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
         if route_proxy_settings is None:
             route_proxy_settings = RouteProxySettings()
+        if account_pool_settings is None:
+            account_pool_settings = AccountPoolSettings()
         payload = {
-            "version": 9,
+            "version": 10,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,
@@ -207,6 +216,7 @@ class ProfileStore:
                 "model_batch_concurrency": clamp_model_batch_concurrency(model_batch_concurrency),
                 "model_batch_cache_by_profile": dict(model_batch_cache_by_profile or {}),
                 "route_proxy": route_proxy_settings.to_dict(),
+                "account_pool": account_pool_settings.to_dict(),
             },
         }
         with self.storage_path.open("w", encoding="utf-8") as handle:

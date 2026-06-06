@@ -8,6 +8,8 @@ import unittest
 from helpers import start_test_server
 
 from codex_switch.models import (
+    AccountPoolChannel,
+    AccountPoolSettings,
     Profile,
     ProjectRecord,
     RouteProxyRule,
@@ -20,6 +22,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     VENDOR_CLAUDE,
 )
 from codex_switch.proxy import (
@@ -279,6 +282,225 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIsNone(chunks)
         self.assertIn(expected_url, error_text)
         self.assertIn(expected_url, events[-1].message)
+
+    def test_account_pool_round_robin_is_shared_across_projects_and_skips_failed_channels(self) -> None:
+        def handler_for(label: str):
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:  # noqa: N802
+                    self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                    body = json.dumps({"label": label}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, format: str, *args) -> None:  # noqa: A003
+                    return
+
+            return Handler
+
+        upstream_a = self._serve(handler_for("a"))
+        upstream_b = self._serve(handler_for("b"))
+        channel_a = AccountPoolChannel.create(name="pool-a", base_url=f"http://127.0.0.1:{upstream_a.server_port}", api_key="sk-a")
+        channel_b = AccountPoolChannel.create(name="pool-b", base_url=f"http://127.0.0.1:{upstream_b.server_port}", api_key="sk-b")
+        pool = AccountPoolSettings(enabled=True, channels=[channel_a, channel_b])
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                ),
+                RouteProxyRule.create(
+                    project_id="project-2",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-2",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                ),
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        first = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+        second = proxy.handle(method="POST", raw_path="/project/project-2/responses", headers={}, body=request_body)
+        pool.mark_failed(channel_a.id, "manual")
+        third = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+
+        self.assertEqual(json.loads(first[2].decode("utf-8"))["label"], "a")
+        self.assertEqual(json.loads(second[2].decode("utf-8"))["label"], "b")
+        self.assertEqual(json.loads(third[2].decode("utf-8"))["label"], "b")
+
+    def test_account_pool_marks_unavailable_channel_and_skips_it_later(self) -> None:
+        counts = {"bad": 0, "good": 0}
+
+        class BadHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                counts["bad"] += 1
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b'{"error":"down"}'
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        class GoodHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                counts["good"] += 1
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps({"ok": counts["good"]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        bad = self._serve(BadHandler)
+        good = self._serve(GoodHandler)
+        bad_channel = AccountPoolChannel.create(name="bad", base_url=f"http://127.0.0.1:{bad.server_port}", api_key="sk-bad")
+        good_channel = AccountPoolChannel.create(name="good", base_url=f"http://127.0.0.1:{good.server_port}", api_key="sk-good")
+        pool = AccountPoolSettings(
+            enabled=True,
+            channels=[bad_channel, good_channel],
+            last_recovery_checked_at="2999-01-01T00:00:00",
+        )
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        first = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+        second = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+
+        self.assertEqual(first[0], 200)
+        self.assertEqual(second[0], 200)
+        self.assertEqual(counts, {"bad": 1, "good": 2})
+        self.assertFalse(bad_channel.is_normal)
+        self.assertIn("HTTP 503", bad_channel.failure_reason)
+
+    def test_account_pool_recovery_checks_failed_channels_after_interval(self) -> None:
+        class RecoveredHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                body = json.dumps({"data": [{"id": "gpt-recovered"}]}).encode("utf-8")
+                self.send_response(200 if self.path == "/v1/models" else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        class StillFailedHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(401)
+                self.end_headers()
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        recovered = self._serve(RecoveredHandler)
+        failed = self._serve(StillFailedHandler)
+        recovered_channel = AccountPoolChannel.create(name="recovered", base_url=f"http://127.0.0.1:{recovered.server_port}", api_key="sk-ok")
+        failed_channel = AccountPoolChannel.create(name="failed", base_url=f"http://127.0.0.1:{failed.server_port}", api_key="sk-bad")
+        pool = AccountPoolSettings(
+            enabled=True,
+            channels=[recovered_channel, failed_channel],
+            last_recovery_checked_at="2000-01-01T00:00:00",
+        )
+        pool.mark_failed(recovered_channel.id, "old")
+        pool.mark_failed(failed_channel.id, "old")
+        pool.last_recovery_checked_at = "2000-01-01T00:00:00"
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        status, _headers, _body, _chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(recovered_channel.is_normal)
+        self.assertFalse(failed_channel.is_normal)
+        self.assertIn("鉴权失败", failed_channel.failure_reason)
+        self.assertNotEqual(pool.last_recovery_checked_at, "2000-01-01T00:00:00")
+
+    def test_route_proxy_injects_project_headers(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["project_id"] = self.headers.get("X-Codex-Switch-Project-Id")
+                captured["project_name"] = self.headers.get("X-Codex-Switch-Project-Name")
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b'{"id":"resp_1"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        project = ProjectRecord.create("project-root", "profile-id", name="Header Project")
+        project.id = "project-1"
+        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}", "sk-upstream")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile], project_provider=lambda: [project])
+        request_body = json.dumps({"model": "gpt-5"}).encode("utf-8")
+
+        proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+
+        self.assertEqual(captured["project_id"], "project-1")
+        self.assertEqual(captured["project_name"], "Header Project")
 
     def test_openai_chat_to_responses_converts_request_and_response(self) -> None:
         converted = openai_chat_to_responses_request(

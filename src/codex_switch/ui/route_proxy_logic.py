@@ -18,6 +18,8 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
 )
 
 
@@ -30,6 +32,18 @@ CLAUDE_ROUTE_PROXY_PROTOCOLS = (
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
 )
+CODEX_ROUTE_PROXY_UPSTREAM_SOURCES = (
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+)
+CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS = {
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE: "默认配置",
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL: "号池",
+}
+CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES = {
+    label: value
+    for value, label in CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.items()
+}
 
 
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
@@ -54,6 +68,7 @@ def route_proxy_rules_for_project(
     codex_protocol: str,
     claude_protocol: str,
     *,
+    codex_upstream_source: str = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     codex_compact_model: str = "",
     codex_manual_upstream_protocol: bool = False,
     claude_manual_upstream_protocol: bool = False,
@@ -73,6 +88,7 @@ def route_proxy_rules_for_project(
             project_id=project.id,
             client_type=ROUTE_PROXY_CLIENT_CODEX,
             primary_profile_id=codex_profile.id,
+            upstream_source=codex_upstream_source,
             upstream_protocol=codex_protocol,
             upstream_model=codex_upstream_model,
             compact_model=codex_compact_model,
@@ -82,6 +98,7 @@ def route_proxy_rules_for_project(
             project_id=project.id,
             client_type=ROUTE_PROXY_CLIENT_CLAUDE,
             primary_profile_id=claude_profile.id,
+            upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
             upstream_protocol=claude_protocol,
             upstream_model=claude_upstream_model,
             manual_upstream_protocol=claude_manual_upstream_protocol,
@@ -138,6 +155,9 @@ def refresh_route_proxy_rules_for_project(
             claude_profile,
             codex_protocol,
             claude_protocol,
+            codex_upstream_source=(
+                existing_codex_rule.upstream_source if existing_codex_rule is not None else ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
+            ),
             codex_compact_model=existing_codex_rule.compact_model if existing_codex_rule is not None else "",
             codex_manual_upstream_protocol=(
                 existing_codex_rule.manual_upstream_protocol if existing_codex_rule is not None else False

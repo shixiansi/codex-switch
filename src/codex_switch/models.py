@@ -27,6 +27,12 @@ ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES = "openai_chat_to_responses"
 ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT = "openai_responses_to_chat"
 ROUTE_PROXY_PROTOCOL_ANTHROPIC = "anthropic_passthrough"
 ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI = "anthropic_to_openai"
+ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE = "profile"
+ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL = "account_pool"
+ROUTE_PROXY_UPSTREAM_SOURCE_CHOICES = (
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+)
 ROUTE_PROXY_CLIENT_CHOICES = (ROUTE_PROXY_CLIENT_CODEX, ROUTE_PROXY_CLIENT_CLAUDE)
 ROUTE_PROXY_PROTOCOL_CHOICES = (
     ROUTE_PROXY_PROTOCOL_OPENAI,
@@ -34,6 +40,12 @@ ROUTE_PROXY_PROTOCOL_CHOICES = (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+)
+ACCOUNT_POOL_CHANNEL_STATUS_NORMAL = "normal"
+ACCOUNT_POOL_CHANNEL_STATUS_ERROR = "error"
+ACCOUNT_POOL_CHANNEL_STATUS_CHOICES = (
+    ACCOUNT_POOL_CHANNEL_STATUS_NORMAL,
+    ACCOUNT_POOL_CHANNEL_STATUS_ERROR,
 )
 
 
@@ -136,6 +148,13 @@ def normalize_route_proxy_protocol(value: str | None, client: str | None = None)
     return ROUTE_PROXY_PROTOCOL_OPENAI
 
 
+def normalize_route_proxy_upstream_source(value: str | None) -> str:
+    source = str(value or "").strip().lower()
+    if source in ROUTE_PROXY_UPSTREAM_SOURCE_CHOICES:
+        return source
+    return ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
+
+
 def normalize_route_proxy_port(value: int | str | None) -> int:
     try:
         port = int(value or ROUTE_PROXY_DEFAULT_PORT)
@@ -152,6 +171,199 @@ def profile_supports_claude(profile: "Profile") -> bool:
     return profile.vendor in (VENDOR_CLAUDE, VENDOR_GENERIC)
 
 
+def normalize_account_pool_wire_api(value: str | None) -> str:
+    wire_api = str(value or "").strip().lower()
+    if wire_api == "chat_completions":
+        return "chat_completions"
+    return "responses"
+
+
+def normalize_account_pool_status(value: str | None) -> str:
+    status = str(value or "").strip().lower()
+    if status in ACCOUNT_POOL_CHANNEL_STATUS_CHOICES:
+        return status
+    return ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
+
+
+@dataclass
+class AccountPoolChannel:
+    id: str
+    name: str
+    base_url: str
+    api_key: str
+    wire_api: str = "responses"
+    default_model: str = DEFAULT_CODEX_MODEL
+    status: str = ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
+    failure_reason: str = ""
+    failed_at: str | None = None
+    last_success_at: str | None = None
+    last_checked_at: str | None = None
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        name: str,
+        base_url: str,
+        api_key: str,
+        wire_api: str = "responses",
+        default_model: str = DEFAULT_CODEX_MODEL,
+    ) -> "AccountPoolChannel":
+        return cls(
+            id=str(uuid.uuid4()),
+            name=name.strip(),
+            base_url=base_url.strip().rstrip("/"),
+            api_key=api_key.strip(),
+            wire_api=normalize_account_pool_wire_api(wire_api),
+            default_model=default_model.strip() or DEFAULT_CODEX_MODEL,
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "AccountPoolChannel":
+        data = data or {}
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            name=str(data.get("name") or "").strip(),
+            base_url=str(data.get("base_url") or "").strip().rstrip("/"),
+            api_key=str(data.get("api_key") or "").strip(),
+            wire_api=normalize_account_pool_wire_api(data.get("wire_api")),
+            default_model=str(data.get("default_model") or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL,
+            status=normalize_account_pool_status(data.get("status")),
+            failure_reason=str(data.get("failure_reason") or "").strip(),
+            failed_at=data.get("failed_at"),
+            last_success_at=data.get("last_success_at"),
+            last_checked_at=data.get("last_checked_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @property
+    def is_normal(self) -> bool:
+        return self.status == ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
+
+    @property
+    def api_key_masked(self) -> str:
+        return mask_secret(self.api_key)
+
+
+@dataclass
+class AccountPoolSettings:
+    enabled: bool = False
+    channels: list[AccountPoolChannel] = field(default_factory=list)
+    next_index: int = 0
+    last_recovery_checked_at: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "AccountPoolSettings":
+        if not isinstance(data, dict):
+            return cls()
+        raw_channels = data.get("channels", [])
+        channels = [AccountPoolChannel.from_dict(item) for item in raw_channels] if isinstance(raw_channels, list) else []
+        try:
+            next_index = int(data.get("next_index", 0) or 0)
+        except (TypeError, ValueError):
+            next_index = 0
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            channels=channels,
+            next_index=max(0, next_index),
+            last_recovery_checked_at=data.get("last_recovery_checked_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "channels": [channel.to_dict() for channel in self.channels],
+            "next_index": self.next_index,
+            "last_recovery_checked_at": self.last_recovery_checked_at,
+        }
+
+    @property
+    def normal_channels(self) -> list[AccountPoolChannel]:
+        return [channel for channel in self.channels if channel.is_normal]
+
+    @property
+    def failed_channels(self) -> list[AccountPoolChannel]:
+        return [channel for channel in self.channels if not channel.is_normal]
+
+    @property
+    def normal_count(self) -> int:
+        return len(self.normal_channels)
+
+    @property
+    def failed_count(self) -> int:
+        return len(self.failed_channels)
+
+    def take_next_normal_channel(self, exclude_ids: set[str] | None = None) -> AccountPoolChannel | None:
+        excluded = exclude_ids or set()
+        if not self.channels:
+            self.next_index = 0
+            return None
+        channel_count = len(self.channels)
+        start_index = self.next_index % channel_count
+        for offset in range(channel_count):
+            index = (start_index + offset) % channel_count
+            channel = self.channels[index]
+            if channel.is_normal and channel.id not in excluded:
+                self.next_index = (index + 1) % channel_count
+                return channel
+        self.next_index = start_index
+        return None
+
+    def mark_failed(self, channel_id: str, reason: str) -> None:
+        timestamp = now_iso()
+        for channel in self.channels:
+            if channel.id == channel_id:
+                channel.status = ACCOUNT_POOL_CHANNEL_STATUS_ERROR
+                channel.failure_reason = reason.strip() or "上游不可用"
+                channel.failed_at = timestamp
+                channel.last_checked_at = timestamp
+                return
+
+    def mark_success(self, channel_id: str) -> None:
+        timestamp = now_iso()
+        for channel in self.channels:
+            if channel.id == channel_id:
+                channel.status = ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
+                channel.failure_reason = ""
+                channel.failed_at = None
+                channel.last_success_at = timestamp
+                channel.last_checked_at = timestamp
+                return
+
+    def mark_recovered(self, channel_id: str) -> None:
+        self.mark_success(channel_id)
+
+    def replace_channel(self, updated: AccountPoolChannel) -> None:
+        self.channels = [updated if channel.id == updated.id else channel for channel in self.channels]
+        if self.channels:
+            self.next_index = self.next_index % len(self.channels)
+        else:
+            self.next_index = 0
+
+    def remove_channel(self, channel_id: str) -> None:
+        self.channels = [channel for channel in self.channels if channel.id != channel_id]
+        if self.channels:
+            self.next_index = self.next_index % len(self.channels)
+        else:
+            self.next_index = 0
+
+    def recovery_due(self, *, interval_seconds: int, now: datetime | None = None) -> bool:
+        if not self.failed_channels:
+            return False
+        if not self.last_recovery_checked_at:
+            return True
+        try:
+            last_checked = datetime.fromisoformat(self.last_recovery_checked_at)
+        except (TypeError, ValueError):
+            return True
+        return ((now or datetime.now()) - last_checked).total_seconds() >= interval_seconds
+
+    def mark_recovery_checked(self) -> None:
+        self.last_recovery_checked_at = now_iso()
+
+
 @dataclass
 class RouteProxyRule:
     id: str
@@ -160,6 +372,7 @@ class RouteProxyRule:
     model_pattern: str = "*"
     primary_profile_id: str = ""
     fallback_profile_ids: list[str] = field(default_factory=list)
+    upstream_source: str = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
     upstream_protocol: str = ROUTE_PROXY_PROTOCOL_OPENAI
     upstream_model: str = ""
     compact_model: str = ""
@@ -176,6 +389,7 @@ class RouteProxyRule:
         model_pattern: str = "*",
         fallback_profile_ids: list[str] | None = None,
         upstream_protocol: str | None = None,
+        upstream_source: str | None = None,
         upstream_model: str = "",
         compact_model: str = "",
         manual_upstream_protocol: bool = False,
@@ -189,6 +403,7 @@ class RouteProxyRule:
             model_pattern=model_pattern.strip() or "*",
             primary_profile_id=primary_profile_id.strip(),
             fallback_profile_ids=[item.strip() for item in (fallback_profile_ids or []) if item.strip()],
+            upstream_source=normalize_route_proxy_upstream_source(upstream_source),
             upstream_protocol=normalize_route_proxy_protocol(upstream_protocol, normalized_client),
             upstream_model=upstream_model.strip(),
             compact_model=compact_model.strip(),
@@ -209,6 +424,7 @@ class RouteProxyRule:
             model_pattern=str(data.get("model_pattern") or "*").strip() or "*",
             primary_profile_id=str(data.get("primary_profile_id") or "").strip(),
             fallback_profile_ids=[str(item).strip() for item in fallback_profile_ids if str(item).strip()],
+            upstream_source=normalize_route_proxy_upstream_source(data.get("upstream_source")),
             upstream_protocol=normalize_route_proxy_protocol(data.get("upstream_protocol"), client_type),
             upstream_model=str(data.get("upstream_model") or "").strip(),
             compact_model=str(data.get("compact_model") or "").strip(),

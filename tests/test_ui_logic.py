@@ -16,6 +16,7 @@ from codex_switch import main
 from codex_switch.chat import ChatResult
 from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import (
+    AccountPoolSettings,
     HealthResult,
     Profile,
     ProjectRecord,
@@ -28,6 +29,8 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -101,6 +104,9 @@ class _ValueVar:
 
     def get(self) -> str:
         return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value
 
 
 class UiFilterTests(unittest.TestCase):
@@ -471,6 +477,7 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(codex_rule.primary_profile_id, "chat-profile")
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
         self.assertEqual(codex_rule.upstream_model, "gpt-5.4")
+        self.assertEqual(codex_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE)
 
     def test_route_proxy_project_helpers_follow_enabled_codex_rule(self) -> None:
         project = ProjectRecord.create(str(Path.cwd()), "profile-id")
@@ -572,6 +579,7 @@ class UiFilterTests(unittest.TestCase):
             project_id=project.id,
             client_type=ROUTE_PROXY_CLIENT_CODEX,
             primary_profile_id="old-codex",
+            upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
             upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
             compact_model="gpt-4.1-compact",
             manual_upstream_protocol=True,
@@ -600,6 +608,7 @@ class UiFilterTests(unittest.TestCase):
         refreshed_codex = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
         refreshed_claude = next(rule for rule in refreshed.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE)
         self.assertEqual(refreshed_codex.primary_profile_id, "new-codex")
+        self.assertEqual(refreshed_codex.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
         self.assertEqual(refreshed_codex.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI)
         self.assertEqual(refreshed_codex.upstream_model, "")
         self.assertEqual(refreshed_codex.compact_model, "gpt-4.1-compact")
@@ -650,6 +659,7 @@ class UiFilterTests(unittest.TestCase):
             ]
         )
         app.proxy_codex_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        app.proxy_codex_upstream_source_var = _ValueVar(ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
         app.proxy_claude_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         app.proxy_codex_compact_model_var = _ValueVar("gpt-4.1-compact")
 
@@ -657,13 +667,90 @@ class UiFilterTests(unittest.TestCase):
 
         codex_rule = next(rule for rule in app.route_proxy_settings.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
         claude_rule = next(rule for rule in app.route_proxy_settings.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE)
+        self.assertEqual(codex_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
         self.assertEqual(codex_rule.upstream_model, "gpt-real")
         self.assertEqual(codex_rule.compact_model, "gpt-4.1-compact")
         self.assertTrue(codex_rule.manual_upstream_protocol)
+        self.assertEqual(claude_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE)
         self.assertEqual(claude_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(claude_rule.upstream_model, "sonnet-real")
         self.assertTrue(claude_rule.manual_upstream_protocol)
+
+    def test_add_account_pool_channel_saves_only_after_models_check_success(self) -> None:
+        class FakeRoot:
+            def wait_window(self, _dialog) -> None:
+                return
+
+        class FakeDialog:
+            result = {
+                "name": "pool-ok",
+                "base_url": "https://pool.example.com",
+                "api_key": "sk-pool",
+                "wire_api": "responses",
+                "default_model": "gpt-pool",
+            }
+
+            def __init__(self, _root) -> None:
+                return
+
+        class FakeChecker:
+            def check(self, _profile: Profile) -> HealthResult:
+                return HealthResult(status="healthy", detail="ok", checked_at="2026-06-06T10:00:00")
+
+        app = CodexSwitchApp.__new__(CodexSwitchApp)
+        app.root = FakeRoot()
+        app.health_checker = FakeChecker()
+        app.account_pool_settings = AccountPoolSettings()
+        app.status_var = _ValueVar("")
+        app.persist_state = lambda: None
+        app.refresh_account_pool_tab = lambda: None
+
+        with patch("codex_switch.ui.app.AccountPoolChannelDialog", FakeDialog):
+            app.add_account_pool_channel()
+
+        self.assertEqual(len(app.account_pool_settings.channels), 1)
+        self.assertEqual(app.account_pool_settings.channels[0].name, "pool-ok")
+        self.assertEqual(app.account_pool_settings.channels[0].last_success_at, "2026-06-06T10:00:00")
+
+    def test_add_account_pool_channel_does_not_save_failed_models_check(self) -> None:
+        class FakeRoot:
+            def wait_window(self, _dialog) -> None:
+                return
+
+        class FakeDialog:
+            result = {
+                "name": "pool-bad",
+                "base_url": "https://pool.example.com",
+                "api_key": "sk-pool",
+                "wire_api": "responses",
+                "default_model": "gpt-pool",
+            }
+
+            def __init__(self, _root) -> None:
+                return
+
+        class FakeChecker:
+            def check(self, _profile: Profile) -> HealthResult:
+                return HealthResult(status="error", detail="鉴权失败", checked_at="2026-06-06T10:00:00")
+
+        app = CodexSwitchApp.__new__(CodexSwitchApp)
+        app.root = FakeRoot()
+        app.health_checker = FakeChecker()
+        app.account_pool_settings = AccountPoolSettings()
+        app.status_var = _ValueVar("")
+        app.persist_state = lambda: None
+        app.refresh_account_pool_tab = lambda: None
+
+        with (
+            patch("codex_switch.ui.app.AccountPoolChannelDialog", FakeDialog),
+            patch("codex_switch.ui.app.messagebox.showerror") as showerror,
+        ):
+            app.add_account_pool_channel()
+
+        self.assertEqual(app.account_pool_settings.channels, [])
+        showerror.assert_called_once()
+        self.assertIn("鉴权失败", showerror.call_args.args[1])
 
 
 class McpEditorPrefillTests(unittest.TestCase):

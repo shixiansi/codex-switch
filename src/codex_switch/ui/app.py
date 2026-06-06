@@ -38,6 +38,8 @@ from codex_switch.codex_config import (
 )
 from codex_switch.health import HealthChecker
 from codex_switch.models import (
+    AccountPoolChannel,
+    AccountPoolSettings,
     CurrentCodexConfig,
     HealthResult,
     Profile,
@@ -52,7 +54,10 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     normalize_route_proxy_protocol,
+    normalize_route_proxy_upstream_source,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -89,6 +94,7 @@ from codex_switch.storage import (
     clamp_model_batch_concurrency,
 )
 from codex_switch.ui.dialogs import (
+    AccountPoolChannelDialog,
     ChatSettingsDialog,
     McpConfigDialog,
     McpSelectionDialog,
@@ -140,6 +146,8 @@ from codex_switch.ui.project_logic import (
 from codex_switch.ui.route_proxy_logic import (
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_PROTOCOLS,
+    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS,
+    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
     route_proxy_rules_for_project_profiles,
@@ -506,6 +514,7 @@ class CodexSwitchApp:
             self.global_mcp_server_names = load_state[12] if len(load_state) >= 13 else None
             raw_codex_global_profile_id = load_state[13] if len(load_state) >= 14 else None
             raw_claude_global_profile_id = load_state[14] if len(load_state) >= 15 else None
+            self.account_pool_settings = load_state[15] if len(load_state) >= 16 else AccountPoolSettings()
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -521,6 +530,7 @@ class CodexSwitchApp:
             self.route_proxy_settings = RouteProxySettings()
             raw_codex_global_profile_id = None
             raw_claude_global_profile_id = None
+            self.account_pool_settings = AccountPoolSettings()
         self.global_codex_profile_id = resolve_global_profile_id(
             raw_codex_global_profile_id,
             self.selected_profile_id,
@@ -538,6 +548,9 @@ class CodexSwitchApp:
             lambda: self.route_proxy_settings,
             lambda: self.profiles,
             self._record_route_proxy_event,
+            account_pool_provider=lambda: self.account_pool_settings,
+            account_pool_update_callback=self._record_account_pool_update,
+            project_provider=lambda: self.projects,
         )
 
         self.current_config: CurrentCodexConfig | None = None
@@ -616,9 +629,17 @@ class CodexSwitchApp:
         self.proxy_hint_var = tk.StringVar(value="项目级代理默认关闭。启用项目后生成模板会指向本地代理。")
         self.proxy_selected_project_var = tk.StringVar(value="未选择项目")
         self.proxy_selected_rules_var = tk.StringVar(value="-")
+        self.proxy_codex_upstream_source_var = tk.StringVar(
+            value=CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE]
+        )
         self.proxy_codex_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_OPENAI)
         self.proxy_claude_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_ANTHROPIC)
         self.proxy_codex_compact_model_var = tk.StringVar(value="")
+
+        self.account_pool_summary_var = tk.StringVar(value="号池未启用。")
+        self.account_pool_enabled_var = tk.BooleanVar(value=self.account_pool_settings.enabled)
+        self.account_pool_selected_name_var = tk.StringVar(value="未选择渠道")
+        self.account_pool_selected_detail_var = tk.StringVar(value="-")
 
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
@@ -703,6 +724,7 @@ class CodexSwitchApp:
             ("library", "配置库"),
             ("project", "项目配置"),
             ("proxy", "路由代理"),
+            ("account_pool", "号池"),
             ("test", "模型测试"),
             ("mcp", "MCP配置"),
             ("docs", "文档配置"),
@@ -720,6 +742,7 @@ class CodexSwitchApp:
         self.library_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.project_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.proxy_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
+        self.account_pool_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.mcp_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.docs_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.settings_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
@@ -729,6 +752,7 @@ class CodexSwitchApp:
             "library": self.library_tab,
             "project": self.project_tab,
             "proxy": self.proxy_tab,
+            "account_pool": self.account_pool_tab,
             "mcp": self.mcp_tab,
             "docs": self.docs_tab,
             "settings": self.settings_tab,
@@ -741,6 +765,7 @@ class CodexSwitchApp:
         self._build_library_tab(self.library_tab)
         self._build_project_tab(self.project_tab)
         self._build_proxy_tab(self.proxy_tab)
+        self._build_account_pool_tab(self.account_pool_tab)
         self._build_mcp_tab(self.mcp_tab)
         self._build_docs_tab(self.docs_tab)
         self._build_settings_tab(self.settings_tab)
@@ -1145,7 +1170,7 @@ class CodexSwitchApp:
         left = self._make_card(content)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(3, weight=1)
+        left.rowconfigure(5, weight=1)
         tk.Label(left, text="路由代理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
         tk.Label(left, textvariable=self.proxy_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
@@ -1156,34 +1181,43 @@ class CodexSwitchApp:
         ttk.Entry(settings, textvariable=self.proxy_host_var, width=18).grid(row=0, column=1, sticky="w", pady=4)
         tk.Label(settings, text="端口", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w", padx=(16, 10), pady=4)
         ttk.Entry(settings, textvariable=self.proxy_port_var, width=8).grid(row=0, column=3, sticky="w", pady=4)
-        tk.Label(settings, text="Codex 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="Codex 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Combobox(
+            settings,
+            textvariable=self.proxy_codex_upstream_source_var,
+            values=tuple(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.keys()),
+            state="readonly",
+            width=28,
+        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Codex 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_codex_protocol_var,
             values=CODEX_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
+        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
             values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
+        ).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
 
         proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        proxy_tree_wrap.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+        proxy_tree_wrap.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
         proxy_tree_wrap.columnconfigure(0, weight=1)
         proxy_tree_wrap.rowconfigure(0, weight=1)
-        self.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "enabled"), show="headings")
+        self.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "pool", "enabled"), show="headings")
         for column, title, width in (
             ("name", "项目", 160),
             ("codex", "Codex", 120),
             ("claude", "Claude", 120),
+            ("pool", "号池", 80),
             ("enabled", "代理", 80),
         ):
             self.proxy_project_tree.heading(column, text=title)
@@ -1195,7 +1229,7 @@ class CodexSwitchApp:
         self.proxy_project_tree.configure(yscrollcommand=proxy_scroll.set)
 
         actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=6, column=0, sticky="ew", pady=(14, 0))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
         make_button(actions, text="保存设置", variant="secondary", command=self.save_route_proxy_settings).grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -1233,6 +1267,74 @@ class CodexSwitchApp:
         proxy_log_scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=self.proxy_log_text.yview)
         proxy_log_scroll.grid(row=0, column=1, sticky="ns")
         self.proxy_log_text.configure(yscrollcommand=proxy_log_scroll.set)
+
+    def _build_account_pool_tab(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=7)
+        content.columnconfigure(1, weight=4)
+        content.rowconfigure(0, weight=1)
+
+        left = self._make_card(content)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(2, weight=1)
+        header = tk.Frame(left, bg=PALETTE["card_bg"])
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        tk.Label(header, text="Codex 号池", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            header,
+            text="启用号池",
+            variable=self.account_pool_enabled_var,
+            command=self.save_account_pool_settings,
+        ).grid(row=0, column=1, sticky="e")
+        tk.Label(left, textvariable=self.account_pool_summary_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
+        tree_wrap.grid(row=2, column=0, sticky="nsew")
+        tree_wrap.columnconfigure(0, weight=1)
+        tree_wrap.rowconfigure(0, weight=1)
+        self.account_pool_tree = ttk.Treeview(
+            tree_wrap,
+            columns=("name", "base_url", "wire", "key", "status", "checked", "failure"),
+            show="headings",
+        )
+        for column, title, width in (
+            ("name", "名称", 140),
+            ("base_url", "API 地址", 220),
+            ("wire", "Wire API", 120),
+            ("key", "Key", 120),
+            ("status", "状态", 80),
+            ("checked", "最后检测", 130),
+            ("failure", "失败原因", 220),
+        ):
+            self.account_pool_tree.heading(column, text=title)
+            self.account_pool_tree.column(column, width=width, anchor="center")
+        self.account_pool_tree.grid(row=0, column=0, sticky="nsew")
+        self.account_pool_tree.bind("<<TreeviewSelect>>", self._on_account_pool_selection_changed)
+        pool_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.account_pool_tree.yview)
+        pool_scroll.grid(row=0, column=1, sticky="ns")
+        self.account_pool_tree.configure(yscrollcommand=pool_scroll.set)
+
+        actions = tk.Frame(left, bg=PALETTE["card_bg"])
+        actions.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        for column in range(5):
+            actions.columnconfigure(column, weight=1)
+        make_button(actions, text="添加渠道", variant="primary", command=self.add_account_pool_channel).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="编辑渠道", variant="secondary", command=self.edit_account_pool_channel).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="删除渠道", variant="danger", command=self.delete_account_pool_channel).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(actions, text="重测异常", variant="secondary", command=self.retest_account_pool_channel).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        make_button(actions, text="刷新", variant="secondary", command=self.refresh_account_pool_tab).grid(row=0, column=4, sticky="ew")
+
+        right = self._make_card(content)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(1, weight=1)
+        tk.Label(right, textvariable=self.account_pool_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=2, sticky="w")
+        self._create_info_row(right, 1, "渠道详情", self.account_pool_selected_detail_var, wraplength=360)
 
     def _build_mcp_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -2013,6 +2115,11 @@ class CodexSwitchApp:
             self._refresh_project_detail()
             self._refresh_proxy_detail()
 
+    def _on_account_pool_selection_changed(self, _event: object | None = None) -> None:
+        if self.suppress_selection_events:
+            return
+        self._refresh_account_pool_detail()
+
     def _on_mcp_server_selection_changed(self, _event: object | None = None) -> None:
         if self.suppress_selection_events:
             return
@@ -2069,10 +2176,11 @@ class CodexSwitchApp:
         self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_proxy_tab()
+        self.refresh_account_pool_tab()
         self.refresh_mcp_tab()
         self.refresh_settings_tab()
         self.refresh_test_tab()
-        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、MCP配置、文档配置、设置和模型测试。")
+        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、号池、MCP配置、文档配置、设置和模型测试。")
 
     def refresh_settings_tab(self) -> None:
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
@@ -2348,6 +2456,7 @@ class CodexSwitchApp:
                         project.name,
                         compact_text(codex_profile.name if codex_profile else "配置已删除", 16),
                         compact_text(claude_profile.name if claude_profile else "配置已删除", 16),
+                        "是" if self._project_uses_account_pool(project.id) else "否",
                         "已启用" if self.route_proxy_settings.project_enabled(project.id) else "未启用",
                     ),
                 )
@@ -2362,17 +2471,25 @@ class CodexSwitchApp:
         if not project:
             self.proxy_selected_project_var.set("未选择项目")
             self.proxy_selected_rules_var.set("-")
+            self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
             self.proxy_codex_compact_model_var.set("")
             return
         self.proxy_selected_project_var.set(f"{project.name}    {project.project_dir}")
         rules = self.route_proxy_settings.rules_for_project(project.id)
         if not rules:
             self.proxy_selected_rules_var.set("未启用代理。")
+            self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
             self.proxy_codex_compact_model_var.set("")
             return
         summaries: list[str] = []
         for rule in rules:
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                self.proxy_codex_upstream_source_var.set(
+                    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
+                        normalize_route_proxy_upstream_source(rule.upstream_source),
+                        CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE],
+                    )
+                )
                 self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
                 self.proxy_codex_compact_model_var.set(rule.compact_model)
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
@@ -2380,7 +2497,12 @@ class CodexSwitchApp:
             profile = self._profile_by_id(rule.primary_profile_id)
             profile_name = profile.name if profile else "配置已删除"
             compact_suffix = f" / compact: {rule.compact_model}" if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and rule.compact_model else ""
-            summaries.append(f"{rule.client_type} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
+            source_suffix = (
+                f" / {CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, '默认配置')}"
+                if rule.client_type == ROUTE_PROXY_CLIENT_CODEX
+                else ""
+            )
+            summaries.append(f"{rule.client_type}{source_suffix} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
         self.proxy_selected_rules_var.set("\n".join(summaries))
 
     def _render_proxy_log(self) -> None:
@@ -2391,6 +2513,87 @@ class CodexSwitchApp:
             for event in reversed(self.route_proxy_settings.events[-30:])
         ]
         self._set_text_content(self.proxy_log_text, "\n".join(lines) if lines else "暂无代理日志。", disabled=True)
+
+    def _account_pool_channel_by_id(self, channel_id: str | None) -> AccountPoolChannel | None:
+        return next((channel for channel in self.account_pool_settings.channels if channel.id == channel_id), None)
+
+    def _selected_account_pool_channel(self) -> AccountPoolChannel | None:
+        if not hasattr(self, "account_pool_tree"):
+            return None
+        selection = self.account_pool_tree.selection()
+        if not selection:
+            return None
+        return self._account_pool_channel_by_id(selection[0])
+
+    def _project_uses_account_pool(self, project_id: str) -> bool:
+        return any(
+            rule.enabled
+            and rule.project_id == project_id
+            and rule.client_type == ROUTE_PROXY_CLIENT_CODEX
+            and rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+            for rule in self.route_proxy_settings.rules
+        )
+
+    def _account_pool_project_count(self) -> int:
+        return sum(1 for project in self.projects if self._project_uses_account_pool(project.id))
+
+    def refresh_account_pool_tab(self) -> None:
+        self.account_pool_enabled_var.set(self.account_pool_settings.enabled)
+        self.account_pool_summary_var.set(
+            f"连接号池项目 {self._account_pool_project_count()} 个，"
+            f"正常渠道 {self.account_pool_settings.normal_count} 个，"
+            f"异常渠道 {self.account_pool_settings.failed_count} 个。"
+        )
+        if not hasattr(self, "account_pool_tree"):
+            return
+        selected_id = None
+        selection = self.account_pool_tree.selection()
+        if selection:
+            selected_id = selection[0]
+        self.suppress_selection_events = True
+        try:
+            for item in self.account_pool_tree.get_children():
+                self.account_pool_tree.delete(item)
+            for channel in self.account_pool_settings.channels:
+                self.account_pool_tree.insert(
+                    "",
+                    "end",
+                    iid=channel.id,
+                    values=(
+                        channel.name,
+                        compact_text(channel.base_url, 34),
+                        channel.wire_api,
+                        channel.api_key_masked,
+                        "正常" if channel.is_normal else "异常",
+                        channel.last_checked_at or "-",
+                        compact_text(channel.failure_reason or "-", 34),
+                    ),
+                )
+        finally:
+            self.suppress_selection_events = False
+        if selected_id and self.account_pool_tree.exists(selected_id):
+            self.account_pool_tree.selection_set(selected_id)
+            self.account_pool_tree.focus(selected_id)
+        self._refresh_account_pool_detail()
+
+    def _refresh_account_pool_detail(self) -> None:
+        channel = self._selected_account_pool_channel()
+        if channel is None:
+            self.account_pool_selected_name_var.set("未选择渠道")
+            self.account_pool_selected_detail_var.set("-")
+            return
+        self.account_pool_selected_name_var.set(channel.name)
+        detail = (
+            f"API：{channel.base_url}\n"
+            f"Wire API：{channel.wire_api}\n"
+            f"默认模型：{channel.default_model}\n"
+            f"Key：{channel.api_key_masked}\n"
+            f"状态：{'正常' if channel.is_normal else '异常'}\n"
+            f"最后检测：{channel.last_checked_at or '-'}\n"
+            f"最后成功：{channel.last_success_at or '-'}\n"
+            f"失败原因：{channel.failure_reason or '-'}"
+        )
+        self.account_pool_selected_detail_var.set(detail)
 
     def _refresh_project_detail(self) -> None:
         project = self.get_selected_project()
@@ -2699,6 +2902,7 @@ class CodexSwitchApp:
             global_mcp_server_names=self.global_mcp_server_names,
             selected_codex_global_profile_id=self.global_codex_profile_id,
             selected_claude_global_profile_id=self.global_claude_profile_id,
+            account_pool_settings=self.account_pool_settings,
         )
 
     def save_settings(self) -> None:
@@ -2787,6 +2991,12 @@ class CodexSwitchApp:
             self.proxy_codex_protocol_var.get(),
             ROUTE_PROXY_CLIENT_CODEX,
         )
+        codex_source = normalize_route_proxy_upstream_source(
+            CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
+                self.proxy_codex_upstream_source_var.get(),
+                self.proxy_codex_upstream_source_var.get(),
+            )
+        )
         claude_protocol = normalize_route_proxy_protocol(
             self.proxy_claude_protocol_var.get(),
             ROUTE_PROXY_CLIENT_CLAUDE,
@@ -2795,11 +3005,13 @@ class CodexSwitchApp:
         changed = False
         for rule in self.route_proxy_settings.rules_for_project(project.id):
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                rule.upstream_source = codex_source
                 rule.upstream_protocol = codex_protocol
                 rule.compact_model = compact_model
                 rule.manual_upstream_protocol = True
                 changed = True
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+                rule.upstream_source = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
                 rule.upstream_protocol = claude_protocol
                 rule.manual_upstream_protocol = True
                 changed = True
@@ -2830,6 +3042,124 @@ class CodexSwitchApp:
         self.refresh_proxy_tab()
         self.status_var.set("路由代理已停止。")
 
+    def _record_account_pool_update(self, settings: AccountPoolSettings) -> None:
+        self.account_pool_settings = settings
+        if hasattr(self, "root") and self.root.winfo_exists():
+            self.root.after(0, self._apply_account_pool_update)
+
+    def _apply_account_pool_update(self) -> None:
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.refresh_proxy_tab()
+
+    def save_account_pool_settings(self) -> None:
+        self.account_pool_settings.enabled = self.account_pool_enabled_var.get()
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.refresh_proxy_tab()
+        self.status_var.set("已保存号池设置。")
+
+    def _account_pool_channel_from_result(
+        self,
+        result: dict,
+        existing: AccountPoolChannel | None = None,
+    ) -> AccountPoolChannel:
+        channel = AccountPoolChannel.create(
+            name=result["name"],
+            base_url=result["base_url"],
+            api_key=result["api_key"],
+            wire_api=result["wire_api"],
+            default_model=result["default_model"],
+        )
+        if existing is not None:
+            channel.id = existing.id
+        return channel
+
+    def _check_account_pool_channel(self, channel: AccountPoolChannel) -> HealthResult:
+        profile = Profile.create(
+            channel.name,
+            channel.base_url,
+            channel.api_key,
+            model=channel.default_model,
+            codex_model=channel.default_model,
+            wire_api=channel.wire_api,
+        )
+        return self.health_checker.check(profile)
+
+    def _mark_channel_from_success(self, channel: AccountPoolChannel, result: HealthResult) -> None:
+        checked_at = result.checked_at or now_iso()
+        channel.status = "normal"
+        channel.failure_reason = ""
+        channel.failed_at = None
+        channel.last_checked_at = checked_at
+        channel.last_success_at = checked_at
+
+    def add_account_pool_channel(self) -> None:
+        dialog = AccountPoolChannelDialog(self.root)
+        self.root.wait_window(dialog)
+        if not dialog.result:
+            return
+        channel = self._account_pool_channel_from_result(dialog.result)
+        result = self._check_account_pool_channel(channel)
+        if result.status != "healthy":
+            messagebox.showerror("连通性测试失败", result.detail, parent=self.root)
+            return
+        self._mark_channel_from_success(channel, result)
+        self.account_pool_settings.channels.append(channel)
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.status_var.set(f"已新增号池渠道：{channel.name}")
+
+    def edit_account_pool_channel(self) -> None:
+        channel = self._selected_account_pool_channel()
+        if channel is None:
+            messagebox.showinfo("提示", "请先选择一个号池渠道。", parent=self.root)
+            return
+        dialog = AccountPoolChannelDialog(self.root, channel=channel)
+        self.root.wait_window(dialog)
+        if not dialog.result:
+            return
+        updated = self._account_pool_channel_from_result(dialog.result, existing=channel)
+        result = self._check_account_pool_channel(updated)
+        if result.status != "healthy":
+            messagebox.showerror("连通性测试失败", result.detail, parent=self.root)
+            return
+        self._mark_channel_from_success(updated, result)
+        self.account_pool_settings.replace_channel(updated)
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.status_var.set(f"已更新号池渠道：{updated.name}")
+
+    def delete_account_pool_channel(self) -> None:
+        channel = self._selected_account_pool_channel()
+        if channel is None:
+            messagebox.showinfo("提示", "请先选择一个号池渠道。", parent=self.root)
+            return
+        if not messagebox.askyesno("确认删除", f"确定要删除号池渠道“{channel.name}”吗？", parent=self.root):
+            return
+        self.account_pool_settings.remove_channel(channel.id)
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.status_var.set(f"已删除号池渠道：{channel.name}")
+
+    def retest_account_pool_channel(self) -> None:
+        channel = self._selected_account_pool_channel()
+        if channel is None:
+            messagebox.showinfo("提示", "请先选择一个号池渠道。", parent=self.root)
+            return
+        if channel.is_normal:
+            messagebox.showinfo("提示", "当前渠道状态正常，无需重测异常。", parent=self.root)
+            return
+        result = self._check_account_pool_channel(channel)
+        if result.status == "healthy":
+            self.account_pool_settings.mark_recovered(channel.id)
+            self.status_var.set(f"号池渠道已恢复：{channel.name}")
+        else:
+            self.account_pool_settings.mark_failed(channel.id, result.detail)
+            messagebox.showerror("重测失败", result.detail, parent=self.root)
+        self.persist_state()
+        self.refresh_account_pool_tab()
+
     def enable_route_proxy_for_project(self) -> None:
         project = self._selected_proxy_project()
         if not project:
@@ -2847,6 +3177,7 @@ class CodexSwitchApp:
         rules = route_proxy_rules_for_project_profiles(project, codex_profile, claude_profile)
         for rule in rules:
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
                 self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
                 self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)

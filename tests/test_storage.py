@@ -7,6 +7,8 @@ import unittest
 from helpers import workspace_tempdir
 
 from codex_switch.models import (
+    AccountPoolChannel,
+    AccountPoolSettings,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     HealthResult,
@@ -19,6 +21,8 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+    ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     VENDOR_GENERIC,
     normalize_profile_vendor,
     today_iso,
@@ -51,6 +55,7 @@ class ProfileStoreTests(unittest.TestCase):
                 global_mcp_server_names,
                 selected_codex_global_profile_id,
                 selected_claude_global_profile_id,
+                account_pool_settings,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -76,6 +81,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertIsNone(global_mcp_server_names)
             self.assertIsNone(selected_codex_global_profile_id)
             self.assertIsNone(selected_claude_global_profile_id)
+            self.assertFalse(account_pool_settings.enabled)
+            self.assertEqual(account_pool_settings.channels, [])
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -86,8 +93,41 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 9)
+            self.assertEqual(payload["version"], 10)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
+
+    def test_store_persists_account_pool_settings(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            channel = AccountPoolChannel.create(
+                name="pool-a",
+                base_url="https://pool.example.com/v1",
+                api_key="sk-pool",
+                wire_api="chat_completions",
+                default_model="gpt-pool",
+            )
+            channel.status = "error"
+            channel.failure_reason = "HTTP 503"
+            account_pool = AccountPoolSettings(
+                enabled=True,
+                channels=[channel],
+                next_index=1,
+                last_recovery_checked_at="2026-06-06T10:00:00",
+            )
+
+            store.save([], None, account_pool_settings=account_pool)
+            loaded = store.load()[15]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertTrue(loaded.enabled)
+            self.assertEqual(loaded.next_index, 1)
+            self.assertEqual(loaded.last_recovery_checked_at, "2026-06-06T10:00:00")
+            self.assertEqual(loaded.channels[0].name, "pool-a")
+            self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
+            self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
+            self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
+            self.assertEqual(payload["version"], 10)
+            self.assertEqual(payload["settings"]["account_pool"]["channels"][0]["api_key"], "sk-pool")
 
     def test_store_persists_route_proxy_settings(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -315,6 +355,31 @@ class ProfileStoreTests(unittest.TestCase):
 
             self.assertEqual(loaded[9], DEFAULT_MODEL_BATCH_CONCURRENCY)
             self.assertEqual(loaded[10], {})
+            self.assertFalse(loaded[15].enabled)
+            self.assertEqual(loaded[15].channels, [])
+
+    def test_route_proxy_rule_defaults_upstream_source_to_profile(self) -> None:
+        rule = RouteProxyRule.from_dict(
+            {
+                "project_id": "project-1",
+                "client_type": ROUTE_PROXY_CLIENT_CODEX,
+                "primary_profile_id": "profile-1",
+            }
+        )
+
+        self.assertEqual(rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE)
+
+    def test_route_proxy_rule_persists_account_pool_source(self) -> None:
+        rule = RouteProxyRule.create(
+            project_id="project-1",
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="profile-1",
+            upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+        )
+
+        loaded = RouteProxyRule.from_dict(rule.to_dict())
+
+        self.assertEqual(loaded.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
 
     def test_model_batch_concurrency_is_clamped(self) -> None:
         self.assertEqual(clamp_model_batch_concurrency(0), 1)

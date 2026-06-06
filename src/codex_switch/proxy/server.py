@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -12,14 +13,22 @@ import threading
 import zlib
 
 from codex_switch.models import (
+    AccountPoolChannel,
+    AccountPoolSettings,
+    DEFAULT_CODEX_MODEL,
     Profile,
+    ProjectRecord,
     RouteProxyEvent,
     RouteProxyRule,
     RouteProxySettings,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+    ROUTE_PROXY_PROTOCOL_OPENAI,
+    ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
 )
+from codex_switch.health import HealthChecker
 from codex_switch.proxy.protocol_matrix import translation_for_protocol
 from codex_switch.proxy.sanitize import sanitize_text
 from codex_switch.proxy.translator import TranslationError
@@ -51,6 +60,8 @@ OPENAI_PATH_ALIASES = {
 }
 OPENAI_PROXY_PATHS = set(OPENAI_PATH_ALIASES) | set(OPENAI_PATH_ALIASES.values())
 OPENAI_COMPACT_PATHS = {"/responses/compact", "/v1/responses/compact"}
+ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS = 600
+ACCOUNT_POOL_UNAVAILABLE_STATUSES = {401, 403, 407, 429, 500, 502, 503, 504}
 
 
 class RouteProxyServer:
@@ -59,10 +70,18 @@ class RouteProxyServer:
         settings_provider: Callable[[], RouteProxySettings],
         profiles_provider: Callable[[], list[Profile]],
         event_callback: Callable[[RouteProxyEvent], None] | None = None,
+        account_pool_provider: Callable[[], AccountPoolSettings] | None = None,
+        account_pool_update_callback: Callable[[AccountPoolSettings], None] | None = None,
+        project_provider: Callable[[], list[ProjectRecord]] | None = None,
+        recovery_checker: HealthChecker | None = None,
     ) -> None:
         self.settings_provider = settings_provider
         self.profiles_provider = profiles_provider
         self.event_callback = event_callback
+        self.account_pool_provider = account_pool_provider
+        self.account_pool_update_callback = account_pool_update_callback
+        self.project_provider = project_provider
+        self.recovery_checker = recovery_checker or HealthChecker()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -112,6 +131,18 @@ class RouteProxyServer:
         route = self._select_rule(project_id, client_type, model)
         if route is None:
             return self._json_response(HTTPStatus.NOT_FOUND, {"error": "No route proxy rule matched this request."})
+        if self._uses_account_pool(route):
+            return self._handle_account_pool_route(
+                method=method,
+                upstream_path=upstream_path,
+                headers=headers,
+                body=body,
+                request_payload=request_payload,
+                route=route,
+                model=model,
+                project_id=project_id,
+                client_type=client_type,
+            )
 
         last_error = ""
         for profile in self._route_profiles(route):
@@ -125,6 +156,7 @@ class RouteProxyServer:
                     route=route,
                     profile=profile,
                     model=model,
+                    project_id=project_id,
                 )
                 self._record(
                     "info",
@@ -149,6 +181,94 @@ class RouteProxyServer:
                 )
         return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": last_error or "All route proxy upstreams failed."})
 
+    def _handle_account_pool_route(
+        self,
+        *,
+        method: str,
+        upstream_path: str,
+        headers: dict[str, str],
+        body: bytes,
+        request_payload: dict[str, Any],
+        route: RouteProxyRule,
+        model: str,
+        project_id: str,
+        client_type: str,
+    ) -> tuple[int, dict[str, str], bytes | None, Iterable[bytes] | None]:
+        pool = self.account_pool_provider() if self.account_pool_provider is not None else AccountPoolSettings()
+        if not pool.enabled:
+            return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "Account pool is disabled."})
+        self._maybe_recover_account_pool(pool)
+        if pool.normal_count == 0:
+            return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "No normal account pool channels are available."})
+
+        attempted_channel_ids: set[str] = set()
+        last_error = ""
+        while len(attempted_channel_ids) < len(pool.channels):
+            channel = pool.take_next_normal_channel(attempted_channel_ids)
+            if channel is None:
+                break
+            attempted_channel_ids.add(channel.id)
+            profile = self._profile_from_account_pool_channel(channel)
+            effective_route = self._account_pool_route(route, channel)
+            try:
+                response = self._forward(
+                    method=method,
+                    upstream_path=upstream_path,
+                    headers=headers,
+                    body=body,
+                    request_payload=request_payload,
+                    route=effective_route,
+                    profile=profile,
+                    model=model,
+                    project_id=project_id,
+                )
+            except TranslationError as exc:
+                return self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception as exc:
+                last_error = sanitize_text(str(exc))
+                pool.mark_failed(channel.id, last_error)
+                self._notify_account_pool_updated(pool)
+                self._record(
+                    "error",
+                    f"{client_type} {upstream_path} failed via pool channel {channel.name}: {last_error}",
+                    project_id=project_id,
+                    client_type=client_type,
+                    profile_id=channel.id,
+                    path=upstream_path,
+                )
+                continue
+
+            status, _response_headers, response_body, response_chunks = response
+            if self._is_account_pool_unavailable_status(status):
+                if response_chunks is not None and hasattr(response_chunks, "close"):
+                    response_chunks.close()
+                last_error = self._account_pool_status_error(status, response_body)
+                pool.mark_failed(channel.id, last_error)
+                self._notify_account_pool_updated(pool)
+                self._record(
+                    "error",
+                    f"{client_type} {upstream_path} pool channel {channel.name} unavailable: {last_error}",
+                    project_id=project_id,
+                    client_type=client_type,
+                    profile_id=channel.id,
+                    path=upstream_path,
+                )
+                continue
+
+            pool.mark_success(channel.id)
+            self._notify_account_pool_updated(pool)
+            self._record(
+                "info",
+                f"{client_type} {upstream_path} -> pool channel {channel.name}",
+                project_id=project_id,
+                client_type=client_type,
+                profile_id=channel.id,
+                path=upstream_path,
+            )
+            return response
+
+        return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": last_error or "All account pool channels failed."})
+
     def _forward(
         self,
         *,
@@ -160,6 +280,7 @@ class RouteProxyServer:
         route: RouteProxyRule,
         profile: Profile,
         model: str,
+        project_id: str,
     ) -> tuple[int, dict[str, str], bytes | None, Iterable[bytes] | None]:
         protocol = route.upstream_protocol
         rendered_body = body
@@ -188,7 +309,7 @@ class RouteProxyServer:
         upstream_target = self._join_upstream_path(parsed_base.path, parsed_rendered_path.path)
         if parsed_rendered_path.query:
             upstream_target = f"{upstream_target}?{parsed_rendered_path.query}"
-        rendered_headers = self._render_headers(headers, profile, protocol)
+        rendered_headers = self._render_headers(headers, profile, protocol, project_id=project_id)
         upstream_url = self._format_upstream_url(parsed_base, upstream_target)
 
         connection_cls = http.client.HTTPSConnection if parsed_base.scheme == "https" else http.client.HTTPConnection
@@ -262,7 +383,7 @@ class RouteProxyServer:
         profiles = {profile.id: profile for profile in self.profiles_provider()}
         return [profiles[profile_id] for profile_id in route.profile_ids if profile_id in profiles]
 
-    def _render_headers(self, headers: dict[str, str], profile: Profile, protocol: str) -> dict[str, str]:
+    def _render_headers(self, headers: dict[str, str], profile: Profile, protocol: str, *, project_id: str) -> dict[str, str]:
         rendered: dict[str, str] = {}
         for name, value in headers.items():
             lowered = name.casefold()
@@ -276,7 +397,80 @@ class RouteProxyServer:
             rendered.setdefault("anthropic-version", headers.get("anthropic-version", "2023-06-01"))
         else:
             rendered["Authorization"] = f"Bearer {profile.api_key}"
+        rendered["X-Codex-Switch-Project-Id"] = project_id
+        project_name = self._project_name(project_id)
+        if project_name:
+            rendered["X-Codex-Switch-Project-Name"] = project_name
         return rendered
+
+    def _uses_account_pool(self, route: RouteProxyRule) -> bool:
+        return (
+            route.client_type == ROUTE_PROXY_CLIENT_CODEX
+            and route.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+        )
+
+    def _profile_from_account_pool_channel(self, channel: AccountPoolChannel) -> Profile:
+        profile = Profile.create(
+            channel.name,
+            channel.base_url,
+            channel.api_key,
+            model=channel.default_model or DEFAULT_CODEX_MODEL,
+            codex_model=channel.default_model or DEFAULT_CODEX_MODEL,
+            wire_api=channel.wire_api,
+        )
+        profile.id = channel.id
+        return profile
+
+    def _account_pool_route(self, route: RouteProxyRule, channel: AccountPoolChannel) -> RouteProxyRule:
+        if channel.wire_api == "chat_completions":
+            return replace(
+                route,
+                primary_profile_id=channel.id,
+                upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+                upstream_model=channel.default_model or DEFAULT_CODEX_MODEL,
+            )
+        return replace(
+            route,
+            primary_profile_id=channel.id,
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+            upstream_model="",
+        )
+
+    def _project_name(self, project_id: str) -> str:
+        if self.project_provider is None:
+            return ""
+        return next((project.name for project in self.project_provider() if project.id == project_id), "")
+
+    def _is_account_pool_unavailable_status(self, status: int) -> bool:
+        return status in ACCOUNT_POOL_UNAVAILABLE_STATUSES
+
+    def _account_pool_status_error(self, status: int, response_body: bytes | None) -> str:
+        if response_body:
+            detail = response_body.decode("utf-8", errors="replace").strip()
+            if detail:
+                return sanitize_text(f"HTTP {status}: {detail[:200]}")
+        return f"HTTP {status}"
+
+    def _maybe_recover_account_pool(self, pool: AccountPoolSettings) -> None:
+        if not pool.recovery_due(interval_seconds=ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS):
+            return
+        pool.mark_recovery_checked()
+        for channel in list(pool.failed_channels):
+            result = self.recovery_checker.check(self._profile_from_account_pool_channel(channel))
+            if result.status == "healthy":
+                pool.mark_recovered(channel.id)
+                self._record(
+                    "info",
+                    f"Pool channel recovered: {channel.name}",
+                    profile_id=channel.id,
+                )
+            else:
+                pool.mark_failed(channel.id, result.detail)
+        self._notify_account_pool_updated(pool)
+
+    def _notify_account_pool_updated(self, pool: AccountPoolSettings) -> None:
+        if self.account_pool_update_callback is not None:
+            self.account_pool_update_callback(pool)
 
     def _response_headers(self, upstream_response: http.client.HTTPResponse) -> dict[str, str]:
         headers: dict[str, str] = {}

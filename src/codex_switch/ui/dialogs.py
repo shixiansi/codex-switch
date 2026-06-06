@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox
 
 from codex_switch.codex_config import dumps_toml, parse_mcp_servers_toml, render_mcp_servers_toml
 from codex_switch.models import (
+    AccountPoolChannel,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
@@ -504,6 +505,95 @@ class SuccessfulModelsDialog(tk.Toplevel):
     def _copy_model(self, model: str) -> None:
         self.copy_command(model)
         self.hint_var.set(f"已复制：{model}")
+
+
+class AccountPoolChannelDialog(tk.Toplevel):
+    def __init__(self, master: tk.Misc, channel: AccountPoolChannel | None = None) -> None:
+        super().__init__(master)
+        self.title("号池渠道")
+        self.resizable(False, False)
+        self.configure(bg=PALETTE["app_bg"])
+        self.result: dict | None = None
+
+        defaults = channel or AccountPoolChannel.create(name="", base_url="", api_key="")
+        self.name_var = tk.StringVar(value=defaults.name)
+        self.base_url_var = tk.StringVar(value=defaults.base_url)
+        self.api_key_var = tk.StringVar(value=defaults.api_key)
+        self.wire_api_var = tk.StringVar(value=defaults.wire_api)
+        self.default_model_var = tk.StringVar(value=defaults.default_model)
+        self.show_key_var = tk.BooleanVar(value=False)
+
+        card = tk.Frame(
+            self,
+            bg=PALETTE["card_bg"],
+            highlightbackground=PALETTE["card_border"],
+            highlightthickness=1,
+            padx=20,
+            pady=18,
+        )
+        card.grid(padx=18, pady=18, sticky="nsew")
+        card.columnconfigure(1, weight=1)
+        tk.Label(card, text="号池渠道", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        tk.Label(card, text="仅用于 Codex 路由代理号池，保存前会用 /models 做连通性测试。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 14))
+
+        fields = (
+            ("名称", self.name_var),
+            ("API 地址", self.base_url_var),
+            ("默认模型", self.default_model_var),
+        )
+        for row, (label, variable) in enumerate(fields, start=2):
+            tk.Label(card, text=label, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+            ttk.Entry(card, textvariable=variable, width=48).grid(row=row, column=1, columnspan=2, sticky="ew", pady=6)
+
+        tk.Label(card, text="Wire API", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Combobox(
+            card,
+            textvariable=self.wire_api_var,
+            values=("responses", "chat_completions"),
+            state="readonly",
+            width=46,
+        ).grid(row=5, column=1, columnspan=2, sticky="ew", pady=6)
+
+        tk.Label(card, text="API Key", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=6, column=0, sticky="w", pady=6)
+        self.api_key_entry = ttk.Entry(card, textvariable=self.api_key_var, width=48, show="*")
+        self.api_key_entry.grid(row=6, column=1, sticky="ew", pady=6)
+        ttk.Checkbutton(card, text="显示 Key", variable=self.show_key_var, command=self._toggle_key_visibility).grid(row=6, column=2, sticky="w", padx=(8, 0))
+
+        buttons = ttk.Frame(card)
+        buttons.grid(row=7, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
+        make_button(buttons, text="保存渠道", variant="primary", command=self._on_submit).grid(row=0, column=1)
+
+        self.transient(master)
+        self.grab_set()
+        self.api_key_entry.focus_set()
+
+    def _toggle_key_visibility(self) -> None:
+        self.api_key_entry.configure(show="" if self.show_key_var.get() else "*")
+
+    def _on_submit(self) -> None:
+        name = self.name_var.get().strip()
+        base_url = self.base_url_var.get().strip().rstrip("/")
+        api_key = self.api_key_var.get().strip()
+        default_model = self.default_model_var.get().strip() or DEFAULT_CODEX_MODEL
+        wire_api = self.wire_api_var.get().strip() or "responses"
+        if not name:
+            messagebox.showerror("校验失败", "请输入渠道名称。", parent=self)
+            return
+        if not is_http_url(base_url):
+            messagebox.showerror("校验失败", "API 地址必须以 http:// 或 https:// 开头。", parent=self)
+            return
+        if not api_key:
+            messagebox.showerror("校验失败", "请输入 API Key。", parent=self)
+            return
+        self.result = {
+            "name": name,
+            "base_url": base_url,
+            "api_key": api_key,
+            "wire_api": wire_api,
+            "default_model": default_model,
+        }
+        self.destroy()
 
 
 class ProfileDialog(tk.Toplevel):
