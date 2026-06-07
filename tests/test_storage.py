@@ -8,7 +8,9 @@ from helpers import workspace_tempdir
 
 from codex_switch.models import (
     AccountPoolChannel,
+    AccountPoolGroup,
     AccountPoolSettings,
+    ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     HealthResult,
@@ -93,7 +95,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 10)
+            self.assertEqual(payload["version"], 11)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_account_pool_settings(self) -> None:
@@ -126,8 +128,45 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 10)
+            self.assertEqual(payload["version"], 11)
+            self.assertEqual(loaded.recovery_interval_minutes, 5)
+            self.assertEqual(len(loaded.groups), 1)
+            self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
             self.assertEqual(payload["settings"]["account_pool"]["channels"][0]["api_key"], "sk-pool")
+
+    def test_store_persists_account_pool_groups_and_profile_source(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            group = AccountPoolGroup.create("项目组")
+            channel = AccountPoolChannel.create(
+                name="配置库渠道",
+                base_url="https://pool.example.com",
+                api_key="sk-second",
+                group_id=group.id,
+                source_type=ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+                source_profile_id="profile-1",
+                source_profile_name="配置库 API",
+                source_api_key_index=1,
+                wire_api="responses",
+                default_model="gpt-profile",
+            )
+            account_pool = AccountPoolSettings(
+                enabled=True,
+                groups=[group],
+                selected_group_id=group.id,
+                channels=[channel],
+                recovery_interval_minutes=8,
+            )
+
+            store.save([], None, account_pool_settings=account_pool)
+            loaded = store.load()[15]
+
+            self.assertEqual(loaded.selected_group_id, group.id)
+            self.assertEqual(loaded.recovery_interval_minutes, 8)
+            self.assertEqual(loaded.groups[0].name, "项目组")
+            self.assertEqual(loaded.channels[0].source_type, ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE)
+            self.assertEqual(loaded.channels[0].source_profile_id, "profile-1")
+            self.assertEqual(loaded.channels[0].source_api_key_index, 1)
 
     def test_store_persists_route_proxy_settings(self) -> None:
         with workspace_tempdir() as temp_dir:

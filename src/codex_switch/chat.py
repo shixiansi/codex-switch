@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
 
-from codex_switch.models import Profile, VENDOR_CLAUDE, parse_model_names
+from codex_switch.models import HealthResult, Profile, VENDOR_CLAUDE, now_iso, parse_model_names
 
 
 WIRE_API_RESPONSES = "responses"
@@ -21,6 +22,7 @@ class ChatResult:
     endpoint: str | None = None
     model: str | None = None
     detail: str | None = None
+    extracted: bool = True
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -117,12 +119,15 @@ class ChatTester:
                         text="接口返回了 JSON，但根节点不是对象。",
                         endpoint=endpoint,
                         model=model,
+                        extracted=False,
                     )
+                extracted = self._has_extractable_text(wire_api, parsed)
                 return ChatResult(
                     ok=True,
                     text=self._extract_text(wire_api, parsed),
                     endpoint=endpoint,
                     model=model,
+                    extracted=extracted,
                 )
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -234,6 +239,39 @@ class ChatTester:
             indent=2,
         )
 
+    def _has_extractable_text(self, wire_api: str, payload: dict[str, Any]) -> bool:
+        normalized_wire_api = _normalize_wire_api(wire_api)
+        if normalized_wire_api == WIRE_API_RESPONSES:
+            output_text = payload.get("output_text")
+            if isinstance(output_text, str) and output_text.strip():
+                return True
+            for item in payload.get("output", []):
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content", []):
+                    if not isinstance(content, dict):
+                        continue
+                    text_value = content.get("text")
+                    if isinstance(text_value, str) and text_value.strip():
+                        return True
+            return False
+
+        if normalized_wire_api == WIRE_API_ANTHROPIC_MESSAGES:
+            for item in payload.get("content", []):
+                if not isinstance(item, dict):
+                    continue
+                text_value = item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    return True
+            return False
+
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            message = choices[0].get("message", {})
+            content = message.get("content")
+            return isinstance(content, str) and bool(content.strip())
+        return False
+
     def _extract_text(self, wire_api: str, payload: dict[str, Any]) -> str:
         normalized_wire_api = _normalize_wire_api(wire_api)
         if normalized_wire_api == WIRE_API_RESPONSES:
@@ -276,3 +314,49 @@ class ChatTester:
             if isinstance(content, str) and content.strip():
                 return content.strip()
         return self._format_unextracted_response(payload)
+
+
+class AccountPoolSessionValidator:
+    def __init__(self, chat_tester: ChatTester | None = None) -> None:
+        self.chat_tester = chat_tester or ChatTester(timeout=30)
+
+    def check(self, profile: Profile) -> HealthResult:
+        marker = f"codex-switch-{uuid.uuid4().hex[:12]}"
+        prompt = f"Return exactly this verification marker and no extra text: {marker}"
+        result = self.chat_tester.send_message(
+            profile,
+            prompt,
+            model_override=profile.codex_display_model,
+            wire_api_override=default_wire_api_for_profile(profile),
+        )
+        if not result.ok:
+            detail = result.text
+            if result.detail:
+                detail = f"{detail}  {result.detail}"
+            return HealthResult(
+                status="error",
+                detail=detail,
+                checked_at=now_iso(),
+                endpoint=result.endpoint,
+            )
+        if not result.extracted:
+            return HealthResult(
+                status="error",
+                detail="真实会话响应缺少可提取的文本数据。",
+                checked_at=now_iso(),
+                endpoint=result.endpoint,
+            )
+        if marker not in result.text:
+            return HealthResult(
+                status="error",
+                detail="真实会话响应未包含要求返回的验证数据。",
+                checked_at=now_iso(),
+                endpoint=result.endpoint,
+            )
+        return HealthResult(
+            status="healthy",
+            detail="真实会话验证通过，响应包含要求返回的数据。",
+            checked_at=now_iso(),
+            endpoint=result.endpoint,
+            models=[result.model] if result.model else [],
+        )

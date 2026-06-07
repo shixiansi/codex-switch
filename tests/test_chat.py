@@ -9,11 +9,38 @@ from unittest.mock import patch
 
 from helpers import start_test_server
 
-from codex_switch.chat import WIRE_API_ANTHROPIC_MESSAGES, ChatTester
+from codex_switch.chat import WIRE_API_ANTHROPIC_MESSAGES, AccountPoolSessionValidator, ChatResult, ChatTester
 from codex_switch.models import Profile, VENDOR_CLAUDE
 
 
 class ChatTesterTests(unittest.TestCase):
+    def test_account_pool_session_validator_requires_returned_marker(self) -> None:
+        captured: dict[str, str] = {}
+
+        class FakeChatTester:
+            def send_message(self, profile, prompt, model_override=None, wire_api_override=None):  # noqa: ANN001
+                marker = prompt.rsplit(":", 1)[-1].strip()
+                captured["marker"] = marker
+                return ChatResult(ok=True, text=f"ok {marker}", endpoint="https://api.example.com/v1/responses", model=model_override)
+
+        profile = Profile.create("pool", "https://api.example.com", "sk-pool", codex_model="gpt-pool")
+        result = AccountPoolSessionValidator(FakeChatTester()).check(profile)
+
+        self.assertEqual(result.status, "healthy")
+        self.assertEqual(result.models, ["gpt-pool"])
+        self.assertIn("codex-switch-", captured["marker"])
+
+    def test_account_pool_session_validator_rejects_missing_marker(self) -> None:
+        class FakeChatTester:
+            def send_message(self, profile, prompt, model_override=None, wire_api_override=None):  # noqa: ANN001
+                return ChatResult(ok=True, text="ok but no marker", endpoint="https://api.example.com/v1/responses", model=model_override)
+
+        profile = Profile.create("pool", "https://api.example.com", "sk-pool")
+        result = AccountPoolSessionValidator(FakeChatTester()).check(profile)
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("未包含要求返回", result.detail)
+
     def test_send_message_with_responses_api(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802

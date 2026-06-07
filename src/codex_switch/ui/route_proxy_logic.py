@@ -69,6 +69,7 @@ def route_proxy_rules_for_project(
     claude_protocol: str,
     *,
     codex_upstream_source: str = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    codex_account_pool_group_id: str = "",
     codex_compact_model: str = "",
     codex_manual_upstream_protocol: bool = False,
     claude_manual_upstream_protocol: bool = False,
@@ -89,6 +90,7 @@ def route_proxy_rules_for_project(
             client_type=ROUTE_PROXY_CLIENT_CODEX,
             primary_profile_id=codex_profile.id,
             upstream_source=codex_upstream_source,
+            account_pool_group_id=codex_account_pool_group_id,
             upstream_protocol=codex_protocol,
             upstream_model=codex_upstream_model,
             compact_model=codex_compact_model,
@@ -157,6 +159,9 @@ def refresh_route_proxy_rules_for_project(
             claude_protocol,
             codex_upstream_source=(
                 existing_codex_rule.upstream_source if existing_codex_rule is not None else ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
+            ),
+            codex_account_pool_group_id=(
+                existing_codex_rule.account_pool_group_id if existing_codex_rule is not None else ""
             ),
             codex_compact_model=existing_codex_rule.compact_model if existing_codex_rule is not None else "",
             codex_manual_upstream_protocol=(

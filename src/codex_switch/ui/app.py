@@ -17,12 +17,13 @@ import tomllib
 import webbrowser
 import sys
 from tkinter import font as tkfont
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 
 from codex_switch import __version__
 from codex_switch.chat import (
     SUPPORTED_WIRE_APIS,
     WIRE_API_ANTHROPIC_MESSAGES,
+    AccountPoolSessionValidator,
     ChatResult,
     ChatTester,
     default_wire_api_for_profile,
@@ -39,7 +40,10 @@ from codex_switch.codex_config import (
 from codex_switch.health import HealthChecker
 from codex_switch.models import (
     AccountPoolChannel,
+    AccountPoolGroup,
     AccountPoolSettings,
+    ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+    ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
     CurrentCodexConfig,
     HealthResult,
     Profile,
@@ -63,6 +67,7 @@ from codex_switch.models import (
     VENDOR_GENERIC,
     VENDOR_OTHER,
     normalize_route_proxy_port,
+    normalize_account_pool_recovery_interval_minutes,
     now_iso,
     profile_supports_claude,
     profile_supports_codex,
@@ -95,6 +100,7 @@ from codex_switch.storage import (
 )
 from codex_switch.ui.dialogs import (
     AccountPoolChannelDialog,
+    AccountPoolProfileChannelDialog,
     ChatSettingsDialog,
     McpConfigDialog,
     McpSelectionDialog,
@@ -492,6 +498,7 @@ class CodexSwitchApp:
         self.project_template_service = ProjectTemplateService()
         self.health_checker = HealthChecker()
         self.chat_tester = ChatTester()
+        self.account_pool_validator = AccountPoolSessionValidator()
 
         load_state = self.store.load()
         if len(load_state) >= 8:
@@ -551,6 +558,7 @@ class CodexSwitchApp:
             account_pool_provider=lambda: self.account_pool_settings,
             account_pool_update_callback=self._record_account_pool_update,
             project_provider=lambda: self.projects,
+            recovery_checker=self.account_pool_validator,
         )
 
         self.current_config: CurrentCodexConfig | None = None
@@ -638,8 +646,12 @@ class CodexSwitchApp:
 
         self.account_pool_summary_var = tk.StringVar(value="号池未启用。")
         self.account_pool_enabled_var = tk.BooleanVar(value=self.account_pool_settings.enabled)
+        self.account_pool_group_var = tk.StringVar(value="")
+        self.account_pool_group_enabled_var = tk.BooleanVar(value=True)
         self.account_pool_selected_name_var = tk.StringVar(value="未选择渠道")
         self.account_pool_selected_detail_var = tk.StringVar(value="-")
+        self.account_pool_group_choices: dict[str, str] = {}
+        self.account_pool_source_filter_var = tk.StringVar(value="全部")
 
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
@@ -648,6 +660,9 @@ class CodexSwitchApp:
 
         self.settings_hint_var = tk.StringVar(value="模型批量测试设置会从下一次测试开始生效。")
         self.model_batch_concurrency_var = tk.StringVar(value=str(self.model_batch_concurrency))
+        self.account_pool_recovery_interval_var = tk.StringVar(
+            value=str(self.account_pool_settings.recovery_interval_minutes)
+        )
         self.settings_version_var = tk.StringVar(value="-")
         self.settings_python_var = tk.StringVar(value="-")
         self.settings_tk_var = tk.StringVar(value="-")
@@ -677,6 +692,8 @@ class CodexSwitchApp:
         self.chat_wire_choice_var = tk.StringVar(value=SUPPORTED_WIRE_APIS[0])
         self.chat_settings_summary_var = tk.StringVar(value="模型：-    接口：responses")
         self.chat_request_body_text = ""
+        self.proxy_account_pool_group_var = tk.StringVar(value="")
+        self.proxy_account_pool_group_choices: dict[str, str] = {}
 
     def _setup_theme(self) -> None:
         self.hero_font = tkfont.Font(family="Microsoft YaHei UI", size=15, weight="bold")
@@ -1189,24 +1206,32 @@ class CodexSwitchApp:
             state="readonly",
             width=28,
         ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Codex 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        self.proxy_account_pool_group_combo = ttk.Combobox(
+            settings,
+            textvariable=self.proxy_account_pool_group_var,
+            state="readonly",
+            width=28,
+        )
+        self.proxy_account_pool_group_combo.grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Codex 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_codex_protocol_var,
             values=CODEX_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
+        ).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
             values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
+        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
 
         proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
         proxy_tree_wrap.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
@@ -1281,7 +1306,7 @@ class CodexSwitchApp:
         left = self._make_card(content)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(3, weight=1)
         header = tk.Frame(left, bg=PALETTE["card_bg"])
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
@@ -1294,17 +1319,48 @@ class CodexSwitchApp:
         ).grid(row=0, column=1, sticky="e")
         tk.Label(left, textvariable=self.account_pool_summary_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
+        group_bar = tk.Frame(left, bg=PALETTE["card_bg"])
+        group_bar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        group_bar.columnconfigure(1, weight=1)
+        tk.Label(group_bar, text="号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.account_pool_group_combo = ttk.Combobox(
+            group_bar,
+            textvariable=self.account_pool_group_var,
+            state="readonly",
+            width=24,
+        )
+        self.account_pool_group_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self.account_pool_group_combo.bind("<<ComboboxSelected>>", self._on_account_pool_group_changed)
+        ttk.Checkbutton(
+            group_bar,
+            text="启用组",
+            variable=self.account_pool_group_enabled_var,
+            command=self.save_account_pool_group_settings,
+        ).grid(row=0, column=2, sticky="w", padx=(0, 8))
+        make_button(group_bar, text="新建组", variant="secondary", command=self.add_account_pool_group).grid(row=0, column=3, padx=(0, 8))
+        make_button(group_bar, text="删除组", variant="danger", command=self.delete_account_pool_group).grid(row=0, column=4, padx=(0, 8))
+        self.account_pool_source_filter_combo = ttk.Combobox(
+            group_bar,
+            textvariable=self.account_pool_source_filter_var,
+            values=("全部", "临时号池", "配置库号池"),
+            state="readonly",
+            width=12,
+        )
+        self.account_pool_source_filter_combo.grid(row=0, column=5, sticky="e")
+        self.account_pool_source_filter_var.trace_add("write", lambda *_args: self.refresh_account_pool_tab())
+
         tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        tree_wrap.grid(row=2, column=0, sticky="nsew")
+        tree_wrap.grid(row=3, column=0, sticky="nsew")
         tree_wrap.columnconfigure(0, weight=1)
         tree_wrap.rowconfigure(0, weight=1)
         self.account_pool_tree = ttk.Treeview(
             tree_wrap,
-            columns=("name", "base_url", "wire", "key", "status", "checked", "failure"),
+            columns=("name", "source", "base_url", "wire", "key", "status", "checked", "failure"),
             show="headings",
         )
         for column, title, width in (
             ("name", "名称", 140),
+            ("source", "来源", 90),
             ("base_url", "API 地址", 220),
             ("wire", "Wire API", 120),
             ("key", "Key", 120),
@@ -1321,14 +1377,15 @@ class CodexSwitchApp:
         self.account_pool_tree.configure(yscrollcommand=pool_scroll.set)
 
         actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=3, column=0, sticky="ew", pady=(14, 0))
-        for column in range(5):
+        actions.grid(row=4, column=0, sticky="ew", pady=(14, 0))
+        for column in range(6):
             actions.columnconfigure(column, weight=1)
-        make_button(actions, text="添加渠道", variant="primary", command=self.add_account_pool_channel).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="编辑渠道", variant="secondary", command=self.edit_account_pool_channel).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="删除渠道", variant="danger", command=self.delete_account_pool_channel).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        make_button(actions, text="重测异常", variant="secondary", command=self.retest_account_pool_channel).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        make_button(actions, text="刷新", variant="secondary", command=self.refresh_account_pool_tab).grid(row=0, column=4, sticky="ew")
+        make_button(actions, text="添加临时", variant="primary", command=self.add_account_pool_channel).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="加入配置库", variant="secondary", command=self.add_account_pool_profile_channel).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="编辑渠道", variant="secondary", command=self.edit_account_pool_channel).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(actions, text="删除渠道", variant="danger", command=self.delete_account_pool_channel).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        make_button(actions, text="重测异常", variant="secondary", command=self.retest_account_pool_channel).grid(row=0, column=4, sticky="ew", padx=(0, 8))
+        make_button(actions, text="刷新", variant="secondary", command=self.refresh_account_pool_tab).grid(row=0, column=5, sticky="ew")
 
         right = self._make_card(content)
         right.grid(row=0, column=1, sticky="nsew")
@@ -1505,7 +1562,24 @@ class CodexSwitchApp:
             relief="solid",
             borderwidth=1,
         ).grid(row=2, column=1, sticky="w")
-        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=2, column=2, sticky="e")
+        tk.Label(settings_card, text="号池检测间隔（分钟）", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+            row=3,
+            column=0,
+            sticky="w",
+            padx=(0, 14),
+            pady=(10, 0),
+        )
+        tk.Spinbox(
+            settings_card,
+            from_=1,
+            to=1440,
+            textvariable=self.account_pool_recovery_interval_var,
+            width=8,
+            font=self.body_font,
+            relief="solid",
+            borderwidth=1,
+        ).grid(row=3, column=1, sticky="w", pady=(10, 0))
+        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=3, column=2, sticky="e", pady=(10, 0))
 
         info_card = self._make_card(parent)
         info_card.grid(row=1, column=0, sticky="nsew")
@@ -2184,6 +2258,7 @@ class CodexSwitchApp:
 
     def refresh_settings_tab(self) -> None:
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
+        self.account_pool_recovery_interval_var.set(str(self.account_pool_settings.recovery_interval_minutes))
         self.settings_version_var.set(__version__)
         self.settings_python_var.set(sys.version.split()[0])
         self.settings_tk_var.set(f"Tcl/Tk {self.root.tk.call('info', 'patchlevel')}")
@@ -2434,6 +2509,7 @@ class CodexSwitchApp:
     def refresh_proxy_tab(self) -> None:
         if not hasattr(self, "proxy_project_tree"):
             return
+        self._refresh_proxy_account_pool_group_choices()
         self.proxy_host_var.set(self.route_proxy_settings.host)
         self.proxy_port_var.set(str(self.route_proxy_settings.port))
         self.proxy_status_var.set(
@@ -2456,7 +2532,7 @@ class CodexSwitchApp:
                         project.name,
                         compact_text(codex_profile.name if codex_profile else "配置已删除", 16),
                         compact_text(claude_profile.name if claude_profile else "配置已删除", 16),
-                        "是" if self._project_uses_account_pool(project.id) else "否",
+                        compact_text(self._project_account_pool_group_name(project.id), 14),
                         "已启用" if self.route_proxy_settings.project_enabled(project.id) else "未启用",
                     ),
                 )
@@ -2466,6 +2542,29 @@ class CodexSwitchApp:
         self._refresh_proxy_detail()
         self._render_proxy_log()
 
+    def _refresh_proxy_account_pool_group_choices(self) -> None:
+        self.account_pool_settings.ensure_default_group()
+        self.proxy_account_pool_group_choices = {}
+        labels = []
+        for group in self.account_pool_settings.groups:
+            label = self._account_pool_group_label(group)
+            labels.append(label)
+            self.proxy_account_pool_group_choices[label] = group.id
+        if hasattr(self, "proxy_account_pool_group_combo"):
+            self.proxy_account_pool_group_combo.configure(values=labels)
+        if labels and self.proxy_account_pool_group_var.get() not in self.proxy_account_pool_group_choices:
+            self.proxy_account_pool_group_var.set(labels[0])
+
+    def _proxy_group_label_for_id(self, group_id: str) -> str:
+        self._refresh_proxy_account_pool_group_choices()
+        group = self.account_pool_settings.group_by_id(group_id)
+        if group is None:
+            return ""
+        return next(
+            (label for label, value in self.proxy_account_pool_group_choices.items() if value == group.id),
+            "",
+        )
+
     def _refresh_proxy_detail(self) -> None:
         project = self.get_selected_project()
         if not project:
@@ -2473,6 +2572,11 @@ class CodexSwitchApp:
             self.proxy_selected_rules_var.set("-")
             self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
             self.proxy_codex_compact_model_var.set("")
+            default_group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
+            if default_group is not None:
+                label = self._proxy_group_label_for_id(default_group.id)
+                if label:
+                    self.proxy_account_pool_group_var.set(label)
             return
         self.proxy_selected_project_var.set(f"{project.name}    {project.project_dir}")
         rules = self.route_proxy_settings.rules_for_project(project.id)
@@ -2480,10 +2584,19 @@ class CodexSwitchApp:
             self.proxy_selected_rules_var.set("未启用代理。")
             self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
             self.proxy_codex_compact_model_var.set("")
+            default_group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
+            if default_group is not None:
+                label = self._proxy_group_label_for_id(default_group.id)
+                if label:
+                    self.proxy_account_pool_group_var.set(label)
             return
         summaries: list[str] = []
         for rule in rules:
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
+                group_label = self._proxy_group_label_for_id(group.id) if group is not None else ""
+                if group_label:
+                    self.proxy_account_pool_group_var.set(group_label)
                 self.proxy_codex_upstream_source_var.set(
                     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
                         normalize_route_proxy_upstream_source(rule.upstream_source),
@@ -2497,11 +2610,15 @@ class CodexSwitchApp:
             profile = self._profile_by_id(rule.primary_profile_id)
             profile_name = profile.name if profile else "配置已删除"
             compact_suffix = f" / compact: {rule.compact_model}" if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and rule.compact_model else ""
-            source_suffix = (
-                f" / {CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, '默认配置')}"
-                if rule.client_type == ROUTE_PROXY_CLIENT_CODEX
-                else ""
-            )
+            source_suffix = ""
+            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, "默认配置")
+                if rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
+                    group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
+                    group_name = group.name if group is not None else "号池组已删除"
+                    source_label = f"{source_label}:{group_name}"
+                    profile_name = group_name
+                source_suffix = f" / {source_label}"
             summaries.append(f"{rule.client_type}{source_suffix} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
         self.proxy_selected_rules_var.set("\n".join(summaries))
 
@@ -2516,6 +2633,59 @@ class CodexSwitchApp:
 
     def _account_pool_channel_by_id(self, channel_id: str | None) -> AccountPoolChannel | None:
         return next((channel for channel in self.account_pool_settings.channels if channel.id == channel_id), None)
+
+    def _selected_account_pool_group(self) -> AccountPoolGroup | None:
+        self.account_pool_settings.ensure_default_group()
+        choices = getattr(self, "account_pool_group_choices", {})
+        group_var = getattr(self, "account_pool_group_var", None)
+        group_label = group_var.get() if group_var is not None else ""
+        group_id = choices.get(group_label, self.account_pool_settings.selected_group_id)
+        return self.account_pool_settings.group_by_id(group_id)
+
+    def _selected_account_pool_group_id(self) -> str:
+        group = self._selected_account_pool_group()
+        return group.id if group is not None else ""
+
+    def _account_pool_group_label(self, group: AccountPoolGroup) -> str:
+        state = "启用" if group.enabled else "停用"
+        normal_count = len(self.account_pool_settings.normal_channels_for_group(group.id))
+        failed_count = len(self.account_pool_settings.failed_channels_for_group(group.id))
+        return f"{group.name}    {state} / 正常 {normal_count} / 异常 {failed_count}"
+
+    def _refresh_account_pool_group_choices(self) -> None:
+        self.account_pool_settings.ensure_default_group()
+        self.account_pool_group_choices = {}
+        labels = []
+        for group in self.account_pool_settings.groups:
+            label = self._account_pool_group_label(group)
+            labels.append(label)
+            self.account_pool_group_choices[label] = group.id
+        if hasattr(self, "account_pool_group_combo"):
+            self.account_pool_group_combo.configure(values=labels)
+        selected_group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
+        if selected_group is not None:
+            selected_label = next(
+                (label for label, group_id in self.account_pool_group_choices.items() if group_id == selected_group.id),
+                "",
+            )
+            if selected_label:
+                self.account_pool_group_var.set(selected_label)
+            self.account_pool_group_enabled_var.set(selected_group.enabled)
+
+    def _account_pool_source_label(self, channel: AccountPoolChannel) -> str:
+        if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
+            return "配置库号池"
+        return "临时号池"
+
+    def _account_pool_visible_channels(self) -> list[AccountPoolChannel]:
+        group_id = self._selected_account_pool_group_id()
+        channels = self.account_pool_settings.channels_for_group(group_id)
+        source_filter = self.account_pool_source_filter_var.get()
+        if source_filter == "临时号池":
+            return [channel for channel in channels if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY]
+        if source_filter == "配置库号池":
+            return [channel for channel in channels if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE]
+        return channels
 
     def _selected_account_pool_channel(self) -> AccountPoolChannel | None:
         if not hasattr(self, "account_pool_tree"):
@@ -2534,15 +2704,36 @@ class CodexSwitchApp:
             for rule in self.route_proxy_settings.rules
         )
 
+    def _project_account_pool_group_name(self, project_id: str) -> str:
+        rule = next(
+            (
+                item
+                for item in self.route_proxy_settings.rules
+                if item.enabled
+                and item.project_id == project_id
+                and item.client_type == ROUTE_PROXY_CLIENT_CODEX
+                and item.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+            ),
+            None,
+        )
+        if rule is None:
+            return "否"
+        group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
+        return group.name if group is not None else "组已删除"
+
     def _account_pool_project_count(self) -> int:
         return sum(1 for project in self.projects if self._project_uses_account_pool(project.id))
 
     def refresh_account_pool_tab(self) -> None:
+        self.account_pool_settings.ensure_default_group()
+        self._refresh_account_pool_group_choices()
+        group = self._selected_account_pool_group()
+        group_id = group.id if group else ""
         self.account_pool_enabled_var.set(self.account_pool_settings.enabled)
         self.account_pool_summary_var.set(
             f"连接号池项目 {self._account_pool_project_count()} 个，"
-            f"正常渠道 {self.account_pool_settings.normal_count} 个，"
-            f"异常渠道 {self.account_pool_settings.failed_count} 个。"
+            f"当前组正常渠道 {len(self.account_pool_settings.normal_channels_for_group(group_id))} 个，"
+            f"异常渠道 {len(self.account_pool_settings.failed_channels_for_group(group_id))} 个。"
         )
         if not hasattr(self, "account_pool_tree"):
             return
@@ -2554,13 +2745,14 @@ class CodexSwitchApp:
         try:
             for item in self.account_pool_tree.get_children():
                 self.account_pool_tree.delete(item)
-            for channel in self.account_pool_settings.channels:
+            for channel in self._account_pool_visible_channels():
                 self.account_pool_tree.insert(
                     "",
                     "end",
                     iid=channel.id,
                     values=(
                         channel.name,
+                        self._account_pool_source_label(channel),
                         compact_text(channel.base_url, 34),
                         channel.wire_api,
                         channel.api_key_masked,
@@ -2583,8 +2775,12 @@ class CodexSwitchApp:
             self.account_pool_selected_detail_var.set("-")
             return
         self.account_pool_selected_name_var.set(channel.name)
+        source_detail = "临时填写"
+        if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
+            source_detail = f"配置库：{channel.source_profile_name or channel.source_profile_id or '-'} / Key {channel.source_api_key_index + 1}"
         detail = (
             f"API：{channel.base_url}\n"
+            f"来源：{self._account_pool_source_label(channel)}（{source_detail}）\n"
             f"Wire API：{channel.wire_api}\n"
             f"默认模型：{channel.default_model}\n"
             f"Key：{channel.api_key_masked}\n"
@@ -2908,8 +3104,15 @@ class CodexSwitchApp:
     def save_settings(self) -> None:
         self.model_batch_concurrency = clamp_model_batch_concurrency(self.model_batch_concurrency_var.get())
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
+        self.account_pool_settings.recovery_interval_minutes = normalize_account_pool_recovery_interval_minutes(
+            self.account_pool_recovery_interval_var.get()
+        )
+        self.account_pool_recovery_interval_var.set(str(self.account_pool_settings.recovery_interval_minutes))
         self.persist_state()
-        self.settings_hint_var.set(f"已保存设置：模型批量测试最多 {self.model_batch_concurrency} 个并发请求。")
+        self.settings_hint_var.set(
+            f"已保存设置：模型批量测试最多 {self.model_batch_concurrency} 个并发请求，"
+            f"号池检测间隔 {self.account_pool_settings.recovery_interval_minutes} 分钟。"
+        )
         self.status_var.set("已保存设置。")
 
     def on_close(self) -> None:
@@ -2997,6 +3200,13 @@ class CodexSwitchApp:
                 self.proxy_codex_upstream_source_var.get(),
             )
         )
+        proxy_group_choices = getattr(self, "proxy_account_pool_group_choices", {})
+        proxy_group_var = getattr(self, "proxy_account_pool_group_var", None)
+        proxy_group_label = proxy_group_var.get() if proxy_group_var is not None else ""
+        account_pool_group_id = proxy_group_choices.get(proxy_group_label, "")
+        if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL and not account_pool_group_id:
+            group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
+            account_pool_group_id = group.id if group is not None else ""
         claude_protocol = normalize_route_proxy_protocol(
             self.proxy_claude_protocol_var.get(),
             ROUTE_PROXY_CLIENT_CLAUDE,
@@ -3006,6 +3216,7 @@ class CodexSwitchApp:
         for rule in self.route_proxy_settings.rules_for_project(project.id):
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
                 rule.upstream_source = codex_source
+                rule.account_pool_group_id = account_pool_group_id if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL else ""
                 rule.upstream_protocol = codex_protocol
                 rule.compact_model = compact_model
                 rule.manual_upstream_protocol = True
@@ -3052,6 +3263,54 @@ class CodexSwitchApp:
         self.refresh_account_pool_tab()
         self.refresh_proxy_tab()
 
+    def _on_account_pool_group_changed(self, _event: object | None = None) -> None:
+        group_id = self.account_pool_group_choices.get(self.account_pool_group_var.get())
+        if not group_id:
+            return
+        self.account_pool_settings.selected_group_id = group_id
+        group = self.account_pool_settings.group_by_id(group_id)
+        if group is not None:
+            self.account_pool_group_enabled_var.set(group.enabled)
+        self.refresh_account_pool_tab()
+
+    def save_account_pool_group_settings(self) -> None:
+        group = self._selected_account_pool_group()
+        if group is None:
+            return
+        group.enabled = self.account_pool_group_enabled_var.get()
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.refresh_proxy_tab()
+        self.status_var.set(f"已保存号池组：{group.name}")
+
+    def add_account_pool_group(self) -> None:
+        name = simpledialog.askstring("新建号池组", "请输入号池组名称：", parent=self.root)
+        if not name or not name.strip():
+            return
+        group = self.account_pool_settings.add_group(name.strip())
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.refresh_proxy_tab()
+        self.status_var.set(f"已新建号池组：{group.name}")
+
+    def delete_account_pool_group(self) -> None:
+        group = self._selected_account_pool_group()
+        if group is None:
+            return
+        if len(self.account_pool_settings.groups) <= 1:
+            messagebox.showinfo("提示", "至少保留一个号池组。", parent=self.root)
+            return
+        if self.account_pool_settings.channels_for_group(group.id):
+            messagebox.showerror("无法删除", "当前号池组还有渠道，请先删除或移动渠道。", parent=self.root)
+            return
+        if not messagebox.askyesno("确认删除", f"确定要删除号池组“{group.name}”吗？", parent=self.root):
+            return
+        self.account_pool_settings.remove_group(group.id)
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.refresh_proxy_tab()
+        self.status_var.set(f"已删除号池组：{group.name}")
+
     def save_account_pool_settings(self) -> None:
         self.account_pool_settings.enabled = self.account_pool_enabled_var.get()
         self.persist_state()
@@ -3064,10 +3323,16 @@ class CodexSwitchApp:
         result: dict,
         existing: AccountPoolChannel | None = None,
     ) -> AccountPoolChannel:
+        group_id = existing.group_id if existing is not None else self._selected_account_pool_group_id()
         channel = AccountPoolChannel.create(
             name=result["name"],
             base_url=result["base_url"],
             api_key=result["api_key"],
+            group_id=group_id,
+            source_type=result.get("source_type", existing.source_type if existing else ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY),
+            source_profile_id=result.get("source_profile_id", existing.source_profile_id if existing else ""),
+            source_profile_name=result.get("source_profile_name", existing.source_profile_name if existing else ""),
+            source_api_key_index=result.get("source_api_key_index", existing.source_api_key_index if existing else 0),
             wire_api=result["wire_api"],
             default_model=result["default_model"],
         )
@@ -3084,6 +3349,9 @@ class CodexSwitchApp:
             codex_model=channel.default_model,
             wire_api=channel.wire_api,
         )
+        validator = getattr(self, "account_pool_validator", None)
+        if validator is not None:
+            return validator.check(profile)
         return self.health_checker.check(profile)
 
     def _mark_channel_from_success(self, channel: AccountPoolChannel, result: HealthResult) -> None:
@@ -3102,7 +3370,7 @@ class CodexSwitchApp:
         channel = self._account_pool_channel_from_result(dialog.result)
         result = self._check_account_pool_channel(channel)
         if result.status != "healthy":
-            messagebox.showerror("连通性测试失败", result.detail, parent=self.root)
+            messagebox.showerror("真实会话验证失败", result.detail, parent=self.root)
             return
         self._mark_channel_from_success(channel, result)
         self.account_pool_settings.channels.append(channel)
@@ -3110,10 +3378,29 @@ class CodexSwitchApp:
         self.refresh_account_pool_tab()
         self.status_var.set(f"已新增号池渠道：{channel.name}")
 
+    def add_account_pool_profile_channel(self) -> None:
+        dialog = AccountPoolProfileChannelDialog(self.root, self.profiles)
+        self.root.wait_window(dialog)
+        if not dialog.result:
+            return
+        channel = self._account_pool_channel_from_result(dialog.result)
+        result = self._check_account_pool_channel(channel)
+        if result.status != "healthy":
+            messagebox.showerror("真实会话验证失败", result.detail, parent=self.root)
+            return
+        self._mark_channel_from_success(channel, result)
+        self.account_pool_settings.channels.append(channel)
+        self.persist_state()
+        self.refresh_account_pool_tab()
+        self.status_var.set(f"已从配置库加入号池：{channel.name}")
+
     def edit_account_pool_channel(self) -> None:
         channel = self._selected_account_pool_channel()
         if channel is None:
             messagebox.showinfo("提示", "请先选择一个号池渠道。", parent=self.root)
+            return
+        if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
+            messagebox.showinfo("提示", "配置库号池渠道是加入时的快照；如需更换配置或 Key，请删除后重新加入。", parent=self.root)
             return
         dialog = AccountPoolChannelDialog(self.root, channel=channel)
         self.root.wait_window(dialog)
@@ -3122,7 +3409,7 @@ class CodexSwitchApp:
         updated = self._account_pool_channel_from_result(dialog.result, existing=channel)
         result = self._check_account_pool_channel(updated)
         if result.status != "healthy":
-            messagebox.showerror("连通性测试失败", result.detail, parent=self.root)
+            messagebox.showerror("真实会话验证失败", result.detail, parent=self.root)
             return
         self._mark_channel_from_success(updated, result)
         self.account_pool_settings.replace_channel(updated)
@@ -3177,6 +3464,8 @@ class CodexSwitchApp:
         rules = route_proxy_rules_for_project_profiles(project, codex_profile, claude_profile)
         for rule in rules:
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+                group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
+                rule.account_pool_group_id = group.id if group is not None else ""
                 self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
                 self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:

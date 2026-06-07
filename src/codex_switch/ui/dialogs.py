@@ -10,6 +10,8 @@ from tkinter import filedialog, messagebox
 from codex_switch.codex_config import dumps_toml, parse_mcp_servers_toml, render_mcp_servers_toml
 from codex_switch.models import (
     AccountPoolChannel,
+    ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+    ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
@@ -590,8 +592,121 @@ class AccountPoolChannelDialog(tk.Toplevel):
             "name": name,
             "base_url": base_url,
             "api_key": api_key,
+            "source_type": ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
             "wire_api": wire_api,
             "default_model": default_model,
+        }
+        self.destroy()
+
+
+class AccountPoolProfileChannelDialog(tk.Toplevel):
+    def __init__(self, master: tk.Misc, profiles: list[Profile]) -> None:
+        super().__init__(master)
+        self.title("配置库号池")
+        self.resizable(False, False)
+        self.configure(bg=PALETTE["app_bg"])
+        self.result: dict | None = None
+        self.profiles = [profile for profile in profiles if profile_supports_codex(profile)]
+        self.profile_by_label: dict[str, Profile] = {}
+        self.key_by_label: dict[str, int] = {}
+
+        self.profile_var = tk.StringVar()
+        self.key_var = tk.StringVar()
+        self.name_var = tk.StringVar()
+
+        card = tk.Frame(
+            self,
+            bg=PALETTE["card_bg"],
+            highlightbackground=PALETTE["card_border"],
+            highlightthickness=1,
+            padx=20,
+            pady=18,
+        )
+        card.grid(padx=18, pady=18, sticky="nsew")
+        card.columnconfigure(1, weight=1)
+
+        tk.Label(card, text="配置库号池", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Label(card, text="从已有 Codex/通用配置复制 API 快照加入当前号池组。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 14))
+
+        tk.Label(card, text="配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=6)
+        self.profile_combo = ttk.Combobox(card, textvariable=self.profile_var, state="readonly", width=48)
+        self.profile_combo.grid(row=2, column=1, sticky="ew", pady=6)
+        self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_changed)
+
+        tk.Label(card, text="API Key", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=3, column=0, sticky="w", pady=6)
+        self.key_combo = ttk.Combobox(card, textvariable=self.key_var, state="readonly", width=48)
+        self.key_combo.grid(row=3, column=1, sticky="ew", pady=6)
+
+        tk.Label(card, text="渠道名称", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.name_var, width=50).grid(row=4, column=1, sticky="ew", pady=6)
+
+        buttons = ttk.Frame(card)
+        buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
+        make_button(buttons, text="加入号池", variant="primary", command=self._on_submit).grid(row=0, column=1)
+
+        self._populate_profiles()
+        self.transient(master)
+        self.grab_set()
+        self.profile_combo.focus_set()
+
+    def _profile_label(self, profile: Profile) -> str:
+        return f"{profile.name}    {profile.base_url}"
+
+    def _key_label(self, profile: Profile, index: int, key: str) -> str:
+        masked = "*" * len(key) if len(key) <= 10 else f"{key[:6]}...{key[-4:]}"
+        active = "，当前" if index == profile.effective_active_api_key_index else ""
+        return f"Key {index + 1}{active}    {masked}"
+
+    def _populate_profiles(self) -> None:
+        labels = []
+        self.profile_by_label = {}
+        for profile in self.profiles:
+            label = self._profile_label(profile)
+            labels.append(label)
+            self.profile_by_label[label] = profile
+        self.profile_combo.configure(values=labels)
+        if labels:
+            self.profile_var.set(labels[0])
+            self._on_profile_changed()
+
+    def _on_profile_changed(self, _event: object | None = None) -> None:
+        profile = self.profile_by_label.get(self.profile_var.get())
+        self.key_by_label = {}
+        key_labels = []
+        if profile is not None:
+            for index, key in enumerate(profile.api_keys):
+                label = self._key_label(profile, index, key)
+                key_labels.append(label)
+                self.key_by_label[label] = index
+            self.name_var.set(profile.name)
+        self.key_combo.configure(values=key_labels)
+        if key_labels:
+            active_label = key_labels[min(profile.effective_active_api_key_index if profile else 0, len(key_labels) - 1)]
+            self.key_var.set(active_label)
+        else:
+            self.key_var.set("")
+
+    def _on_submit(self) -> None:
+        profile = self.profile_by_label.get(self.profile_var.get())
+        if profile is None:
+            messagebox.showerror("校验失败", "请选择配置库中的 Codex 配置。", parent=self)
+            return
+        key_index = self.key_by_label.get(self.key_var.get())
+        if key_index is None or key_index >= len(profile.api_keys):
+            messagebox.showerror("校验失败", "请选择要加入号池的 API Key。", parent=self)
+            return
+        name = self.name_var.get().strip() or profile.name
+        self.result = {
+            "name": name,
+            "base_url": profile.base_url.rstrip("/"),
+            "api_key": profile.api_keys[key_index],
+            "source_type": ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+            "source_profile_id": profile.id,
+            "source_profile_name": profile.name,
+            "source_api_key_index": key_index,
+            "wire_api": profile.wire_api,
+            "default_model": profile.codex_display_model,
         }
         self.destroy()
 

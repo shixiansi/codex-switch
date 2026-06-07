@@ -662,12 +662,17 @@ class UiFilterTests(unittest.TestCase):
         app.proxy_codex_upstream_source_var = _ValueVar(ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
         app.proxy_claude_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         app.proxy_codex_compact_model_var = _ValueVar("gpt-4.1-compact")
+        app.account_pool_settings = AccountPoolSettings()
+        group = app.account_pool_settings.ensure_default_group()
+        app.proxy_account_pool_group_var = _ValueVar("default")
+        app.proxy_account_pool_group_choices = {"default": group.id}
 
         app._save_selected_route_proxy_project_rules()
 
         codex_rule = next(rule for rule in app.route_proxy_settings.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
         claude_rule = next(rule for rule in app.route_proxy_settings.rules_for_project(project.id) if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE)
         self.assertEqual(codex_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
+        self.assertEqual(codex_rule.account_pool_group_id, group.id)
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
         self.assertEqual(codex_rule.upstream_model, "gpt-real")
         self.assertEqual(codex_rule.compact_model, "gpt-4.1-compact")

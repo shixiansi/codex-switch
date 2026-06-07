@@ -11,6 +11,7 @@ from helpers import start_test_server
 from codex_switch.models import (
     AccountPoolChannel,
     AccountPoolSettings,
+    HealthResult,
     Profile,
     ProjectRecord,
     RouteProxyRule,
@@ -335,6 +336,66 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(json.loads(second[2].decode("utf-8"))["label"], "b")
         self.assertEqual(json.loads(third[2].decode("utf-8"))["label"], "b")
 
+    def test_account_pool_route_uses_selected_group_only(self) -> None:
+        def handler_for(label: str):
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:  # noqa: N802
+                    self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                    body = json.dumps({"label": label}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, format: str, *args) -> None:  # noqa: A003
+                    return
+
+            return Handler
+
+        upstream_a = self._serve(handler_for("a"))
+        upstream_b = self._serve(handler_for("b"))
+        pool = AccountPoolSettings(enabled=True)
+        group_a = pool.ensure_default_group()
+        group_a.name = "group-a"
+        group_b = pool.add_group("group-b")
+        channel_a = AccountPoolChannel.create(
+            name="pool-a",
+            base_url=f"http://127.0.0.1:{upstream_a.server_port}",
+            api_key="sk-a",
+            group_id=group_a.id,
+        )
+        channel_b = AccountPoolChannel.create(
+            name="pool-b",
+            base_url=f"http://127.0.0.1:{upstream_b.server_port}",
+            api_key="sk-b",
+            group_id=group_b.id,
+        )
+        pool.channels = [channel_a, channel_b]
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id=group_b.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        status, _headers, body, _chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8"))["label"], "b")
+
     def test_account_pool_marks_unavailable_channel_and_skips_it_later(self) -> None:
         counts = {"bad": 0, "good": 0}
 
@@ -478,6 +539,14 @@ class RouteProxyTests(unittest.TestCase):
         pool.mark_failed(recovered_channel.id, "old")
         pool.mark_failed(failed_channel.id, "old")
         pool.last_recovery_checked_at = "2000-01-01T00:00:00"
+
+        class FakeSessionValidator:
+            def check(self, profile: Profile) -> HealthResult:
+                checks[profile.name] += 1
+                if profile.name == "recovered":
+                    return HealthResult(status="healthy", detail="真实会话验证通过")
+                return HealthResult(status="error", detail="真实会话响应未包含要求返回的验证数据。")
+
         settings = RouteProxySettings(
             rules=[
                 RouteProxyRule.create(
@@ -488,7 +557,12 @@ class RouteProxyTests(unittest.TestCase):
                 )
             ]
         )
-        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        proxy = RouteProxyServer(
+            lambda: settings,
+            lambda: [],
+            account_pool_provider=lambda: pool,
+            recovery_checker=FakeSessionValidator(),
+        )
         request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
 
         status, _headers, _body, _chunks = proxy.handle(
@@ -502,7 +576,7 @@ class RouteProxyTests(unittest.TestCase):
         self.assertTrue(recovered_channel.is_normal)
         self.assertFalse(failed_channel.is_normal)
         self.assertEqual(checks, {"recovered": 1, "failed": 1})
-        self.assertIn("鉴权失败", failed_channel.failure_reason)
+        self.assertIn("真实会话响应未包含", failed_channel.failure_reason)
         self.assertNotEqual(pool.last_recovery_checked_at, "2000-01-01T00:00:00")
 
     def test_route_proxy_injects_project_headers(self) -> None:

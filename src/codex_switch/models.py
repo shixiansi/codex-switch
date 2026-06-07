@@ -47,6 +47,16 @@ ACCOUNT_POOL_CHANNEL_STATUS_CHOICES = (
     ACCOUNT_POOL_CHANNEL_STATUS_NORMAL,
     ACCOUNT_POOL_CHANNEL_STATUS_ERROR,
 )
+ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY = "temporary"
+ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE = "profile"
+ACCOUNT_POOL_CHANNEL_SOURCE_CHOICES = (
+    ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
+    ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+)
+DEFAULT_ACCOUNT_POOL_GROUP_NAME = "默认号池"
+DEFAULT_ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES = 5
+ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MIN = 1
+ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MAX = 1440
 
 
 def now_iso() -> str:
@@ -185,12 +195,72 @@ def normalize_account_pool_status(value: str | None) -> str:
     return ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
 
 
+def normalize_account_pool_source_type(value: str | None) -> str:
+    source_type = str(value or "").strip().lower()
+    if source_type in ACCOUNT_POOL_CHANNEL_SOURCE_CHOICES:
+        return source_type
+    return ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY
+
+
+def normalize_account_pool_recovery_interval_minutes(value: int | str | None) -> int:
+    try:
+        minutes = int(value or DEFAULT_ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES
+    return max(
+        ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MIN,
+        min(ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MAX, minutes),
+    )
+
+
+def normalize_non_negative_int(value: int | str | None) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        parsed = 0
+    return max(0, parsed)
+
+
+@dataclass
+class AccountPoolGroup:
+    id: str
+    name: str
+    enabled: bool = True
+    next_index: int = 0
+
+    @classmethod
+    def create(cls, name: str = DEFAULT_ACCOUNT_POOL_GROUP_NAME) -> "AccountPoolGroup":
+        return cls(id=str(uuid.uuid4()), name=name.strip() or DEFAULT_ACCOUNT_POOL_GROUP_NAME)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "AccountPoolGroup":
+        data = data or {}
+        try:
+            next_index = int(data.get("next_index", 0) or 0)
+        except (TypeError, ValueError):
+            next_index = 0
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            name=str(data.get("name") or DEFAULT_ACCOUNT_POOL_GROUP_NAME).strip() or DEFAULT_ACCOUNT_POOL_GROUP_NAME,
+            enabled=bool(data.get("enabled", True)),
+            next_index=max(0, next_index),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class AccountPoolChannel:
     id: str
     name: str
     base_url: str
     api_key: str
+    group_id: str = ""
+    source_type: str = ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY
+    source_profile_id: str = ""
+    source_profile_name: str = ""
+    source_api_key_index: int = 0
     wire_api: str = "responses"
     default_model: str = DEFAULT_CODEX_MODEL
     status: str = ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
@@ -206,6 +276,11 @@ class AccountPoolChannel:
         name: str,
         base_url: str,
         api_key: str,
+        group_id: str = "",
+        source_type: str = ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
+        source_profile_id: str = "",
+        source_profile_name: str = "",
+        source_api_key_index: int = 0,
         wire_api: str = "responses",
         default_model: str = DEFAULT_CODEX_MODEL,
     ) -> "AccountPoolChannel":
@@ -214,6 +289,11 @@ class AccountPoolChannel:
             name=name.strip(),
             base_url=base_url.strip().rstrip("/"),
             api_key=api_key.strip(),
+            group_id=group_id.strip(),
+            source_type=normalize_account_pool_source_type(source_type),
+            source_profile_id=source_profile_id.strip(),
+            source_profile_name=source_profile_name.strip(),
+            source_api_key_index=normalize_non_negative_int(source_api_key_index),
             wire_api=normalize_account_pool_wire_api(wire_api),
             default_model=default_model.strip() or DEFAULT_CODEX_MODEL,
         )
@@ -226,6 +306,11 @@ class AccountPoolChannel:
             name=str(data.get("name") or "").strip(),
             base_url=str(data.get("base_url") or "").strip().rstrip("/"),
             api_key=str(data.get("api_key") or "").strip(),
+            group_id=str(data.get("group_id") or "").strip(),
+            source_type=normalize_account_pool_source_type(data.get("source_type")),
+            source_profile_id=str(data.get("source_profile_id") or "").strip(),
+            source_profile_name=str(data.get("source_profile_name") or "").strip(),
+            source_api_key_index=normalize_non_negative_int(data.get("source_api_key_index", 0)),
             wire_api=normalize_account_pool_wire_api(data.get("wire_api")),
             default_model=str(data.get("default_model") or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL,
             status=normalize_account_pool_status(data.get("status")),
@@ -250,34 +335,106 @@ class AccountPoolChannel:
 @dataclass
 class AccountPoolSettings:
     enabled: bool = False
+    groups: list[AccountPoolGroup] = field(default_factory=list)
+    selected_group_id: str = ""
     channels: list[AccountPoolChannel] = field(default_factory=list)
     next_index: int = 0
     last_recovery_checked_at: str | None = None
+    recovery_interval_minutes: int = DEFAULT_ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "AccountPoolSettings":
         if not isinstance(data, dict):
-            return cls()
+            settings = cls()
+            settings.ensure_default_group()
+            return settings
         raw_channels = data.get("channels", [])
         channels = [AccountPoolChannel.from_dict(item) for item in raw_channels] if isinstance(raw_channels, list) else []
+        raw_groups = data.get("groups", [])
+        groups = [AccountPoolGroup.from_dict(item) for item in raw_groups] if isinstance(raw_groups, list) else []
         try:
             next_index = int(data.get("next_index", 0) or 0)
         except (TypeError, ValueError):
             next_index = 0
-        return cls(
+        settings = cls(
             enabled=bool(data.get("enabled", False)),
+            groups=groups,
+            selected_group_id=str(data.get("selected_group_id") or "").strip(),
             channels=channels,
             next_index=max(0, next_index),
             last_recovery_checked_at=data.get("last_recovery_checked_at"),
+            recovery_interval_minutes=normalize_account_pool_recovery_interval_minutes(
+                data.get("recovery_interval_minutes")
+            ),
         )
+        settings.ensure_default_group()
+        return settings
 
     def to_dict(self) -> dict[str, Any]:
+        self.ensure_default_group()
         return {
             "enabled": self.enabled,
+            "groups": [group.to_dict() for group in self.groups],
+            "selected_group_id": self.selected_group_id,
             "channels": [channel.to_dict() for channel in self.channels],
             "next_index": self.next_index,
             "last_recovery_checked_at": self.last_recovery_checked_at,
+            "recovery_interval_minutes": self.recovery_interval_minutes,
         }
+
+    def ensure_default_group(self) -> AccountPoolGroup:
+        if not self.groups:
+            group = AccountPoolGroup.create()
+            group.next_index = self.next_index
+            self.groups.append(group)
+        valid_group_ids = {group.id for group in self.groups}
+        default_group = self.groups[0]
+        for channel in self.channels:
+            if channel.group_id not in valid_group_ids:
+                channel.group_id = default_group.id
+        if self.selected_group_id not in valid_group_ids:
+            self.selected_group_id = default_group.id
+        return default_group
+
+    def group_by_id(self, group_id: str | None) -> AccountPoolGroup | None:
+        self.ensure_default_group()
+        if group_id:
+            group = next((item for item in self.groups if item.id == group_id), None)
+            if group is not None:
+                return group
+        return self.groups[0] if self.groups else None
+
+    def add_group(self, name: str) -> AccountPoolGroup:
+        group = AccountPoolGroup.create(name)
+        self.groups.append(group)
+        self.selected_group_id = group.id
+        return group
+
+    def remove_group(self, group_id: str) -> bool:
+        self.ensure_default_group()
+        if len(self.groups) <= 1:
+            return False
+        if any(channel.group_id == group_id for channel in self.channels):
+            return False
+        original_count = len(self.groups)
+        self.groups = [group for group in self.groups if group.id != group_id]
+        if len(self.groups) == original_count:
+            return False
+        if self.selected_group_id == group_id:
+            self.selected_group_id = self.groups[0].id if self.groups else ""
+        return True
+
+    def channels_for_group(self, group_id: str | None) -> list[AccountPoolChannel]:
+        group = self.group_by_id(group_id)
+        if group is None:
+            return []
+        return [channel for channel in self.channels if channel.group_id == group.id]
+
+    def normal_channels_for_group(self, group_id: str | None) -> list[AccountPoolChannel]:
+        return [channel for channel in self.channels_for_group(group_id) if channel.is_normal]
+
+    def failed_channels_for_group(self, group_id: str | None) -> list[AccountPoolChannel]:
+        return [channel for channel in self.channels_for_group(group_id) if not channel.is_normal]
 
     @property
     def normal_channels(self) -> list[AccountPoolChannel]:
@@ -295,8 +452,32 @@ class AccountPoolSettings:
     def failed_count(self) -> int:
         return len(self.failed_channels)
 
-    def take_next_normal_channel(self, exclude_ids: set[str] | None = None) -> AccountPoolChannel | None:
+    def take_next_normal_channel(
+        self,
+        exclude_ids: set[str] | None = None,
+        *,
+        group_id: str | None = None,
+    ) -> AccountPoolChannel | None:
         excluded = exclude_ids or set()
+        if group_id:
+            group = self.group_by_id(group_id)
+            if group is None:
+                return None
+            channels = self.channels_for_group(group.id)
+            if not channels:
+                group.next_index = 0
+                return None
+            channel_count = len(channels)
+            start_index = group.next_index % channel_count
+            for offset in range(channel_count):
+                index = (start_index + offset) % channel_count
+                channel = channels[index]
+                if channel.is_normal and channel.id not in excluded:
+                    group.next_index = (index + 1) % channel_count
+                    return channel
+            group.next_index = start_index
+            return None
+
         if not self.channels:
             self.next_index = 0
             return None
@@ -373,6 +554,7 @@ class RouteProxyRule:
     primary_profile_id: str = ""
     fallback_profile_ids: list[str] = field(default_factory=list)
     upstream_source: str = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
+    account_pool_group_id: str = ""
     upstream_protocol: str = ROUTE_PROXY_PROTOCOL_OPENAI
     upstream_model: str = ""
     compact_model: str = ""
@@ -390,6 +572,7 @@ class RouteProxyRule:
         fallback_profile_ids: list[str] | None = None,
         upstream_protocol: str | None = None,
         upstream_source: str | None = None,
+        account_pool_group_id: str = "",
         upstream_model: str = "",
         compact_model: str = "",
         manual_upstream_protocol: bool = False,
@@ -404,6 +587,7 @@ class RouteProxyRule:
             primary_profile_id=primary_profile_id.strip(),
             fallback_profile_ids=[item.strip() for item in (fallback_profile_ids or []) if item.strip()],
             upstream_source=normalize_route_proxy_upstream_source(upstream_source),
+            account_pool_group_id=account_pool_group_id.strip(),
             upstream_protocol=normalize_route_proxy_protocol(upstream_protocol, normalized_client),
             upstream_model=upstream_model.strip(),
             compact_model=compact_model.strip(),
@@ -425,6 +609,7 @@ class RouteProxyRule:
             primary_profile_id=str(data.get("primary_profile_id") or "").strip(),
             fallback_profile_ids=[str(item).strip() for item in fallback_profile_ids if str(item).strip()],
             upstream_source=normalize_route_proxy_upstream_source(data.get("upstream_source")),
+            account_pool_group_id=str(data.get("account_pool_group_id") or "").strip(),
             upstream_protocol=normalize_route_proxy_protocol(data.get("upstream_protocol"), client_type),
             upstream_model=str(data.get("upstream_model") or "").strip(),
             compact_model=str(data.get("compact_model") or "").strip(),

@@ -29,7 +29,7 @@ from codex_switch.models import (
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
 )
-from codex_switch.health import HealthChecker
+from codex_switch.chat import AccountPoolSessionValidator
 from codex_switch.proxy.protocol_matrix import translation_for_protocol
 from codex_switch.proxy.sanitize import sanitize_text
 from codex_switch.proxy.translator import TranslationError
@@ -74,7 +74,7 @@ class RouteProxyServer:
         account_pool_provider: Callable[[], AccountPoolSettings] | None = None,
         account_pool_update_callback: Callable[[AccountPoolSettings], None] | None = None,
         project_provider: Callable[[], list[ProjectRecord]] | None = None,
-        recovery_checker: HealthChecker | None = None,
+        recovery_checker: AccountPoolSessionValidator | None = None,
     ) -> None:
         self.settings_provider = settings_provider
         self.profiles_provider = profiles_provider
@@ -82,7 +82,7 @@ class RouteProxyServer:
         self.account_pool_provider = account_pool_provider
         self.account_pool_update_callback = account_pool_update_callback
         self.project_provider = project_provider
-        self.recovery_checker = recovery_checker or HealthChecker()
+        self.recovery_checker = recovery_checker or AccountPoolSessionValidator()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -204,13 +204,17 @@ class RouteProxyServer:
         if not pool.enabled:
             return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "Account pool is disabled."})
         self._maybe_recover_account_pool(pool)
-        if pool.normal_count == 0:
-            return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "No normal account pool channels are available."})
+        group = pool.group_by_id(route.account_pool_group_id)
+        if group is None or not group.enabled:
+            return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "Selected account pool group is disabled or missing."})
+        group_channels = pool.channels_for_group(group.id)
+        if not pool.normal_channels_for_group(group.id):
+            return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "No normal account pool channels are available in the selected group."})
 
         attempted_channel_ids: set[str] = set()
         last_error = ""
-        while len(attempted_channel_ids) < len(pool.channels):
-            channel = pool.take_next_normal_channel(attempted_channel_ids)
+        while len(attempted_channel_ids) < len(group_channels):
+            channel = pool.take_next_normal_channel(attempted_channel_ids, group_id=group.id)
             if channel is None:
                 break
             attempted_channel_ids.add(channel.id)
@@ -476,7 +480,8 @@ class RouteProxyServer:
         return f"HTTP {status}"
 
     def _maybe_recover_account_pool(self, pool: AccountPoolSettings) -> None:
-        if not pool.recovery_due(interval_seconds=ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS):
+        interval_seconds = pool.recovery_interval_minutes * 60
+        if not pool.recovery_due(interval_seconds=interval_seconds):
             return
         pool.mark_recovery_checked()
         for channel in list(pool.failed_channels):
