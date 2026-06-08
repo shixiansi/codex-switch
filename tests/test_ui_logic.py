@@ -34,6 +34,7 @@ from codex_switch.models import (
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     PROFILE_CATEGORY_IMAGE_GENERATION,
+    PROFILE_CATEGORY_TEXT,
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
@@ -77,6 +78,7 @@ from codex_switch.ui.app import (
     successful_model_batch_models,
     visible_profiles_for_filter,
 )
+from codex_switch.ui.dialogs import next_api_provided_state_for_category
 from codex_switch.ui.global_logic import (
     claude_settings_env_values,
     global_profile_choice_names,
@@ -217,6 +219,29 @@ class UiFilterTests(unittest.TestCase):
         self.assertFalse(profile.api_provided)
         self.assertFalse(profile_supports_codex(profile))
         self.assertFalse(profile_supports_claude(profile))
+
+    def test_image_generation_category_defaults_to_no_api(self) -> None:
+        self.assertFalse(
+            next_api_provided_state_for_category(
+                PROFILE_CATEGORY_TEXT,
+                PROFILE_CATEGORY_IMAGE_GENERATION,
+                True,
+            )
+        )
+        self.assertTrue(
+            next_api_provided_state_for_category(
+                PROFILE_CATEGORY_IMAGE_GENERATION,
+                PROFILE_CATEGORY_TEXT,
+                False,
+            )
+        )
+        self.assertTrue(
+            next_api_provided_state_for_category(
+                PROFILE_CATEGORY_IMAGE_GENERATION,
+                PROFILE_CATEGORY_IMAGE_GENERATION,
+                True,
+            )
+        )
 
     def test_visible_profiles_for_filter_hides_error_profiles(self) -> None:
         healthy = Profile.create("healthy", "https://healthy.example.com", "sk-healthy")

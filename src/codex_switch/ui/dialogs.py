@@ -36,6 +36,21 @@ from codex_switch.ui.styles import PALETTE, make_button, ttk
 from codex_switch.ui.utils import compact_text, is_github_repo_url, is_http_url
 
 
+def next_api_provided_state_for_category(
+    previous_category: str,
+    next_category: str,
+    current_api_provided: bool,
+) -> bool:
+    if (
+        previous_category != PROFILE_CATEGORY_IMAGE_GENERATION
+        and next_category == PROFILE_CATEGORY_IMAGE_GENERATION
+    ):
+        return False
+    if next_category != PROFILE_CATEGORY_IMAGE_GENERATION:
+        return True
+    return bool(current_api_provided)
+
+
 class ChatSettingsDialog(tk.Toplevel):
     def __init__(
         self,
@@ -743,6 +758,7 @@ class ProfileDialog(tk.Toplevel):
         }
         default_category = normalize_profile_category(defaults.category)
         self.category_var = tk.StringVar(value=PROFILE_CATEGORY_LABELS.get(default_category, "文本"))
+        self._last_category = default_category
         self.api_provided_var = tk.BooleanVar(value=bool(defaults.api_provided))
         self.codex_model_var = tk.StringVar(value=defaults.codex_display_model)
         self.claude_model_var = tk.StringVar(value=defaults.claude_display_model)
@@ -974,9 +990,17 @@ class ProfileDialog(tk.Toplevel):
         return self._selected_category() != PROFILE_CATEGORY_IMAGE_GENERATION or self.api_provided_var.get()
 
     def _toggle_api_fields(self, _event: object | None = None) -> None:
-        is_image_generation = self._selected_category() == PROFILE_CATEGORY_IMAGE_GENERATION
+        selected_category = self._selected_category()
+        self.api_provided_var.set(
+            next_api_provided_state_for_category(
+                self._last_category,
+                selected_category,
+                self.api_provided_var.get(),
+            )
+        )
+        self._last_category = selected_category
+        is_image_generation = selected_category == PROFILE_CATEGORY_IMAGE_GENERATION
         if not is_image_generation:
-            self.api_provided_var.set(True)
             self.api_provided_check.state(["disabled"])
         else:
             self.api_provided_check.state(["!disabled"])
