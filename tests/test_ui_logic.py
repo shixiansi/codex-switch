@@ -1003,9 +1003,28 @@ class UiFilterTests(unittest.TestCase):
             skill_dir.mkdir(parents=True)
             skill_file = skill_dir / "SKILL.md"
             skill_file.write_text("Use Python.", encoding="utf-8")
+            profile = Profile.create("image-api", "https://image.example.com", "sk-local")
+            profile.health = HealthResult(status="unknown", detail="old", models=["old-model"])
             metadata_path = cache_dir / "codex-switch-model-metadata.json"
             metadata_path.write_text(
-                json.dumps({"model_vendor_keywords": {"Acme": ["acme-"]}}),
+                json.dumps(
+                    {
+                        "model_vendor_keywords": {"Acme": ["acme-"]},
+                        "profiles": [
+                            {
+                                "id": profile.id,
+                                "category": PROFILE_CATEGORY_IMAGE_GENERATION,
+                                "api_provided": False,
+                                "codex_model": "image-fast",
+                                "models": [
+                                    {"name": "image-fast", "vendor": "Acme"},
+                                    {"id": "image-pro"},
+                                    "image-fast",
+                                ],
+                            }
+                        ],
+                    }
+                ),
                 encoding="utf-8",
             )
             manifest_dir = cache_dir / ".codex-switch"
@@ -1027,6 +1046,7 @@ class UiFilterTests(unittest.TestCase):
                 installed_group_id=group.id,
             )
             app = _make_minimal_app()
+            app.profiles = [profile]
             app.skill_groups = [group]
             app.skill_market_repos = [repo]
             app._sync_skill_repo_cache = lambda _repo, _expected=None: cache_dir
@@ -1036,7 +1056,68 @@ class UiFilterTests(unittest.TestCase):
             self.assertTrue(updated)
             self.assertEqual([skill.name for skill in app.skill_groups[0].skills], ["python-helper"])
             self.assertEqual(app.model_vendor_keywords["Acme"], ["acme-"])
+            self.assertEqual(app.profiles[0].category, PROFILE_CATEGORY_IMAGE_GENERATION)
+            self.assertFalse(app.profiles[0].api_provided)
+            self.assertEqual(app.profiles[0].api_keys, [])
+            self.assertEqual(app.profiles[0].codex_model, "image-fast")
+            self.assertEqual(app.profiles[0].health.models, ["image-fast", "image-pro"])
             self.assertIn("模型元数据已更新", app.status_var.get())
+
+    def test_model_metadata_ignores_unknown_or_ambiguous_profile_targets(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            repo_root = temp_dir / "repo"
+            repo_root.mkdir()
+            first = Profile.create("shared", "https://first.example.com", "sk-first")
+            second = Profile.create("shared", "https://second.example.com", "sk-second")
+            metadata_path = repo_root / "model-metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "profiles": [
+                            {
+                                "id": "missing-profile",
+                                "category": PROFILE_CATEGORY_IMAGE_GENERATION,
+                                "models": ["missing-model"],
+                            },
+                            {
+                                "name": "shared",
+                                "category": PROFILE_CATEGORY_IMAGE_GENERATION,
+                                "models": ["ambiguous-model"],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.profiles = [first, second]
+
+            changed = app._load_model_metadata_from_repo(repo_root)
+
+            self.assertFalse(changed)
+            self.assertNotEqual(app.profiles[0].category, PROFILE_CATEGORY_IMAGE_GENERATION)
+            self.assertNotEqual(app.profiles[1].category, PROFILE_CATEGORY_IMAGE_GENERATION)
+            self.assertEqual(app.profiles[0].health.models, [])
+            self.assertEqual(app.profiles[1].health.models, [])
+
+    def test_model_metadata_profile_models_can_match_unique_profile_name(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            repo_root = temp_dir / "repo"
+            repo_root.mkdir()
+            profile = Profile.create("image-api", "https://image.example.com", "sk-image")
+            metadata_path = repo_root / ".codex-switch"
+            metadata_path.mkdir()
+            (metadata_path / "model-metadata.json").write_text(
+                json.dumps({"profile_models": {"image-api": ["image-fast", "image-pro"]}}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.profiles = [profile]
+
+            changed = app._load_model_metadata_from_repo(repo_root)
+
+            self.assertTrue(changed)
+            self.assertEqual(app.profiles[0].health.models, ["image-fast", "image-pro"])
 
     def test_skill_repo_update_rejects_missing_checksum_entry(self) -> None:
         with workspace_tempdir() as temp_dir:

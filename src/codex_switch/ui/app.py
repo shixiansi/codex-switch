@@ -50,6 +50,7 @@ from codex_switch.models import (
     HealthResult,
     HOT_UPDATE_EVENT_LIMIT,
     HotUpdateEvent,
+    PROFILE_CATEGORY_IMAGE_GENERATION,
     Profile,
     ProjectRecord,
     RouteProxyEvent,
@@ -78,6 +79,7 @@ from codex_switch.models import (
     normalize_account_pool_recovery_interval_minutes,
     normalize_hot_update_interval_minutes,
     normalize_model_vendor_keywords,
+    normalize_profile_category,
     normalize_skill_type,
     now_iso,
     model_vendor_stats,
@@ -4487,6 +4489,137 @@ class CodexSwitchApp:
             existing_names.add(source.name)
         return replace(group, skills=[*existing_skills, *imported]), len(imported)
 
+    def _metadata_text(self, payload: dict, key: str, default: str) -> str:
+        if key not in payload:
+            return default
+        value = str(payload.get(key) or "").strip()
+        return value or default
+
+    def _metadata_bool(self, payload: dict, key: str, default: bool) -> bool:
+        if key not in payload:
+            return default
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return bool(value)
+
+    def _metadata_model_names(self, payload: object) -> list[str]:
+        if not isinstance(payload, list):
+            return []
+        models: list[str] = []
+        for item in payload:
+            if isinstance(item, dict):
+                raw_name = item.get("name") or item.get("id") or item.get("model")
+            else:
+                raw_name = item
+            name = str(raw_name or "").strip()
+            if name and name not in models:
+                models.append(name)
+        return models
+
+    def _profile_metadata_entries(self, payload: dict) -> list[dict]:
+        entries: list[dict] = []
+        for key in ("profiles", "profile_metadata", "profile_models"):
+            raw_entries = payload.get(key)
+            if isinstance(raw_entries, list):
+                entries.extend(item for item in raw_entries if isinstance(item, dict))
+            elif isinstance(raw_entries, dict):
+                for profile_key, value in raw_entries.items():
+                    if isinstance(value, dict):
+                        entry = dict(value)
+                        entry.setdefault("id", profile_key)
+                        entry.setdefault("name", profile_key)
+                    else:
+                        entry = {"id": profile_key, "name": profile_key, "models": value}
+                    entries.append(entry)
+        return entries
+
+    def _profile_metadata_index(self, profiles: list[Profile], entry: dict) -> int | None:
+        profile_id = str(entry.get("id") or entry.get("profile_id") or "").strip()
+        if profile_id:
+            for index, profile in enumerate(profiles):
+                if profile.id == profile_id:
+                    return index
+        profile_name = str(entry.get("name") or entry.get("profile_name") or "").strip()
+        if not profile_name:
+            return None
+        matches = [
+            index
+            for index, profile in enumerate(profiles)
+            if profile.name == profile_name
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _profile_with_metadata(self, profile: Profile, entry: dict) -> Profile:
+        category = (
+            normalize_profile_category(entry.get("category"))
+            if "category" in entry
+            else normalize_profile_category(profile.category)
+        )
+        api_provided = self._metadata_bool(entry, "api_provided", profile.api_provided)
+        if category != PROFILE_CATEGORY_IMAGE_GENERATION:
+            api_provided = True
+
+        model = self._metadata_text(entry, "model", "")
+        codex_model = self._metadata_text(entry, "codex_model", "")
+        claude_model = self._metadata_text(entry, "claude_model", "")
+        claude_fallback_model = self._metadata_text(
+            entry,
+            "claude_fallback_model",
+            profile.claude_fallback_model,
+        )
+        if not codex_model:
+            codex_model = model if profile.vendor != VENDOR_CLAUDE and model else profile.codex_model
+        if not claude_model:
+            claude_model = model if profile.vendor == VENDOR_CLAUDE and model else profile.claude_model
+
+        health = profile.health
+        for models_key in ("models", "available_models", "model_list"):
+            if models_key in entry:
+                health = replace(health, models=self._metadata_model_names(entry.get(models_key)))
+                break
+
+        api_keys = list(profile.api_keys) if api_provided else []
+        return replace(
+            profile,
+            model=codex_model,
+            codex_model=codex_model,
+            claude_model=claude_model,
+            claude_fallback_model=claude_fallback_model,
+            provider_name=self._metadata_text(entry, "provider_name", profile.provider_name),
+            category=category,
+            api_provided=api_provided,
+            api_keys=api_keys,
+            active_api_key_index=profile.active_api_key_index if api_keys else 0,
+            health=health,
+        )
+
+    def _load_profile_metadata_from_payload(self, payload: dict) -> bool:
+        entries = self._profile_metadata_entries(payload)
+        if not entries:
+            return False
+        profiles = list(self.profiles)
+        changed = False
+        for entry in entries:
+            index = self._profile_metadata_index(profiles, entry)
+            if index is None:
+                continue
+            updated = self._profile_with_metadata(profiles[index], entry)
+            if updated != profiles[index]:
+                profiles[index] = updated
+                changed = True
+        if changed:
+            self.profiles = profiles
+            if hasattr(self, "global_codex_profile_id") and hasattr(self, "global_claude_profile_id"):
+                self._normalize_global_profile_ids()
+        return changed
+
     def _load_model_metadata_from_repo(self, repo_root: Path) -> bool:
         for relative_path in MODEL_METADATA_RELATIVE_PATHS:
             metadata_path = repo_root / relative_path
@@ -4498,14 +4631,20 @@ class CodexSwitchApp:
                 continue
             if not isinstance(payload, dict):
                 continue
+            changed = False
+            handled = False
             raw_keywords = payload.get("model_vendor_keywords") or payload.get("vendor_keywords")
-            if raw_keywords is None:
-                continue
-            updated_keywords = normalize_model_vendor_keywords(raw_keywords)
-            if updated_keywords == self.model_vendor_keywords:
-                return False
-            self.model_vendor_keywords = updated_keywords
-            return True
+            if raw_keywords is not None:
+                handled = True
+                updated_keywords = normalize_model_vendor_keywords(raw_keywords)
+                if updated_keywords != self.model_vendor_keywords:
+                    self.model_vendor_keywords = updated_keywords
+                    changed = True
+            if self._profile_metadata_entries(payload):
+                handled = True
+                changed = self._load_profile_metadata_from_payload(payload) or changed
+            if handled:
+                return changed
         return False
 
     def _project_metadata_group_ids(self, payload: dict) -> list[str] | None:
