@@ -128,7 +128,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 16)
+            self.assertEqual(payload["version"], 17)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -185,7 +185,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 16)
+            self.assertEqual(payload["version"], 17)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -289,6 +289,7 @@ class ProfileStoreTests(unittest.TestCase):
                 skill_group_ids=["group-1"],
                 skills=[skill],
                 github_repo="https://github.com/example/project",
+                github_ref="release/v1",
                 github_last_sync_commit="def456",
                 github_auto_update=True,
                 codex_profile_id="codex-profile",
@@ -304,6 +305,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded_projects[0].skill_group_ids, ["group-1"])
             self.assertEqual(loaded_projects[0].skills[0].name, "frontend-dev")
             self.assertEqual(loaded_projects[0].github_repo, "https://github.com/example/project")
+            self.assertEqual(loaded_projects[0].github_ref, "release/v1")
             self.assertEqual(loaded_projects[0].github_last_sync_commit, "def456")
             self.assertTrue(loaded_projects[0].github_auto_update)
             self.assertEqual(loaded_projects[0].profile_id, "codex-profile")
@@ -314,6 +316,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(payload["projects"][0]["skill_group_ids"], ["group-1"])
             self.assertEqual(payload["projects"][0]["skills"][0]["name"], "frontend-dev")
             self.assertEqual(payload["projects"][0]["github_repo"], "https://github.com/example/project")
+            self.assertEqual(payload["projects"][0]["github_ref"], "release/v1")
             self.assertEqual(payload["projects"][0]["github_last_sync_commit"], "def456")
             self.assertTrue(payload["projects"][0]["github_auto_update"])
             self.assertEqual(payload["projects"][0]["codex_profile_id"], "codex-profile")

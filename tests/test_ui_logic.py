@@ -61,6 +61,10 @@ from codex_switch.ui.app import (
     LIBRARY_VIEW_ALL,
     ModelBatchCache,
     ModelBatchResult,
+    git_fetch_ref_candidates,
+    git_remote_ref_patterns,
+    remote_commit_from_ls_remote,
+    same_git_commit,
     model_batch_caches_from_payload,
     model_batch_caches_to_payload,
     model_batch_targets,
@@ -157,6 +161,24 @@ class UiFilterTests(unittest.TestCase):
             self.assertTrue(is_github_repo_url(url), url)
         for url in rejected:
             self.assertFalse(is_github_repo_url(url), url)
+
+    def test_git_ref_helpers_support_branches_tags_and_commits(self) -> None:
+        self.assertEqual(
+            git_remote_ref_patterns("main"),
+            ["refs/heads/main", "refs/tags/main^{}", "refs/tags/main", "main"],
+        )
+        self.assertEqual(git_fetch_ref_candidates("v1.0.0"), ["v1.0.0", "refs/heads/v1.0.0", "refs/tags/v1.0.0"])
+        self.assertEqual(
+            remote_commit_from_ls_remote(
+                "tag-object refs/tags/v1.0.0\ncommit-object refs/tags/v1.0.0^{}\n",
+                "v1.0.0",
+            ),
+            "commit-object",
+        )
+        commit_hash = "a" * 40
+        self.assertEqual(git_remote_ref_patterns(commit_hash), [])
+        self.assertEqual(git_fetch_ref_candidates(commit_hash), [commit_hash])
+        self.assertTrue(same_git_commit(commit_hash, commit_hash.upper()))
 
     def test_other_vendor_is_not_a_codex_or_claude_binding(self) -> None:
         profile = Profile.create("other", "https://other.example.com", "sk-other", vendor=VENDOR_OTHER)
@@ -871,6 +893,35 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(app.hot_update_events[0].scope, "project")
         self.assertTrue(app.hot_update_events[0].automatic)
 
+    def test_project_remote_update_uses_configured_ref(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            github_repo="https://github.com/example/project",
+            github_ref="release/v1",
+            github_last_sync_commit="old-project",
+        )
+        app = _make_minimal_app()
+
+        def fake_run(args, **_kwargs):
+            if args[:3] == ["git", "ls-remote", "https://github.com/example/project"]:
+                self.assertIn("refs/heads/release/v1", args)
+                self.assertIn("refs/tags/release/v1^{}", args)
+                return FakeCompleted(stdout="new-project refs/heads/release/v1\n")
+            raise AssertionError(args)
+
+        with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+            update = app._project_remote_update(project)
+
+        self.assertEqual(update.latest_commit, "new-project")
+        self.assertEqual(update.previous_commit, "old-project")
+
     def test_hot_update_auto_skill_repo_head_mismatch_keeps_pending(self) -> None:
         group = SkillGroup.create("代码组")
         repo = SkillMarketRepo.create(
@@ -911,7 +962,13 @@ class UiFilterTests(unittest.TestCase):
             app.skill_market_repos = [repo]
 
             def fake_run(args, **_kwargs):
-                if args[1] == "clone":
+                if args[1] == "init":
+                    return FakeCompleted()
+                if args[1:4] == ["-C", str(temp_dir / "skill-market" / repo.id), "remote"]:
+                    return FakeCompleted()
+                if args[1:4] == ["-C", str(temp_dir / "skill-market" / repo.id), "fetch"]:
+                    return FakeCompleted()
+                if args[1:4] == ["-C", str(temp_dir / "skill-market" / repo.id), "checkout"]:
                     return FakeCompleted()
                 if args[-2:] == ["rev-parse", "HEAD"]:
                     return FakeCompleted(stdout="different-commit\n")
@@ -979,7 +1036,15 @@ class UiFilterTests(unittest.TestCase):
             app.skill_market_repos = [repo]
 
             def fake_run(args, **_kwargs):
-                if args[1] == "clone":
+                if args[:2] == ["git", "ls-remote"]:
+                    return FakeCompleted(stdout="new-repo refs/heads/main\n")
+                if args[1] == "init":
+                    return FakeCompleted()
+                if args[1:4] == ["-C", str(temp_dir / "skill-market" / f"{repo.id}-preview"), "remote"]:
+                    return FakeCompleted()
+                if args[1:4] == ["-C", str(temp_dir / "skill-market" / f"{repo.id}-preview"), "fetch"]:
+                    return FakeCompleted()
+                if args[1:4] == ["-C", str(temp_dir / "skill-market" / f"{repo.id}-preview"), "checkout"]:
                     return FakeCompleted()
                 if args[-2:] == ["rev-parse", "HEAD"]:
                     return FakeCompleted(stdout="new-repo\n")
@@ -990,6 +1055,67 @@ class UiFilterTests(unittest.TestCase):
 
             self.assertEqual(cache_dir.name, f"{repo.id}-preview")
             self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
+
+    def test_skill_repo_cache_syncs_tag_and_commit_refs_with_real_git(self) -> None:
+        git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
+        if git_available.returncode != 0:
+            self.skipTest("git is not available")
+
+        def run_git(*args: str) -> str:
+            completed = subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            if completed.returncode != 0:
+                raise AssertionError(completed.stderr.strip() or completed.stdout.strip())
+            return completed.stdout.strip()
+
+        with workspace_tempdir() as temp_dir:
+            remote_repo = temp_dir / "remote"
+            remote_repo.mkdir()
+            skill_dir = remote_repo / "tag-helper"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text("tag helper", encoding="utf-8")
+            run_git("-C", str(remote_repo), "init")
+            run_git("-C", str(remote_repo), "add", ".")
+            run_git(
+                "-C",
+                str(remote_repo),
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.test",
+                "commit",
+                "-m",
+                "initial skill",
+            )
+            commit_hash = run_git("-C", str(remote_repo), "rev-parse", "HEAD")
+            run_git("-C", str(remote_repo), "tag", "v1.0.0")
+
+            app = _make_minimal_app()
+            app.store = type("FakeStore", (), {"root_dir": temp_dir / "state"})()
+            tag_repo = SkillMarketRepo.create(str(remote_repo), branch="v1.0.0")
+            app.skill_market_repos = [tag_repo]
+
+            update = app._skill_repo_remote_update(tag_repo)
+            tag_cache = app._sync_skill_repo_cache(tag_repo, update.latest_commit)
+
+            self.assertEqual(update.latest_commit, commit_hash)
+            self.assertEqual((tag_cache / "tag-helper" / "SKILL.md").read_text(encoding="utf-8"), "tag helper")
+            self.assertEqual(app.skill_market_repos[0].last_sync_commit, commit_hash)
+
+            pinned_repo = SkillMarketRepo.create(str(remote_repo), branch=commit_hash)
+            app.skill_market_repos = [pinned_repo]
+
+            pinned_update = app._skill_repo_remote_update(pinned_repo)
+            pinned_cache = app._sync_skill_repo_cache(pinned_repo, pinned_update.latest_commit)
+
+            self.assertEqual(pinned_update.latest_commit, commit_hash)
+            self.assertEqual((pinned_cache / "tag-helper" / "SKILL.md").read_text(encoding="utf-8"), "tag helper")
+            self.assertEqual(app.skill_market_repos[0].last_sync_commit, commit_hash)
 
     def test_install_selected_skill_repo_preview_imports_only_selected_skill(self) -> None:
         class FakeRepoTree:

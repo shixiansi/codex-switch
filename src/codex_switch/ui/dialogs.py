@@ -1120,6 +1120,7 @@ class ProjectDialog(tk.Toplevel):
             default_claude_profile_id = claude_profiles[0].id if claude_profiles else default_profile_id
             default_run_command = ""
             default_github_repo = ""
+            default_github_ref = "HEAD"
             default_github_auto_update = False
             default_mcp_server_names = list(self.mcp_server_names)
             default_skill_names = [source.name for source in self.skill_sources]
@@ -1132,6 +1133,7 @@ class ProjectDialog(tk.Toplevel):
             default_claude_profile_id = project.claude_profile_id or project.profile_id
             default_run_command = project.run_command
             default_github_repo = project.github_repo
+            default_github_ref = project.github_ref
             default_github_auto_update = project.github_auto_update
             default_mcp_server_names = (
                 list(project.mcp_server_names)
@@ -1154,6 +1156,7 @@ class ProjectDialog(tk.Toplevel):
         self.claude_profile_var = tk.StringVar()
         self.run_command_var = tk.StringVar(value=default_run_command)
         self.github_repo_var = tk.StringVar(value=default_github_repo)
+        self.github_ref_var = tk.StringVar(value=default_github_ref)
         self.github_auto_update_var = tk.BooleanVar(value=default_github_auto_update)
 
         card = tk.Frame(
@@ -1236,9 +1239,12 @@ class ProjectDialog(tk.Toplevel):
         ttk.Entry(card, textvariable=self.github_repo_var, width=52).grid(row=8, column=1, sticky="ew", pady=6)
         ttk.Checkbutton(card, text="自动更新", variable=self.github_auto_update_var).grid(row=8, column=2, sticky="w", padx=(8, 0), pady=6)
 
-        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=9, column=0, sticky="nw", pady=6)
+        tk.Label(card, text="Git ref", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=9, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.github_ref_var, width=52).grid(row=9, column=1, columnspan=2, sticky="ew", pady=6)
+
+        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=10, column=0, sticky="nw", pady=6)
         mcp_frame = tk.Frame(card, bg=PALETTE["card_bg"])
-        mcp_frame.grid(row=9, column=1, columnspan=2, sticky="ew", pady=6)
+        mcp_frame.grid(row=10, column=1, columnspan=2, sticky="ew", pady=6)
         for column in range(2):
             mcp_frame.columnconfigure(column, weight=1)
         if self.mcp_server_names:
@@ -1262,9 +1268,9 @@ class ProjectDialog(tk.Toplevel):
                 font=("Microsoft YaHei UI", 9),
             ).grid(row=0, column=0, sticky="w")
 
-        tk.Label(card, text="项目 Skills", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=10, column=0, sticky="nw", pady=6)
+        tk.Label(card, text="项目 Skills", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=11, column=0, sticky="nw", pady=6)
         skill_frame = tk.Frame(card, bg=PALETTE["card_bg"])
-        skill_frame.grid(row=10, column=1, columnspan=2, sticky="ew", pady=6)
+        skill_frame.grid(row=11, column=1, columnspan=2, sticky="ew", pady=6)
         for column in range(3):
             skill_frame.columnconfigure(column, weight=1)
         if self.skill_groups:
@@ -1304,7 +1310,7 @@ class ProjectDialog(tk.Toplevel):
             ).grid(row=0, column=0, sticky="w")
 
         buttons = ttk.Frame(card)
-        buttons.grid(row=11, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=12, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存项目", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
@@ -1380,6 +1386,7 @@ class ProjectDialog(tk.Toplevel):
 
         project_name = self.name_var.get().strip() or project_root.name or "未命名项目"
         github_repo = self.github_repo_var.get().strip()
+        github_ref = self.github_ref_var.get().strip() or "HEAD"
         if github_repo and not is_github_repo_url(github_repo):
             messagebox.showerror("校验失败", "GitHub 地址必须是可信的 GitHub HTTPS 仓库地址，例如 https://github.com/owner/repo。", parent=self)
             return
@@ -1392,6 +1399,7 @@ class ProjectDialog(tk.Toplevel):
             "claude_profile_id": selected_claude_profile,
             "run_command": self.run_command_var.get().strip(),
             "github_repo": github_repo,
+            "github_ref": github_ref if github_repo else "HEAD",
             "github_auto_update": bool(self.github_auto_update_var.get()) if github_repo else False,
             "mcp_server_names": [
                 server_name

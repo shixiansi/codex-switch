@@ -1323,6 +1323,7 @@ class ProjectRecord:
     skill_group_ids: list[str] | None = None
     skills: list[SkillDefinition] = field(default_factory=list)
     github_repo: str = ""
+    github_ref: str = "HEAD"
     github_last_sync_commit: str = ""
     github_auto_update: bool = False
 
@@ -1338,6 +1339,7 @@ class ProjectRecord:
         skill_group_ids: list[str] | None = None,
         skills: list[SkillDefinition] | None = None,
         github_repo: str = "",
+        github_ref: str = "HEAD",
         github_last_sync_commit: str = "",
         github_auto_update: bool = False,
         codex_profile_id: str | None = None,
@@ -1364,6 +1366,7 @@ class ProjectRecord:
             skill_group_ids=list(skill_group_ids) if skill_group_ids is not None else None,
             skills=list(skills or []),
             github_repo=github_repo.strip(),
+            github_ref=github_ref.strip() or "HEAD",
             github_last_sync_commit=github_last_sync_commit.strip(),
             github_auto_update=bool(github_auto_update),
         )
@@ -1421,6 +1424,7 @@ class ProjectRecord:
             skill_group_ids=skill_group_ids,
             skills=skills,
             github_repo=str(data.get("github_repo", "") or "").strip(),
+            github_ref=str(data.get("github_ref") or "HEAD").strip() or "HEAD",
             github_last_sync_commit=str(data.get("github_last_sync_commit", "") or "").strip(),
             github_auto_update=bool(data.get("github_auto_update", False)),
         )
