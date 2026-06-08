@@ -858,6 +858,111 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(app.model_vendor_keywords["Acme"], ["acme-"])
             self.assertIn("模型元数据已更新", app.status_var.get())
 
+    def test_project_metadata_reloads_skill_group_ids_from_repo(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            old_skill = SkillDefinition.create("old-helper", content="old")
+            new_skill = SkillDefinition.create("new-helper", content="new")
+            old_group = SkillGroup.create("old", skills=[old_skill])
+            new_group = SkillGroup.create("new", skills=[new_skill])
+            project = ProjectRecord.create(
+                str(temp_dir),
+                "profile-id",
+                skill_group_ids=[old_group.id],
+                skills=[old_skill],
+                skill_names=[old_skill.name],
+            )
+            metadata_dir = temp_dir / ".codex-switch"
+            metadata_dir.mkdir()
+            (metadata_dir / "project.json").write_text(
+                json.dumps({"skill_group_ids": [new_group.id]}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [old_group, new_group]
+            app.projects = [project]
+
+            updated, changed = app._load_project_metadata_from_repo(project, temp_dir)
+
+            self.assertTrue(changed)
+            self.assertEqual(updated.skill_group_ids, [new_group.id])
+            self.assertEqual([skill.name for skill in updated.skills], ["new-helper"])
+            self.assertEqual(updated.skill_names, ["new-helper"])
+            self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
+
+    def test_project_metadata_ignores_unknown_skill_group_ids(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            skill = SkillDefinition.create("old-helper", content="old")
+            group = SkillGroup.create("old", skills=[skill])
+            project = ProjectRecord.create(
+                str(temp_dir),
+                "profile-id",
+                skill_group_ids=[group.id],
+                skills=[skill],
+                skill_names=[skill.name],
+            )
+            (temp_dir / "codex-switch-project.json").write_text(
+                json.dumps({"skill_group_ids": ["missing-group"]}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [group]
+            app.projects = [project]
+
+            updated, changed = app._load_project_metadata_from_repo(project, temp_dir)
+
+            self.assertFalse(changed)
+            self.assertEqual(updated.skill_group_ids, [group.id])
+            self.assertEqual(app.projects[0].skill_group_ids, [group.id])
+
+    def test_project_update_applies_project_metadata_after_git_pull(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            (temp_dir / ".git").mkdir()
+            old_skill = SkillDefinition.create("old-helper", content="old")
+            new_skill = SkillDefinition.create("new-helper", content="new")
+            old_group = SkillGroup.create("old", skills=[old_skill])
+            new_group = SkillGroup.create("new", skills=[new_skill])
+            project = ProjectRecord.create(
+                str(temp_dir),
+                "profile-id",
+                skill_group_ids=[old_group.id],
+                skills=[old_skill],
+                skill_names=[old_skill.name],
+                github_repo="https://github.com/example/project",
+                github_last_sync_commit="oldcommit",
+            )
+            metadata_dir = temp_dir / ".codex-switch"
+            metadata_dir.mkdir()
+            (metadata_dir / "project.json").write_text(
+                json.dumps({"skill_group_ids": [new_group.id]}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [old_group, new_group]
+            app.projects = [project]
+
+            def fake_run(args, **_kwargs):
+                if args[-2:] == ["pull", "--ff-only"]:
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="newcommit\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                applied = app._apply_project_update(project, "newcommit", automatic=False)
+
+            self.assertTrue(applied)
+            self.assertEqual(app.projects[0].github_last_sync_commit, "newcommit")
+            self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
+            self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
+            self.assertIn("项目 Skills 已同步", app.status_var.get())
+            self.assertEqual(app.persist_count, 1)
+
     def test_add_account_pool_channel_saves_only_after_models_check_success(self) -> None:
         class FakeRoot:
             def wait_window(self, _dialog) -> None:

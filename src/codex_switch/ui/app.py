@@ -187,6 +187,11 @@ MODEL_METADATA_RELATIVE_PATHS = (
     Path("model-metadata.json"),
     Path(".codex-switch") / "model-metadata.json",
 )
+PROJECT_METADATA_RELATIVE_PATHS = (
+    Path("codex-switch-project.json"),
+    Path("project-skills.json"),
+    Path(".codex-switch") / "project.json",
+)
 
 
 @dataclass
@@ -3753,6 +3758,48 @@ class CodexSwitchApp:
             return True
         return False
 
+    def _project_metadata_group_ids(self, payload: dict) -> list[str] | None:
+        raw_group_ids = payload.get("skill_group_ids")
+        if raw_group_ids is None:
+            raw_group_ids = payload.get("skill_groups")
+        if not isinstance(raw_group_ids, list):
+            return None
+        requested = [
+            str(item).strip()
+            for item in raw_group_ids
+            if str(item).strip()
+        ]
+        known_group_ids = {group.id for group in self.skill_groups}
+        if any(group_id not in known_group_ids for group_id in requested):
+            return None
+        group_ids: list[str] = []
+        for group_id in requested:
+            if group_id not in group_ids:
+                group_ids.append(group_id)
+        return group_ids
+
+    def _load_project_metadata_from_repo(self, project: ProjectRecord, repo_root: Path) -> tuple[ProjectRecord, bool]:
+        for relative_path in PROJECT_METADATA_RELATIVE_PATHS:
+            metadata_path = repo_root / relative_path
+            if not metadata_path.exists() or not metadata_path.is_file():
+                continue
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            group_ids = self._project_metadata_group_ids(payload)
+            if group_ids is None:
+                continue
+            skills, names = self._expanded_skills_for_group_ids(group_ids)
+            if project.skill_group_ids == group_ids and project.skills == skills and project.skill_names == names:
+                return project, False
+            updated = replace(project, skill_group_ids=group_ids, skills=skills, skill_names=names, updated_at=now_iso())
+            self.projects = [updated if item.id == updated.id else item for item in self.projects]
+            return updated, True
+        return project, False
+
     def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool) -> bool:
         if not repo.installed_group_id:
             if not automatic:
@@ -3862,12 +3909,14 @@ class CodexSwitchApp:
             check=False,
         )
         synced_commit = local_commit.stdout.strip() if local_commit.returncode == 0 and local_commit.stdout.strip() else latest_commit
-        self._set_project_commit(project, synced_commit)
+        updated_project, project_metadata_updated = self._load_project_metadata_from_repo(project, project_root)
+        self._set_project_commit(updated_project, synced_commit)
         self.persist_state()
         self.refresh_project_tab()
         self.refresh_skills_tab()
         if not automatic:
-            self.status_var.set(f"已更新项目代码：{project.name} @ {synced_commit[:12]}")
+            metadata_text = "，项目 Skills 已同步" if project_metadata_updated else ""
+            self.status_var.set(f"已更新项目代码：{project.name} @ {synced_commit[:12]}{metadata_text}")
         return True
 
     def check_selected_project_update(self) -> None:
