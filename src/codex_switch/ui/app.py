@@ -5683,6 +5683,7 @@ class CodexSwitchApp:
                 claude_profile=claude_profile,
                 route_proxy_base_url=template_options.route_proxy_base_url,
                 skill_sources=template_options.skill_sources,
+                skill_definitions=template_options.skill_definitions,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)

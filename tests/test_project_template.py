@@ -16,6 +16,8 @@ from codex_switch.models import (
     ProjectRecord,
     ROUTE_PROXY_PLACEHOLDER_KEY,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    SKILL_TYPE_CONFIG,
+    SkillDefinition,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
 )
@@ -252,6 +254,51 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertTrue(target in result.generated_paths)
             self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "frontend skill")
             self.assertEqual((target / "references" / "guide.md").read_text(encoding="utf-8"), "guide")
+            self.assertTrue((target / SKILL_MANAGED_MARKER).exists())
+
+    def test_generate_writes_project_skill_definitions(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            profile = Profile.create("project", "https://example.com", "sk-template")
+            skill = SkillDefinition.create(
+                "prompt-helper",
+                type=SKILL_TYPE_CONFIG,
+                content="Use short answers.",
+                version="2.1.0",
+            )
+
+            result = service.generate(temp_dir, profile, skill_definitions=[skill])
+
+            target = temp_dir / PROJECT_SKILLS_RELATIVE_DIR / "prompt-helper"
+            self.assertTrue(target in result.generated_paths)
+            skill_text = (target / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn('name: "prompt-helper"', skill_text)
+            self.assertIn('type: "config"', skill_text)
+            self.assertIn('version: "2.1.0"', skill_text)
+            self.assertIn("Use short answers.", skill_text)
+            self.assertTrue((target / SKILL_MANAGED_MARKER).exists())
+
+    def test_generate_copies_skill_definition_source_path(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            source = temp_dir / "skill-source" / "repo-helper"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("repo helper", encoding="utf-8")
+            (source / "references").mkdir()
+            (source / "references" / "guide.md").write_text("source guide", encoding="utf-8")
+            service = ProjectTemplateService()
+            profile = Profile.create("project", "https://example.com", "sk-template")
+            skill = SkillDefinition.create(
+                "repo-helper",
+                content="repo helper",
+                source_path=str(source),
+            )
+
+            result = service.generate(temp_dir / "project", profile, skill_definitions=[skill])
+
+            target = temp_dir / "project" / PROJECT_SKILLS_RELATIVE_DIR / "repo-helper"
+            self.assertTrue(target in result.generated_paths)
+            self.assertEqual((target / "SKILL.md").read_text(encoding="utf-8"), "repo helper")
+            self.assertEqual((target / "references" / "guide.md").read_text(encoding="utf-8"), "source guide")
             self.assertTrue((target / SKILL_MANAGED_MARKER).exists())
 
     def test_generate_removes_unselected_managed_project_skills(self) -> None:

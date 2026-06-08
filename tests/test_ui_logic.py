@@ -491,7 +491,13 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(project_claude_cmd_command(), ("cmd.exe", "/k", "claude"))
 
     def test_project_template_option_helpers_build_service_inputs(self) -> None:
-        project = ProjectRecord.create(str(Path.cwd()), "profile-id", skill_names=["frontend-dev"])
+        project_skill = SkillDefinition.create("prompt-helper", content="Use short answers.")
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            skill_names=["frontend-dev"],
+            skills=[project_skill],
+        )
         frontend_skill = SkillSource("frontend-dev", "frontend-dev", Path.cwd() / "frontend-dev")
         fullstack_skill = SkillSource("fullstack-dev", "fullstack-dev", Path.cwd() / "fullstack-dev")
 
@@ -515,6 +521,7 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(codex_options.agents_doc_text, "# Agents\n")
         self.assertEqual(codex_options.route_proxy_base_url, "http://127.0.0.1:15721/project/p1")
         self.assertEqual(codex_options.skill_sources, [frontend_skill])
+        self.assertEqual(codex_options.skill_definitions, [project_skill])
         self.assertEqual(claude_options.project_root, Path.cwd())
         self.assertEqual(claude_options.project_mcp_toml, "mcp-toml")
         self.assertEqual(claude_options.agents_doc_text, "# Agents\n")

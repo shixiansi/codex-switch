@@ -19,7 +19,7 @@ from codex_switch.codex_config import (
     scope_mcp_servers_to_project,
     timestamp_label,
 )
-from codex_switch.models import Profile, ROUTE_PROXY_PLACEHOLDER_KEY
+from codex_switch.models import Profile, ROUTE_PROXY_PLACEHOLDER_KEY, SkillDefinition, normalize_skill_type
 from codex_switch.resources import asset_path
 from codex_switch.skills import (
     PROJECT_SKILLS_RELATIVE_DIR,
@@ -157,6 +157,32 @@ class ProjectTemplateStatus:
     start_script_path: Path
 
 
+def _render_skill_definition_markdown(skill: SkillDefinition) -> str:
+    body = skill.content.strip()
+    lines = [
+        "---",
+        f"name: {json.dumps(skill.name, ensure_ascii=False)}",
+        f"type: {json.dumps(normalize_skill_type(skill.type), ensure_ascii=False)}",
+        f"version: {json.dumps(skill.version or '1.0.0', ensure_ascii=False)}",
+        "---",
+    ]
+    if body:
+        lines.extend(("", body))
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _skill_definition_dir_name(name: str, used_names: set[str]) -> str:
+    base = "".join(char if char.isalnum() or char in ("-", "_", ".") else "-" for char in name.strip())
+    base = base.strip(".-_ ") or "skill"
+    candidate = base
+    index = 2
+    while candidate.casefold() in used_names:
+        candidate = f"{base}-{index}"
+        index += 1
+    used_names.add(candidate.casefold())
+    return candidate
+
+
 class ProjectTemplateService:
     def sync_api_binding(
         self,
@@ -226,6 +252,7 @@ class ProjectTemplateService:
         claude_profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
         skill_sources: list[SkillSource] | None = None,
+        skill_definitions: list[SkillDefinition] | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         codex_dir = project_root / ".codex"
@@ -251,13 +278,34 @@ class ProjectTemplateService:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             generated_paths.append(target)
-        if skill_sources is not None:
+        if skill_sources is not None or skill_definitions is not None:
+            selected_skill_sources = list(skill_sources or [])
+            selected_skill_names = {source.name.casefold() for source in selected_skill_sources}
+            flat_skill_definitions: list[SkillDefinition] = []
+            for skill in skill_definitions or []:
+                if not skill.name:
+                    continue
+                if skill.name.casefold() in selected_skill_names:
+                    continue
+                source_path = Path(skill.source_path) if skill.source_path else None
+                if source_path and source_path.exists() and (source_path / "SKILL.md").is_file():
+                    selected_skill_sources.append(SkillSource(skill.name, skill.name, source_path))
+                    selected_skill_names.add(skill.name.casefold())
+                else:
+                    flat_skill_definitions.append(skill)
             generated_paths.extend(
                 sync_project_skills(
                     project_root,
-                    skill_sources,
-                    [source.name for source in skill_sources],
+                    selected_skill_sources,
+                    [source.name for source in selected_skill_sources],
                     backup_dir=backup_dir,
+                )
+            )
+            generated_paths.extend(
+                self._write_project_skill_definitions(
+                    project_root,
+                    flat_skill_definitions,
+                    reserved_names={source.name for source in selected_skill_sources},
                 )
             )
 
@@ -338,6 +386,36 @@ class ProjectTemplateService:
             project_root=project_root,
             start_script_path=project_root / CODEX_SCRIPT_DIRNAME / "start-codex.ps1",
         )
+
+    def _write_project_skill_definitions(
+        self,
+        project_root: Path,
+        skill_definitions: list[SkillDefinition],
+        *,
+        reserved_names: set[str],
+    ) -> list[Path]:
+        skills_dir = project_root / PROJECT_SKILLS_RELATIVE_DIR
+        generated_paths: list[Path] = []
+        reserved_keys = {name.casefold() for name in reserved_names if name}
+        used_names = set(reserved_keys)
+        writable_skills = [skill for skill in skill_definitions if skill.name and skill.name.casefold() not in reserved_keys]
+        if not writable_skills:
+            return generated_paths
+
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        for skill in writable_skills:
+            directory_name = _skill_definition_dir_name(skill.name, used_names)
+            target = skills_dir / directory_name
+            while target.exists() and not (target.is_dir() and (target / SKILL_MANAGED_MARKER).exists()):
+                directory_name = _skill_definition_dir_name(f"{skill.name}-{len(used_names) + 1}", used_names)
+                target = skills_dir / directory_name
+            if target.exists():
+                shutil.rmtree(target)
+            target.mkdir(parents=True)
+            (target / "SKILL.md").write_text(_render_skill_definition_markdown(skill), encoding="utf-8")
+            (target / SKILL_MANAGED_MARKER).write_text("managed by codex-switch\n", encoding="utf-8")
+            generated_paths.append(target)
+        return generated_paths
 
     def _backup_managed_files(self, project_root: Path, backup_root: Path) -> Path:
         backup_dir = backup_root / timestamp_label()
