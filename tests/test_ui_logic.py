@@ -853,6 +853,56 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(app.projects[0].github_last_sync_commit, "old-project")
         self.assertIn("待确认仓库 0、项目 1", summary)
 
+    def test_hot_update_auto_skill_repo_head_mismatch_keeps_pending(self) -> None:
+        group = SkillGroup.create("代码组")
+        repo = SkillMarketRepo.create(
+            "https://github.com/example/skills",
+            last_sync_commit="old-repo",
+            auto_update=True,
+            installed_group_id=group.id,
+        )
+        app = _make_minimal_app()
+        app.skill_groups = [group]
+        app.skill_market_repos = [repo]
+        app._skill_repo_remote_update = lambda _repo: GitRemoteUpdate("new-repo", "old-repo")
+
+        def reject_mismatch(_repo, expected_commit=None):
+            self.assertEqual(expected_commit, "new-repo")
+            raise RuntimeError("仓库同步后的 HEAD 与检测到的远端提交不一致")
+
+        app._sync_skill_repo_cache = reject_mismatch
+
+        summary = app._check_and_apply_hot_updates(automatic=True)
+
+        self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
+        self.assertIn("待确认仓库 1、项目 0", summary)
+
+    def test_skill_repo_cache_rejects_synced_head_mismatch(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            repo = SkillMarketRepo.create("https://github.com/example/skills", last_sync_commit="old-repo")
+            app = _make_minimal_app()
+            app.store = type("FakeStore", (), {"root_dir": temp_dir})()
+            app.skill_market_repos = [repo]
+
+            def fake_run(args, **_kwargs):
+                if args[1] == "clone":
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="different-commit\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(RuntimeError, "不一致"):
+                    app._sync_skill_repo_cache(repo, "expected-commit")
+
+            self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
+
     def test_skill_repo_update_reloads_skills_and_model_metadata(self) -> None:
         with workspace_tempdir() as temp_dir:
             cache_dir = temp_dir / "repo"
@@ -871,7 +921,7 @@ class UiFilterTests(unittest.TestCase):
             app = _make_minimal_app()
             app.skill_groups = [group]
             app.skill_market_repos = [repo]
-            app._sync_skill_repo_cache = lambda _repo: cache_dir
+            app._sync_skill_repo_cache = lambda _repo, _expected=None: cache_dir
 
             updated = app._apply_skill_repo_update(repo, automatic=False)
 
@@ -984,6 +1034,40 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
             self.assertIn("项目 Skills 已同步", app.status_var.get())
             self.assertEqual(app.persist_count, 1)
+
+    def test_project_update_rejects_head_mismatch_after_git_pull(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            (temp_dir / ".git").mkdir()
+            project = ProjectRecord.create(
+                str(temp_dir),
+                "profile-id",
+                github_repo="https://github.com/example/project",
+                github_last_sync_commit="oldcommit",
+            )
+            app = _make_minimal_app()
+            app.projects = [project]
+
+            def fake_run(args, **_kwargs):
+                if args[-2:] == ["pull", "--ff-only"]:
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="different-commit\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                with patch("codex_switch.ui.app.messagebox.showerror") as showerror:
+                    applied = app._apply_project_update(project, "expected-commit", automatic=False)
+
+            self.assertFalse(applied)
+            self.assertEqual(app.projects[0].github_last_sync_commit, "oldcommit")
+            self.assertEqual(app.persist_count, 0)
+            self.assertIn("不一致", showerror.call_args.args[1])
 
     def test_project_hot_update_uses_real_git_to_sync_project_metadata(self) -> None:
         git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)

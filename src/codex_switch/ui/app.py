@@ -2602,13 +2602,13 @@ class CodexSwitchApp:
                 self._set_skill_repo_commit(repo, update.latest_commit)
                 continue
             if repo.auto_update:
-                if self._apply_skill_repo_update(repo, automatic=True):
+                if self._apply_skill_repo_update(repo, automatic=True, expected_commit=update.latest_commit):
                     repo_updates += 1
                 else:
                     pending_repo_updates += 1
             elif not automatic:
                 if messagebox.askyesno("发现 Skills 仓库更新", f"{repo.url}\n最新提交：{update.short_latest}\n是否拉取并重载？", parent=self.root):
-                    if self._apply_skill_repo_update(repo, automatic=False):
+                    if self._apply_skill_repo_update(repo, automatic=False, expected_commit=update.latest_commit):
                         repo_updates += 1
                 else:
                     pending_repo_updates += 1
@@ -3649,7 +3649,7 @@ class CodexSwitchApp:
             self._set_skill_repo_commit(repo, update.latest_commit)
         else:
             if messagebox.askyesno("发现更新", f"发现更新：{update.short_latest}。是否拉取并重载到本地组？", parent=self.root):
-                self._apply_skill_repo_update(repo, automatic=False)
+                self._apply_skill_repo_update(repo, automatic=False, expected_commit=update.latest_commit)
             else:
                 self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
         self.persist_state()
@@ -3658,7 +3658,7 @@ class CodexSwitchApp:
     def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
         return self.store.root_dir / "skill-market" / repo.id
 
-    def _sync_skill_repo_cache(self, repo: SkillMarketRepo) -> Path:
+    def _sync_skill_repo_cache(self, repo: SkillMarketRepo, expected_commit: str | None = None) -> Path:
         cache_dir = self._skill_repo_cache_dir(repo)
         cache_root = cache_dir.parent
         cache_root.mkdir(parents=True, exist_ok=True)
@@ -3698,9 +3698,13 @@ class CodexSwitchApp:
             timeout=20,
             check=False,
         )
-        if commit.returncode == 0 and commit.stdout.strip():
-            updated = replace(repo, last_sync_commit=commit.stdout.strip())
-            self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
+        synced_commit = commit.stdout.strip() if commit.returncode == 0 else ""
+        if not synced_commit:
+            raise RuntimeError("无法确认仓库同步后的 HEAD。")
+        if expected_commit and synced_commit != expected_commit:
+            raise RuntimeError("仓库同步后的 HEAD 与检测到的远端提交不一致，请重新检查更新。")
+        updated = replace(repo, last_sync_commit=synced_commit)
+        self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
         return cache_dir
 
     def _import_skill_sources_to_group(
@@ -3800,7 +3804,7 @@ class CodexSwitchApp:
             return updated, True
         return project, False
 
-    def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool) -> bool:
+    def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool, expected_commit: str | None = None) -> bool:
         if not repo.installed_group_id:
             if not automatic:
                 messagebox.showinfo("提示", "该仓库尚未绑定本地 Skills 组，请先使用“安装到组”。", parent=self.root)
@@ -3811,7 +3815,7 @@ class CodexSwitchApp:
                 messagebox.showinfo("提示", "仓库绑定的本地 Skills 组已不存在。", parent=self.root)
             return False
         try:
-            cache_dir = self._sync_skill_repo_cache(repo)
+            cache_dir = self._sync_skill_repo_cache(repo, expected_commit)
         except RuntimeError as exc:
             if not automatic:
                 messagebox.showerror("更新失败", str(exc), parent=self.root)
@@ -3908,7 +3912,15 @@ class CodexSwitchApp:
             timeout=20,
             check=False,
         )
-        synced_commit = local_commit.stdout.strip() if local_commit.returncode == 0 and local_commit.stdout.strip() else latest_commit
+        synced_commit = local_commit.stdout.strip() if local_commit.returncode == 0 else ""
+        if not synced_commit:
+            if not automatic:
+                messagebox.showerror("更新失败", "无法确认项目更新后的 HEAD。", parent=self.root)
+            return False
+        if synced_commit != latest_commit:
+            if not automatic:
+                messagebox.showerror("更新失败", "项目更新后的 HEAD 与检测到的远端提交不一致，请重新检查更新。", parent=self.root)
+            return False
         updated_project, project_metadata_updated = self._load_project_metadata_from_repo(project, project_root)
         self._set_project_commit(updated_project, synced_commit)
         self.persist_state()
