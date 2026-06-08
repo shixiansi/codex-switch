@@ -982,6 +982,65 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(cache_dir.name, f"{repo.id}-preview")
             self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
 
+    def test_install_selected_skill_repo_preview_imports_only_selected_skill(self) -> None:
+        class FakeRepoTree:
+            def __init__(self, selected_id: str) -> None:
+                self.selected_id = selected_id
+
+            def selection(self) -> list[str]:
+                return [self.selected_id]
+
+            def focus(self) -> str:
+                return self.selected_id
+
+        class FakePreviewTree:
+            def __init__(self, rows: dict[str, tuple[str, str]], selected_ids: list[str]) -> None:
+                self.rows = rows
+                self.selected_ids = selected_ids
+
+            def selection(self) -> list[str]:
+                return list(self.selected_ids)
+
+            def item(self, item_id: str, option: str | None = None):
+                if option == "values":
+                    return self.rows[item_id]
+                return {"values": self.rows[item_id]}
+
+        with workspace_tempdir() as temp_dir:
+            preview_root = temp_dir / "repo-preview"
+            selected_dir = preview_root / "alpha-helper"
+            skipped_dir = preview_root / "beta-helper"
+            selected_dir.mkdir(parents=True)
+            skipped_dir.mkdir(parents=True)
+            (selected_dir / "SKILL.md").write_text("alpha content", encoding="utf-8")
+            (skipped_dir / "SKILL.md").write_text("beta content", encoding="utf-8")
+            group = SkillGroup.create("本地组")
+            repo = SkillMarketRepo.create("https://github.com/example/skills")
+            app = _make_minimal_app()
+            app.skill_groups = [group]
+            app.skill_market_repos = [repo]
+            app.skill_repo_tree = FakeRepoTree(repo.id)
+            app.skill_repo_preview_tree = FakePreviewTree(
+                {
+                    str(selected_dir): ("alpha-helper", str(selected_dir)),
+                    str(skipped_dir): ("beta-helper", str(skipped_dir)),
+                },
+                [str(selected_dir)],
+            )
+
+            with (
+                patch("codex_switch.ui.app.simpledialog.askstring", return_value=group.name),
+                patch("codex_switch.ui.app.messagebox.showinfo") as showinfo,
+            ):
+                app.install_selected_skill_repo_preview_to_group()
+
+            self.assertEqual([skill.name for skill in app.skill_groups[0].skills], ["alpha-helper"])
+            self.assertEqual(app.skill_groups[0].skills[0].content, "alpha content")
+            self.assertFalse(app.skill_market_repos[0].installed_group_id)
+            self.assertEqual(app.persist_count, 1)
+            self.assertIn("已安装 1 个选中 Skill", app.status_var.get())
+            showinfo.assert_not_called()
+
     def test_project_metadata_reloads_skill_group_ids_from_repo(self) -> None:
         with workspace_tempdir() as temp_dir:
             old_skill = SkillDefinition.create("old-helper", content="old")

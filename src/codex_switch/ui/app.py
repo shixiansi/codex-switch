@@ -1691,6 +1691,15 @@ class CodexSwitchApp:
         preview_scroll = ttk.Scrollbar(preview_wrap, orient="vertical", command=self.skill_repo_preview_tree.yview)
         preview_scroll.grid(row=0, column=1, sticky="ns")
         self.skill_repo_preview_tree.configure(yscrollcommand=preview_scroll.set)
+        preview_actions = tk.Frame(preview, bg=PALETTE["card_bg"])
+        preview_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        preview_actions.columnconfigure(0, weight=1)
+        make_button(
+            preview_actions,
+            text="安装选中 Skill",
+            variant="secondary",
+            command=self.install_selected_skill_repo_preview_to_group,
+        ).grid(row=0, column=0, sticky="ew")
 
     def _build_local_skills_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -3757,6 +3766,24 @@ class CodexSwitchApp:
         cache_dir = self._sync_skill_repo_preview_cache(repo)
         return discover_skill_sources([cache_dir])
 
+    def _selected_skill_repo_preview_sources(self) -> list[SkillSource]:
+        if not hasattr(self, "skill_repo_preview_tree"):
+            return []
+        sources: list[SkillSource] = []
+        seen_paths: set[str] = set()
+        for item_id in self.skill_repo_preview_tree.selection():
+            source_path = Path(str(item_id))
+            path_key = str(source_path).casefold()
+            if path_key in seen_paths or not (source_path / "SKILL.md").is_file():
+                continue
+            seen_paths.add(path_key)
+            values = self.skill_repo_preview_tree.item(item_id, "values")
+            name = str(values[0]).strip() if values else ""
+            if not name:
+                name = source_path.name
+            sources.append(SkillSource(name=name, display_name=name, source_path=source_path))
+        return sources
+
     def _expanded_skills_for_group_ids(self, group_ids: list[str] | None) -> tuple[list[SkillDefinition], list[str]]:
         if group_ids is None:
             return [], []
@@ -4004,6 +4031,36 @@ class CodexSwitchApp:
             self.status_var.set(f"已浏览 Skills 仓库：{repo.url}，发现 {len(sources)} 个 Skills。")
         else:
             self.status_var.set(f"仓库中未发现 Skills：{repo.url}")
+
+    def install_selected_skill_repo_preview_to_group(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        sources = self._selected_skill_repo_preview_sources()
+        if not sources:
+            messagebox.showinfo("提示", "请先在预览列表中选择要安装的 Skill。", parent=self.root)
+            return
+        if not self.skill_groups:
+            messagebox.showinfo("提示", "请先在本地 Skills 中创建一个组。", parent=self.root)
+            return
+        group_name = simpledialog.askstring("安装选中 Skill", "目标组名：", parent=self.root)
+        if not group_name:
+            return
+        group = next((item for item in self.skill_groups if item.name == group_name.strip()), None)
+        if group is None:
+            messagebox.showinfo("提示", "没有找到这个本地 Skills 组。", parent=self.root)
+            return
+        updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
+        if not imported_count:
+            messagebox.showinfo("提示", "选中的 Skills 已存在于目标组。", parent=self.root)
+            return
+        self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
+        self._sync_projects_from_skill_groups()
+        self.persist_state()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已安装 {imported_count} 个选中 Skill 到 {group.name}。")
 
     def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
         return self.store.root_dir / "skill-market" / repo.id
