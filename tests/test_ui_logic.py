@@ -36,6 +36,8 @@ from codex_switch.models import (
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
+    SKILL_TYPE_CONFIG,
+    SKILL_TYPE_SCRIPT,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -1040,6 +1042,47 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(app.persist_count, 1)
             self.assertIn("已安装 1 个选中 Skill", app.status_var.get())
             showinfo.assert_not_called()
+
+    def test_local_skill_add_and_edit_preserve_type(self) -> None:
+        class FakeGroupTree:
+            def __init__(self, selected_id: str) -> None:
+                self.selected_id = selected_id
+
+            def selection(self) -> list[str]:
+                return [self.selected_id]
+
+            def focus(self) -> str:
+                return self.selected_id
+
+        group = SkillGroup.create("本地组")
+        app = _make_minimal_app()
+        app.skill_groups = [group]
+        app.skill_group_tree = FakeGroupTree(group.id)
+
+        with (
+            patch(
+                "codex_switch.ui.app.simpledialog.askstring",
+                side_effect=["config-helper", "config", "2.0.0", "config content"],
+            ),
+            patch("codex_switch.ui.app.messagebox.showinfo") as showinfo,
+        ):
+            app.add_skill_to_group()
+
+        self.assertEqual(app.skill_groups[0].skills[0].name, "config-helper")
+        self.assertEqual(app.skill_groups[0].skills[0].type, SKILL_TYPE_CONFIG)
+        self.assertEqual(app.skill_groups[0].skills[0].version, "2.0.0")
+        showinfo.assert_not_called()
+
+        with patch(
+            "codex_switch.ui.app.simpledialog.askstring",
+            side_effect=["config-helper", "script-helper", "脚本", "3.0.0", "script content"],
+        ):
+            app.edit_skill_in_group()
+
+        self.assertEqual(app.skill_groups[0].skills[0].name, "script-helper")
+        self.assertEqual(app.skill_groups[0].skills[0].type, SKILL_TYPE_SCRIPT)
+        self.assertEqual(app.skill_groups[0].skills[0].content, "script content")
+        self.assertEqual(app.persist_count, 2)
 
     def test_project_metadata_reloads_skill_group_ids_from_repo(self) -> None:
         with workspace_tempdir() as temp_dir:

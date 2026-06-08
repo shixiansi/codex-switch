@@ -56,6 +56,7 @@ from codex_switch.models import (
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
+    SKILL_TYPE_LABELS,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PLACEHOLDER_KEY,
@@ -76,6 +77,7 @@ from codex_switch.models import (
     normalize_account_pool_recovery_interval_minutes,
     normalize_hot_update_interval_minutes,
     normalize_model_vendor_keywords,
+    normalize_skill_type,
     now_iso,
     model_vendor_stats,
     models_by_vendor,
@@ -3849,7 +3851,10 @@ class CodexSwitchApp:
         if not group:
             self.skill_group_detail_var.set("未选择 Skills 组")
             return
-        skill_names = ", ".join(skill.name for skill in group.skills[:5])
+        skill_names = ", ".join(
+            f"{skill.name}({SKILL_TYPE_LABELS.get(normalize_skill_type(skill.type), skill.type)})"
+            for skill in group.skills[:5]
+        )
         suffix = " ..." if len(group.skills) > 5 else ""
         self.skill_group_detail_var.set(f"{group.name}: {skill_names or '暂无 Skill'}{suffix}")
 
@@ -4456,13 +4461,17 @@ class CodexSwitchApp:
         name = simpledialog.askstring("Skill", "Skill 名称：", parent=self.root)
         if not name:
             return
+        skill_type = normalize_skill_type(
+            simpledialog.askstring("Skill", "类型（script/config）：", initialvalue="script", parent=self.root)
+        )
         version = simpledialog.askstring("Skill", "版本：", initialvalue="1.0.0", parent=self.root) or "1.0.0"
         content = simpledialog.askstring("Skill", "内容：", parent=self.root) or ""
-        skill = SkillDefinition.create(name, version=version, content=content)
+        skill = SkillDefinition.create(name, type=skill_type, version=version, content=content)
         updated = replace(group, skills=[*group.skills, skill])
         self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
         self.persist_state()
         self.refresh_skills_tab()
+        self.status_var.set(f"已新增 Skill：{skill.name}")
 
     def edit_skill_in_group(self) -> None:
         group = self._selected_skill_group()
@@ -4479,13 +4488,23 @@ class CodexSwitchApp:
         new_name = simpledialog.askstring("Skill", "Skill 名称：", initialvalue=existing.name, parent=self.root)
         if not new_name:
             return
+        skill_type = normalize_skill_type(
+            simpledialog.askstring("Skill", "类型（script/config）：", initialvalue=existing.type, parent=self.root)
+        )
         version = simpledialog.askstring("Skill", "版本：", initialvalue=existing.version, parent=self.root) or existing.version
         content = simpledialog.askstring("Skill", "内容：", initialvalue=existing.content, parent=self.root) or ""
-        updated_skill = replace(existing, name=new_name.strip(), version=version.strip() or "1.0.0", content=content)
+        updated_skill = replace(
+            existing,
+            name=new_name.strip(),
+            type=skill_type,
+            version=version.strip() or "1.0.0",
+            content=content,
+        )
         updated = replace(group, skills=[updated_skill if skill.id == existing.id else skill for skill in group.skills])
         self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
         self.persist_state()
         self.refresh_skills_tab()
+        self.status_var.set(f"已更新 Skill：{updated_skill.name}")
 
     def delete_skill_from_group(self) -> None:
         group = self._selected_skill_group()

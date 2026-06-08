@@ -21,6 +21,13 @@ PROFILE_CATEGORY_LABELS = {
     PROFILE_CATEGORY_TEXT: "文本",
     PROFILE_CATEGORY_IMAGE_GENERATION: "生图",
 }
+SKILL_TYPE_SCRIPT = "script"
+SKILL_TYPE_CONFIG = "config"
+SKILL_TYPE_CHOICES = (SKILL_TYPE_SCRIPT, SKILL_TYPE_CONFIG)
+SKILL_TYPE_LABELS = {
+    SKILL_TYPE_SCRIPT: "脚本",
+    SKILL_TYPE_CONFIG: "配置",
+}
 MODEL_VENDOR_OTHER = "其他"
 MAINSTREAM_MODEL_VENDORS = (
     "OpenAI",
@@ -253,6 +260,16 @@ def normalize_profile_category(value: object) -> str:
     if category == PROFILE_CATEGORY_IMAGE_GENERATION:
         return PROFILE_CATEGORY_IMAGE_GENERATION
     return PROFILE_CATEGORY_TEXT
+
+
+def normalize_skill_type(value: object) -> str:
+    skill_type = str(value or "").strip().lower()
+    if skill_type in SKILL_TYPE_CHOICES:
+        return skill_type
+    for normalized, label in SKILL_TYPE_LABELS.items():
+        if skill_type == label.lower():
+            return normalized
+    return SKILL_TYPE_SCRIPT
 
 
 def normalize_route_proxy_client(value: str | None) -> str:
@@ -1171,7 +1188,7 @@ class SkillDefinition:
         cls,
         name: str,
         *,
-        type: str = "script",
+        type: str = SKILL_TYPE_SCRIPT,
         content: str = "",
         version: str = "1.0.0",
         source_path: str = "",
@@ -1179,7 +1196,7 @@ class SkillDefinition:
         return cls(
             id=str(uuid.uuid4()),
             name=name.strip(),
-            type=type.strip() or "script",
+            type=normalize_skill_type(type),
             content=content.strip(),
             version=version.strip() or "1.0.0",
             source_path=str(source_path or "").strip(),
@@ -1190,7 +1207,7 @@ class SkillDefinition:
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
             name=str(data.get("name") or "").strip(),
-            type=str(data.get("type") or "script").strip() or "script",
+            type=normalize_skill_type(data.get("type")),
             content=str(data.get("content") or ""),
             version=str(data.get("version") or "1.0.0").strip() or "1.0.0",
             source_path=str(data.get("source_path") or "").strip(),

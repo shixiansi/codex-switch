@@ -35,6 +35,8 @@ from codex_switch.models import (
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
+    SKILL_TYPE_CONFIG,
+    SKILL_TYPE_SCRIPT,
     VENDOR_GENERIC,
     default_model_vendor_keywords,
     model_vendor_stats,
@@ -42,6 +44,7 @@ from codex_switch.models import (
     normalize_hot_update_interval_minutes,
     normalize_model_vendor_keywords,
     normalize_profile_vendor,
+    normalize_skill_type,
     profile_supports_codex,
     today_iso,
 )
@@ -319,7 +322,7 @@ class ProfileStoreTests(unittest.TestCase):
     def test_store_persists_skill_groups_and_market_repos(self) -> None:
         with workspace_tempdir() as temp_dir:
             store = ProfileStore(temp_dir)
-            skill = SkillDefinition.create("python-helper", content="Use Python carefully.")
+            skill = SkillDefinition.create("python-helper", type=SKILL_TYPE_CONFIG, content="Use Python carefully.")
             group = SkillGroup.create("代码组", description="常用编码技能", skills=[skill])
             repo = SkillMarketRepo.create(
                 "https://github.com/example/skills",
@@ -352,6 +355,7 @@ class ProfileStoreTests(unittest.TestCase):
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
 
             self.assertEqual(loaded[16][0].name, "代码组")
+            self.assertEqual(loaded[16][0].skills[0].type, SKILL_TYPE_CONFIG)
             self.assertEqual(loaded[16][0].skills[0].content, "Use Python carefully.")
             self.assertEqual(loaded[17][0].url, "https://github.com/example/skills")
             self.assertTrue(loaded[17][0].auto_update)
@@ -363,12 +367,18 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[21][0].commit, "abc123")
             self.assertTrue(loaded[21][0].automatic)
             self.assertEqual(payload["settings"]["skill_groups"][0]["skills"][0]["name"], "python-helper")
+            self.assertEqual(payload["settings"]["skill_groups"][0]["skills"][0]["type"], SKILL_TYPE_CONFIG)
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["last_sync_commit"], "abc123")
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["installed_group_id"], group.id)
             self.assertTrue(payload["settings"]["hot_update_enabled"])
             self.assertEqual(payload["settings"]["hot_update_interval_minutes"], 15)
             self.assertEqual(payload["settings"]["model_vendor_keywords"]["Acme"], ["acme-"])
             self.assertEqual(payload["settings"]["hot_update_events"][0]["target"], "https://github.com/example/skills")
+
+    def test_skill_definition_normalizes_type(self) -> None:
+        self.assertEqual(SkillDefinition.create("config-skill", type="配置").type, SKILL_TYPE_CONFIG)
+        self.assertEqual(SkillDefinition.from_dict({"name": "legacy"}).type, SKILL_TYPE_SCRIPT)
+        self.assertEqual(normalize_skill_type("unknown"), SKILL_TYPE_SCRIPT)
 
     def test_store_trims_hot_update_events(self) -> None:
         with workspace_tempdir() as temp_dir:
