@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 import unittest
@@ -962,6 +963,97 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
             self.assertIn("项目 Skills 已同步", app.status_var.get())
             self.assertEqual(app.persist_count, 1)
+
+    def test_project_hot_update_uses_real_git_to_sync_project_metadata(self) -> None:
+        git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
+        if git_available.returncode != 0:
+            self.skipTest("git is not available")
+
+        def run_git(*args: str) -> str:
+            completed = subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            if completed.returncode != 0:
+                raise AssertionError(completed.stderr.strip() or completed.stdout.strip())
+            return completed.stdout.strip()
+
+        with workspace_tempdir() as temp_dir:
+            remote_repo = temp_dir / "remote"
+            local_repo = temp_dir / "local"
+            remote_repo.mkdir()
+            run_git("-C", str(remote_repo), "init")
+
+            old_skill = SkillDefinition.create("old-helper", content="old")
+            new_skill = SkillDefinition.create("new-helper", content="new")
+            old_group = SkillGroup.create("old", skills=[old_skill])
+            new_group = SkillGroup.create("new", skills=[new_skill])
+
+            metadata_dir = remote_repo / ".codex-switch"
+            metadata_dir.mkdir()
+            metadata_path = metadata_dir / "project.json"
+            metadata_path.write_text(
+                json.dumps({"skill_group_ids": [old_group.id]}),
+                encoding="utf-8",
+            )
+            run_git("-C", str(remote_repo), "add", ".")
+            run_git(
+                "-C",
+                str(remote_repo),
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.test",
+                "commit",
+                "-m",
+                "initial",
+            )
+            old_commit = run_git("-C", str(remote_repo), "rev-parse", "HEAD")
+
+            run_git("clone", str(remote_repo), str(local_repo))
+
+            metadata_path.write_text(
+                json.dumps({"skill_group_ids": [new_group.id]}),
+                encoding="utf-8",
+            )
+            run_git("-C", str(remote_repo), "add", ".")
+            run_git(
+                "-C",
+                str(remote_repo),
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.test",
+                "commit",
+                "-m",
+                "update project skills",
+            )
+
+            project = ProjectRecord.create(
+                str(local_repo),
+                "profile-id",
+                skill_group_ids=[old_group.id],
+                skills=[old_skill],
+                skill_names=[old_skill.name],
+                github_repo=str(remote_repo),
+                github_last_sync_commit=old_commit,
+                github_auto_update=True,
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [old_group, new_group]
+            app.projects = [project]
+
+            update = app._project_remote_update(project)
+            applied = app._apply_project_update(project, update.latest_commit, automatic=True)
+
+            self.assertTrue(update.has_update)
+            self.assertTrue(applied)
+            self.assertEqual(app.projects[0].github_last_sync_commit, update.latest_commit)
+            self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
+            self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
 
     def test_add_account_pool_channel_saves_only_after_models_check_success(self) -> None:
         class FakeRoot:
