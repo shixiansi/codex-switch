@@ -6,11 +6,13 @@ from unittest.mock import patch
 from helpers import workspace_tempdir
 
 from codex_switch.models import (
+    HealthResult,
     PROFILE_CATEGORY_IMAGE_GENERATION,
     PROFILE_CATEGORY_LABELS,
     Profile,
     SkillDefinition,
     SkillGroup,
+    VENDOR_CODEX,
 )
 from codex_switch.ui.app import CodexSwitchApp
 from codex_switch.ui.dialogs import ProfileDialog, ProjectDialog
@@ -146,5 +148,85 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertTrue(app.hot_update_log_text.winfo_exists())
                     self.assertIn("热更新", app.hot_update_status_var.get())
                     self.assertTrue(app.store.storage_path.is_file())
+        finally:
+            destroy_widget(app_root)
+
+    def test_app_library_model_tags_render_stats_wrap_and_select(self) -> None:
+        app_root = tk.Toplevel(self.root)
+        app_root.withdraw()
+        try:
+            with workspace_tempdir() as temp_dir:
+                models = (
+                    [f"gpt-model-{index}" for index in range(8)]
+                    + [f"claude-sonnet-{index}" for index in range(7)]
+                    + [f"gemini-model-{index}" for index in range(6)]
+                    + [f"local-model-{index}" for index in range(4)]
+                )
+                profile = Profile.create(
+                    "model-api",
+                    "https://api.example.com",
+                    "sk-model",
+                    vendor=VENDOR_CODEX,
+                    codex_model="gpt-old",
+                )
+                profile.health = HealthResult(status="healthy", models=models)
+
+                with patch.dict(os.environ, {"APPDATA": str(temp_dir / "appdata")}, clear=False):
+                    app = CodexSwitchApp(app_root)
+                    app.profiles = [profile]
+                    app.selected_profile_id = profile.id
+                    app.refresh_library_tab()
+                    app_root.update_idletasks()
+
+                    self.assertEqual(app.library_model_tag_models, models[:20])
+                    self.assertEqual(len(app.library_model_tag_widgets), 20)
+                    for _model, tag in app.library_model_tag_widgets:
+                        self.assertEqual(int(tag.cget("width")), 172)
+                        self.assertEqual(int(tag.cget("height")), 34)
+                        self.assertEqual(tag.cget("cursor"), "hand2")
+
+                    summary = app.library_models_summary_var.get()
+                    self.assertIn("共 25 个模型", summary)
+                    self.assertIn("隐藏 5 个", summary)
+                    self.assertIn("OpenAI 8", summary)
+                    self.assertIn("Anthropic 7", summary)
+                    self.assertIn("Google 6", summary)
+                    self.assertIn("其他 4", summary)
+
+                    app._layout_library_model_tags(560)
+                    wide_positions = [
+                        (int(tag.grid_info()["row"]), int(tag.grid_info()["column"]))
+                        for _model, tag in app.library_model_tag_widgets[:4]
+                    ]
+                    self.assertEqual(wide_positions, [(0, 0), (0, 1), (0, 2), (1, 0)])
+
+                    app._layout_library_model_tags(190)
+                    narrow_positions = [
+                        (int(tag.grid_info()["row"]), int(tag.grid_info()["column"]))
+                        for _model, tag in app.library_model_tag_widgets[:3]
+                    ]
+                    self.assertEqual(narrow_positions, [(0, 0), (1, 0), (2, 0)])
+
+                    self.assertEqual(app.library_model_stats_text.winfo_manager(), "")
+                    app._toggle_library_model_stats()
+                    self.assertTrue(app.library_model_stats_expanded)
+                    self.assertEqual(app.library_model_stats_button_var.get(), "收起统计")
+                    self.assertEqual(app.library_model_stats_text.winfo_manager(), "grid")
+                    stats_text = app.library_model_stats_text.get("1.0", "end")
+                    self.assertIn("OpenAI（8）", stats_text)
+                    self.assertIn("Anthropic（7）", stats_text)
+                    self.assertIn("Google（6）", stats_text)
+                    self.assertIn("其他（4）", stats_text)
+                    self.assertIn("local-model-3", stats_text)
+
+                    selected_model, selected_tag = app.library_model_tag_widgets[3]
+                    selected_tag.event_generate("<Button-1>")
+                    app_root.update()
+
+                    updated_profile = app.get_selected_profile()
+                    self.assertIsNotNone(updated_profile)
+                    self.assertEqual(updated_profile.codex_model, selected_model)
+                    self.assertEqual(updated_profile.model, selected_model)
+                    self.assertEqual(app.status_var.get(), f"已选择模型：{selected_model}")
         finally:
             destroy_widget(app_root)
