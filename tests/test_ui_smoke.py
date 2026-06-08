@@ -1,5 +1,6 @@
 import os
 import tkinter as tk
+from tkinter import ttk
 import unittest
 from unittest.mock import patch
 
@@ -7,12 +8,14 @@ from helpers import workspace_tempdir
 
 from codex_switch.models import (
     HealthResult,
+    HotUpdateEvent,
     PROFILE_CATEGORY_IMAGE_GENERATION,
     PROFILE_CATEGORY_LABELS,
     Profile,
     ProjectRecord,
     SkillDefinition,
     SkillGroup,
+    SkillMarketRepo,
     VENDOR_CODEX,
 )
 from codex_switch.storage import ProfileStore
@@ -40,6 +43,21 @@ def destroy_widget(widget: tk.Misc) -> None:
             widget.destroy()
     except tk.TclError:
         pass
+
+
+def assert_widget_area_visible(testcase: unittest.TestCase, widget: tk.Misc) -> None:
+    testcase.assertGreater(widget.winfo_width(), 1)
+    testcase.assertGreater(widget.winfo_height(), 1)
+
+
+def find_child_widget(widget: tk.Misc, widget_type):
+    if isinstance(widget, widget_type):
+        return widget
+    for child in widget.winfo_children():
+        found = find_child_widget(child, widget_type)
+        if found is not None:
+            return found
+    return None
 
 
 class TkSmokeTests(unittest.TestCase):
@@ -301,5 +319,124 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertEqual(selected_canvas.itemcget(selected_rect, "outline"), PALETTE["accent"])
                     self.assertEqual(unselected_canvas.itemcget(unselected_rect, "fill"), PALETTE["neutral_soft"])
                     self.assertEqual(unselected_canvas.itemcget(unselected_rect, "outline"), PALETTE["card_border"])
+        finally:
+            destroy_widget(app_root)
+
+    def test_app_visible_gui_capture_and_mouse_smoke(self) -> None:
+        if os.environ.get("CODEX_SWITCH_RUN_VISIBLE_GUI") != "1":
+            self.skipTest("set CODEX_SWITCH_RUN_VISIBLE_GUI=1 to run visible GUI capture smoke")
+        try:
+            from PIL import ImageGrab, ImageStat
+        except ImportError as exc:
+            self.skipTest(f"Pillow ImageGrab is not available: {exc}")
+
+        app_root = tk.Toplevel(self.root)
+        app_root.geometry("1360x900+20+20")
+        app_root.deiconify()
+        try:
+            with workspace_tempdir() as temp_dir:
+                models = (
+                    [f"gpt-visual-{index}" for index in range(6)]
+                    + [f"claude-visual-{index}" for index in range(4)]
+                    + [f"gemini-visual-{index}" for index in range(3)]
+                    + ["local-visual"]
+                )
+                profile = Profile.create(
+                    "visible-api",
+                    "https://api.example.com",
+                    "sk-visible",
+                    vendor=VENDOR_CODEX,
+                    codex_model="gpt-visual-old",
+                )
+                profile.health = HealthResult(status="healthy", detail="ok", models=models)
+                skill = SkillDefinition.create("visible-helper", content="visible content")
+                group = SkillGroup.create("visible-group", skills=[skill])
+                project = ProjectRecord.create(
+                    str(temp_dir),
+                    profile.id,
+                    name="visible-project",
+                    skill_group_ids=[group.id],
+                    skills=[skill],
+                    skill_names=[skill.name],
+                    github_repo="https://github.com/example/project",
+                    github_ref="main",
+                    github_last_sync_commit="abc123def456",
+                    github_auto_update=True,
+                )
+                repo = SkillMarketRepo.create(
+                    "https://github.com/example/skills",
+                    branch="main",
+                    last_sync_commit="fedcba987654",
+                    auto_update=True,
+                    installed_group_id=group.id,
+                )
+                event = HotUpdateEvent.create(
+                    scope="project",
+                    target=project.name,
+                    status="updated",
+                    detail="visible smoke",
+                    commit="abc123def456",
+                )
+
+                with patch.dict(os.environ, {"APPDATA": str(temp_dir / "appdata")}, clear=False):
+                    app = CodexSwitchApp(app_root)
+                    app.profiles = [profile]
+                    app.selected_profile_id = profile.id
+                    app.skill_groups = [group]
+                    app.skill_market_repos = [repo]
+                    app.projects = [project]
+                    app.selected_project_id = project.id
+                    app.hot_update_events = [event]
+                    app.refresh_all()
+                    app._show_tab("library")
+                    app_root.lift()
+                    app_root.focus_force()
+                    app_root.update()
+
+                    assert_widget_area_visible(self, app_root)
+                    assert_widget_area_visible(self, app.profile_tree)
+                    assert_widget_area_visible(self, app.library_models_canvas)
+                    assert_widget_area_visible(self, app.library_model_tag_widgets[0][1])
+
+                    selected_model, selected_tag = app.library_model_tag_widgets[2]
+                    selected_tag.event_generate("<Button-1>", x=86, y=17)
+                    app_root.update()
+                    self.assertEqual(app.get_selected_profile().codex_model, selected_model)
+                    self.assertEqual(app.status_var.get(), f"已选择模型：{selected_model}")
+
+                    app._show_tab("skills")
+                    app_root.update()
+                    skills_notebook = find_child_widget(app.skills_tab, ttk.Notebook)
+                    self.assertIsNotNone(skills_notebook)
+                    skills_notebook.select(0)
+                    app_root.update()
+                    assert_widget_area_visible(self, app.skill_repo_tree)
+                    skills_notebook.select(1)
+                    app_root.update()
+                    assert_widget_area_visible(self, app.skill_group_tree)
+                    skills_notebook.select(2)
+                    app_root.update()
+                    assert_widget_area_visible(self, app.skill_project_tree)
+                    self.assertEqual(len(app.skill_repo_tree.get_children()), 1)
+                    self.assertEqual(len(app.skill_group_tree.get_children()), 1)
+                    self.assertEqual(len(app.skill_project_tree.get_children()), 1)
+
+                    app._show_tab("settings")
+                    app_root.update()
+                    assert_widget_area_visible(self, app.hot_update_log_text)
+                    self.assertIn("visible smoke", app.hot_update_log_text.get("1.0", "end"))
+
+                    x = app_root.winfo_rootx()
+                    y = app_root.winfo_rooty()
+                    width = app_root.winfo_width()
+                    height = app_root.winfo_height()
+                    try:
+                        image = ImageGrab.grab(bbox=(x, y, x + width, y + height))
+                    except OSError as exc:
+                        self.skipTest(f"screen capture is not available: {exc}")
+                    self.assertGreaterEqual(image.width, 1180)
+                    self.assertGreaterEqual(image.height, 780)
+                    stats = ImageStat.Stat(image.convert("RGB"))
+                    self.assertGreater(max(stats.stddev), 1.0)
         finally:
             destroy_widget(app_root)
