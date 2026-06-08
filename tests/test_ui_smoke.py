@@ -16,7 +16,7 @@ from codex_switch.models import (
 )
 from codex_switch.ui.app import CodexSwitchApp
 from codex_switch.ui.dialogs import ProfileDialog, ProjectDialog
-from codex_switch.ui.styles import BOOTSTRAP_THEME, BootstrapWindow
+from codex_switch.ui.styles import BOOTSTRAP_THEME, BootstrapWindow, PALETTE
 
 
 def make_hidden_root() -> tk.Tk:
@@ -228,5 +228,18 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertEqual(updated_profile.codex_model, selected_model)
                     self.assertEqual(updated_profile.model, selected_model)
                     self.assertEqual(app.status_var.get(), f"已选择模型：{selected_model}")
+
+                    selected_canvas = next(
+                        tag for model, tag in app.library_model_tag_widgets if model == selected_model
+                    )
+                    unselected_canvas = next(
+                        tag for model, tag in app.library_model_tag_widgets if model != selected_model
+                    )
+                    selected_rect = selected_canvas.find_all()[0]
+                    unselected_rect = unselected_canvas.find_all()[0]
+                    self.assertEqual(selected_canvas.itemcget(selected_rect, "fill"), PALETTE["selection_bg"])
+                    self.assertEqual(selected_canvas.itemcget(selected_rect, "outline"), PALETTE["accent"])
+                    self.assertEqual(unselected_canvas.itemcget(unselected_rect, "fill"), PALETTE["neutral_soft"])
+                    self.assertEqual(unselected_canvas.itemcget(unselected_rect, "outline"), PALETTE["card_border"])
         finally:
             destroy_widget(app_root)
