@@ -881,6 +881,7 @@ class CodexSwitchApp:
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
         self.mcp_selected_summary_var = tk.StringVar(value="选择左侧工具后查看配置预览。")
         self.skills_hint_var = tk.StringVar(value="管理 Skills 仓库、本地组和项目关联。")
+        self.skill_repo_filter_var = tk.StringVar(value="")
         self.skill_repo_detail_var = tk.StringVar(value="未选择仓库")
         self.skill_repo_preview_var = tk.StringVar(value="未选择仓库")
         self.skill_repo_preview_filter_var = tk.StringVar(value="")
@@ -1800,7 +1801,15 @@ class CodexSwitchApp:
         wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
         wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(0, weight=1)
+        wrap.rowconfigure(1, weight=1)
+        repo_filter_bar = tk.Frame(wrap, bg=PALETTE["card_bg"])
+        repo_filter_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        repo_filter_bar.columnconfigure(1, weight=1)
+        tk.Label(repo_filter_bar, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.skill_repo_filter_entry = ttk.Entry(repo_filter_bar, textvariable=self.skill_repo_filter_var)
+        self.skill_repo_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(repo_filter_bar, text="清除", variant="secondary", command=self.clear_skill_repo_filter).grid(row=0, column=2, sticky="e")
+        self.skill_repo_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_filter())
         self.skill_repo_tree = ttk.Treeview(wrap, columns=("url", "branch", "commit", "auto"), show="headings")
         self.skill_repo_tree.heading("url", text="GitHub 仓库", anchor="w")
         self.skill_repo_tree.heading("branch", text="Ref", anchor="center")
@@ -1810,10 +1819,10 @@ class CodexSwitchApp:
         self.skill_repo_tree.column("branch", width=90, anchor="center", stretch=False)
         self.skill_repo_tree.column("commit", width=120, anchor="center", stretch=False)
         self.skill_repo_tree.column("auto", width=90, anchor="center", stretch=False)
-        self.skill_repo_tree.grid(row=0, column=0, sticky="nsew")
+        self.skill_repo_tree.grid(row=1, column=0, sticky="nsew")
         self.skill_repo_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_repo_detail())
         repo_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_repo_tree.yview)
-        repo_scroll.grid(row=0, column=1, sticky="ns")
+        repo_scroll.grid(row=1, column=1, sticky="ns")
         self.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
 
         actions = tk.Frame(parent, bg=PALETTE["card_bg"])
@@ -3846,7 +3855,8 @@ class CodexSwitchApp:
             selected_repo_id = self.skill_repo_tree.focus()
             for item in self.skill_repo_tree.get_children():
                 self.skill_repo_tree.delete(item)
-            for repo in self.skill_market_repos:
+            visible_repos = self._filtered_skill_market_repos()
+            for repo in visible_repos:
                 self.skill_repo_tree.insert(
                     "",
                     "end",
@@ -3858,7 +3868,7 @@ class CodexSwitchApp:
                         "是" if repo.auto_update else "否",
                     ),
                 )
-            if selected_repo_id and any(repo.id == selected_repo_id for repo in self.skill_market_repos):
+            if selected_repo_id and any(repo.id == selected_repo_id for repo in visible_repos):
                 self.skill_repo_tree.selection_set(selected_repo_id)
                 self.skill_repo_tree.focus(selected_repo_id)
 
@@ -3899,10 +3909,48 @@ class CodexSwitchApp:
                     ),
                 )
 
-        self.skills_hint_var.set(f"{len(self.skill_market_repos)} 个仓库，{len(self.skill_groups)} 个本地组，{len(self.projects)} 个项目。")
+        visible_repo_count = len(self._filtered_skill_market_repos()) if hasattr(self, "skill_repo_tree") else len(self.skill_market_repos)
+        repo_filter_text = ""
+        if hasattr(self, "skill_repo_filter_var") and self.skill_repo_filter_var.get().strip():
+            repo_filter_text = f"，仓库筛选 {visible_repo_count}/{len(self.skill_market_repos)}"
+        self.skills_hint_var.set(f"{len(self.skill_market_repos)} 个仓库{repo_filter_text}，{len(self.skill_groups)} 个本地组，{len(self.projects)} 个项目。")
         self._refresh_skill_repo_detail()
         self._refresh_skill_group_detail()
         self._refresh_skill_project_detail()
+
+    def _skill_repo_filter_text(self, repo: SkillMarketRepo) -> str:
+        group = self._skill_group_by_id(repo.installed_group_id)
+        group_name = group.name if group is not None else ""
+        auto_label = "auto automatic 自动 是" if repo.auto_update else "manual 手动 否"
+        return " ".join(
+            item
+            for item in (
+                repo.url,
+                repo.branch,
+                repo.last_sync_commit,
+                group_name,
+                auto_label,
+            )
+            if item
+        ).casefold()
+
+    def _filtered_skill_market_repos(self) -> list[SkillMarketRepo]:
+        query_var = getattr(self, "skill_repo_filter_var", None)
+        query = query_var.get().strip().casefold() if query_var is not None else ""
+        if not query:
+            return list(self.skill_market_repos)
+        return [
+            repo
+            for repo in self.skill_market_repos
+            if query in self._skill_repo_filter_text(repo)
+        ]
+
+    def apply_skill_repo_filter(self) -> None:
+        self.refresh_skills_tab()
+
+    def clear_skill_repo_filter(self) -> None:
+        if hasattr(self, "skill_repo_filter_var"):
+            self.skill_repo_filter_var.set("")
 
     def _clear_skill_repo_preview(self, message: str = "未选择仓库") -> None:
         self.skill_repo_preview_sources = []
@@ -4066,7 +4114,11 @@ class CodexSwitchApp:
         if not hasattr(self, "skill_repo_tree"):
             return None
         selection = self.skill_repo_tree.selection()
-        return self._skill_repo_by_id(selection[0] if selection else self.skill_repo_tree.focus())
+        repo_id = selection[0] if selection else self.skill_repo_tree.focus()
+        exists = getattr(self.skill_repo_tree, "exists", None)
+        if repo_id and callable(exists) and not exists(repo_id):
+            return None
+        return self._skill_repo_by_id(repo_id)
 
     def _skill_group_by_id(self, group_id: str | None) -> SkillGroup | None:
         return next((group for group in self.skill_groups if group.id == group_id), None)

@@ -1151,6 +1151,40 @@ class UiFilterTests(unittest.TestCase):
 
             self.assertEqual(set(app.skill_repo_preview_tree.rows), {str(source.source_path) for source in sources})
 
+    def test_skill_repo_filter_matches_repo_metadata(self) -> None:
+        group = SkillGroup.create("代码组")
+        repo_alpha = SkillMarketRepo.create(
+            "https://github.com/example/alpha-skills",
+            branch="main",
+            last_sync_commit="commit-alpha",
+            auto_update=False,
+            installed_group_id=group.id,
+        )
+        repo_beta = SkillMarketRepo.create(
+            "https://github.com/example/beta-skills",
+            branch="release/v1",
+            last_sync_commit="commit-beta",
+            auto_update=True,
+        )
+        app = _make_minimal_app()
+        app.skill_groups = [group]
+        app.skill_market_repos = [repo_alpha, repo_beta]
+        app.skill_repo_filter_var = _ValueVar("")
+
+        self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_alpha.url, repo_beta.url])
+
+        app.skill_repo_filter_var.set("release")
+        self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_beta.url])
+
+        app.skill_repo_filter_var.set("代码")
+        self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_alpha.url])
+
+        app.skill_repo_filter_var.set("自动")
+        self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_beta.url])
+
+        app.clear_skill_repo_filter()
+        self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_alpha.url, repo_beta.url])
+
     def test_skill_repo_preview_sync_does_not_mark_repo_synced(self) -> None:
         class FakeCompleted:
             def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
