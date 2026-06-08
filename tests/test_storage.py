@@ -34,9 +34,11 @@ from codex_switch.models import (
     SkillGroup,
     SkillMarketRepo,
     VENDOR_GENERIC,
+    default_model_vendor_keywords,
     model_vendor_stats,
     models_by_vendor,
     normalize_hot_update_interval_minutes,
+    normalize_model_vendor_keywords,
     normalize_profile_vendor,
     profile_supports_codex,
     today_iso,
@@ -74,6 +76,7 @@ class ProfileStoreTests(unittest.TestCase):
                 skill_market_repos,
                 hot_update_enabled,
                 hot_update_interval_minutes,
+                model_vendor_keywords,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -107,6 +110,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(skill_market_repos, [])
             self.assertFalse(hot_update_enabled)
             self.assertEqual(hot_update_interval_minutes, DEFAULT_HOT_UPDATE_INTERVAL_MINUTES)
+            self.assertEqual(model_vendor_keywords, default_model_vendor_keywords())
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -117,7 +121,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 14)
+            self.assertEqual(payload["version"], 15)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -174,7 +178,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 14)
+            self.assertEqual(payload["version"], 15)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -328,6 +332,7 @@ class ProfileStoreTests(unittest.TestCase):
                 skill_market_repos=[repo],
                 hot_update_enabled=True,
                 hot_update_interval_minutes=15,
+                model_vendor_keywords={"Acme": ["acme-"]},
             )
             loaded = store.load()
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
@@ -339,11 +344,13 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[17][0].installed_group_id, group.id)
             self.assertTrue(loaded[18])
             self.assertEqual(loaded[19], 15)
+            self.assertEqual(loaded[20]["Acme"], ["acme-"])
             self.assertEqual(payload["settings"]["skill_groups"][0]["skills"][0]["name"], "python-helper")
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["last_sync_commit"], "abc123")
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["installed_group_id"], group.id)
             self.assertTrue(payload["settings"]["hot_update_enabled"])
             self.assertEqual(payload["settings"]["hot_update_interval_minutes"], 15)
+            self.assertEqual(payload["settings"]["model_vendor_keywords"]["Acme"], ["acme-"])
 
     def test_store_loads_legacy_project_without_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -464,6 +471,12 @@ class ProfileStoreTests(unittest.TestCase):
             },
         )
         self.assertEqual(models_by_vendor(models)["其他"], ["custom-local"])
+
+    def test_model_vendor_stats_accept_custom_metadata(self) -> None:
+        metadata = normalize_model_vendor_keywords({"Acme": ["acme-"]})
+
+        self.assertEqual(model_vendor_stats(["acme-fast", "custom"], metadata)["Acme"], 1)
+        self.assertEqual(models_by_vendor(["acme-fast"], metadata)["Acme"], ["acme-fast"])
 
     def test_project_record_from_dict_migrates_legacy_profile_id_to_dual_bindings(self) -> None:
         project = ProjectRecord.from_dict(

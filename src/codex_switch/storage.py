@@ -13,7 +13,9 @@ from codex_switch.models import (
     RouteProxySettings,
     SkillGroup,
     SkillMarketRepo,
+    default_model_vendor_keywords,
     normalize_hot_update_interval_minutes,
+    normalize_model_vendor_keywords,
 )
 from codex_switch.project_template import load_default_agents_doc_text
 
@@ -66,6 +68,7 @@ class ProfileStore:
         list[SkillMarketRepo],
         bool,
         int,
+        dict[str, list[str]],
     ]:
         default_global_mcp_toml = load_default_global_mcp_toml()
         default_agents_doc_text = load_default_agents_doc_text()
@@ -91,6 +94,7 @@ class ProfileStore:
                 [],
                 False,
                 DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
+                default_model_vendor_keywords(),
             )
 
         try:
@@ -118,6 +122,7 @@ class ProfileStore:
                 [],
                 False,
                 DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
+                default_model_vendor_keywords(),
             )
 
         profiles = [Profile.from_dict(item) for item in payload.get("profiles", [])]
@@ -146,6 +151,7 @@ class ProfileStore:
         skill_market_repos: list[SkillMarketRepo] = []
         hot_update_enabled = False
         hot_update_interval_minutes = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
+        model_vendor_keywords = default_model_vendor_keywords()
         if isinstance(settings_payload, dict):
             global_mcp_opt_out = bool(settings_payload.get("global_mcp_opt_out", False))
             if "global_mcp_toml" in settings_payload:
@@ -193,6 +199,9 @@ class ProfileStore:
             hot_update_interval_minutes = normalize_hot_update_interval_minutes(
                 settings_payload.get("hot_update_interval_minutes")
             )
+            model_vendor_keywords = normalize_model_vendor_keywords(
+                settings_payload.get("model_vendor_keywords")
+            )
         return (
             profiles,
             selected_profile_id,
@@ -214,6 +223,7 @@ class ProfileStore:
             skill_market_repos,
             hot_update_enabled,
             hot_update_interval_minutes,
+            model_vendor_keywords,
         )
 
     def save(
@@ -238,6 +248,7 @@ class ProfileStore:
         skill_market_repos: list[SkillMarketRepo] | None = None,
         hot_update_enabled: bool = False,
         hot_update_interval_minutes: int = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
+        model_vendor_keywords: dict[str, list[str]] | None = None,
     ) -> None:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
@@ -246,7 +257,7 @@ class ProfileStore:
         if account_pool_settings is None:
             account_pool_settings = AccountPoolSettings()
         payload = {
-            "version": 14,
+            "version": 15,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,
@@ -272,6 +283,7 @@ class ProfileStore:
                 "skill_market_repos": [repo.to_dict() for repo in (skill_market_repos or [])],
                 "hot_update_enabled": bool(hot_update_enabled),
                 "hot_update_interval_minutes": normalize_hot_update_interval_minutes(hot_update_interval_minutes),
+                "model_vendor_keywords": normalize_model_vendor_keywords(model_vendor_keywords),
             },
         }
         with self.storage_path.open("w", encoding="utf-8") as handle:

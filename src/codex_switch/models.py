@@ -44,6 +44,7 @@ MODEL_VENDOR_KEYWORDS = {
     "xAI": ("xai", "grok"),
     "Moonshot": ("moonshot", "kimi"),
 }
+MODEL_VENDOR_METADATA_KEY = "model_vendor_keywords"
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CLAUDE_FALLBACK_MODEL = "haiku"
@@ -139,36 +140,73 @@ def parse_model_names(value: str | None) -> list[str]:
     return models
 
 
-def detect_model_vendor(model_name: str) -> str:
+def default_model_vendor_keywords() -> dict[str, list[str]]:
+    return {vendor: list(keywords) for vendor, keywords in MODEL_VENDOR_KEYWORDS.items()}
+
+
+def normalize_model_vendor_keywords(value: object | None = None) -> dict[str, list[str]]:
+    keywords = default_model_vendor_keywords()
+    if not isinstance(value, dict):
+        return keywords
+    for raw_vendor, raw_keywords in value.items():
+        vendor = str(raw_vendor or "").strip()
+        if not vendor or vendor == MODEL_VENDOR_OTHER:
+            continue
+        if isinstance(raw_keywords, str):
+            candidates = parse_model_names(raw_keywords)
+        elif isinstance(raw_keywords, (list, tuple)):
+            candidates = [str(item or "").strip() for item in raw_keywords]
+        else:
+            continue
+        normalized: list[str] = []
+        for keyword in candidates:
+            if keyword and keyword not in normalized:
+                normalized.append(keyword)
+        if normalized:
+            keywords[vendor] = normalized
+    return keywords
+
+
+def _model_vendor_order(vendor_keywords: dict[str, list[str]] | None = None) -> list[str]:
+    keywords = normalize_model_vendor_keywords(vendor_keywords)
+    ordered = list(MAINSTREAM_MODEL_VENDORS)
+    for vendor in keywords:
+        if vendor not in ordered:
+            ordered.append(vendor)
+    return ordered
+
+
+def detect_model_vendor(model_name: str, vendor_keywords: dict[str, list[str]] | None = None) -> str:
     normalized = str(model_name or "").strip().lower()
     if not normalized:
         return MODEL_VENDOR_OTHER
-    for vendor, keywords in MODEL_VENDOR_KEYWORDS.items():
+    keywords_by_vendor = normalize_model_vendor_keywords(vendor_keywords)
+    for vendor, keywords in keywords_by_vendor.items():
         if any(keyword.lower() in normalized for keyword in keywords):
             return vendor
     return MODEL_VENDOR_OTHER
 
 
-def model_vendor_stats(models: list[str]) -> dict[str, int]:
-    stats = {vendor: 0 for vendor in MAINSTREAM_MODEL_VENDORS}
+def model_vendor_stats(models: list[str], vendor_keywords: dict[str, list[str]] | None = None) -> dict[str, int]:
+    stats = {vendor: 0 for vendor in _model_vendor_order(vendor_keywords)}
     stats[MODEL_VENDOR_OTHER] = 0
     for model in models:
         model_name = str(model or "").strip()
         if not model_name:
             continue
-        vendor = detect_model_vendor(model_name)
+        vendor = detect_model_vendor(model_name, vendor_keywords)
         stats[vendor] = stats.get(vendor, 0) + 1
     return {vendor: count for vendor, count in stats.items() if count > 0}
 
 
-def models_by_vendor(models: list[str]) -> dict[str, list[str]]:
-    grouped = {vendor: [] for vendor in MAINSTREAM_MODEL_VENDORS}
+def models_by_vendor(models: list[str], vendor_keywords: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    grouped = {vendor: [] for vendor in _model_vendor_order(vendor_keywords)}
     grouped[MODEL_VENDOR_OTHER] = []
     for model in models:
         model_name = str(model or "").strip()
         if not model_name:
             continue
-        vendor = detect_model_vendor(model_name)
+        vendor = detect_model_vendor(model_name, vendor_keywords)
         grouped.setdefault(vendor, []).append(model_name)
     return {vendor: names for vendor, names in grouped.items() if names}
 

@@ -73,6 +73,7 @@ from codex_switch.models import (
     normalize_route_proxy_port,
     normalize_account_pool_recovery_interval_minutes,
     normalize_hot_update_interval_minutes,
+    normalize_model_vendor_keywords,
     now_iso,
     model_vendor_stats,
     models_by_vendor,
@@ -181,6 +182,11 @@ LIBRARY_PROFILE_VIEW_TABS = (
 LIBRARY_PROFILE_VIEW_VALUES = {view for view, _label in LIBRARY_PROFILE_VIEW_TABS}
 LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
+MODEL_METADATA_RELATIVE_PATHS = (
+    Path("codex-switch-model-metadata.json"),
+    Path("model-metadata.json"),
+    Path(".codex-switch") / "model-metadata.json",
+)
 
 
 @dataclass
@@ -549,6 +555,9 @@ class CodexSwitchApp:
             self.hot_update_interval_minutes = normalize_hot_update_interval_minutes(
                 load_state[19] if len(load_state) >= 20 else DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
             )
+            self.model_vendor_keywords = normalize_model_vendor_keywords(
+                load_state[20] if len(load_state) >= 21 else None
+            )
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -569,6 +578,7 @@ class CodexSwitchApp:
             self.skill_market_repos = []
             self.hot_update_enabled = False
             self.hot_update_interval_minutes = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
+            self.model_vendor_keywords = normalize_model_vendor_keywords()
         self.global_codex_profile_id = resolve_global_profile_id(
             raw_codex_global_profile_id,
             self.selected_profile_id,
@@ -2833,7 +2843,7 @@ class CodexSwitchApp:
 
         visible_models = normalized_models[:20]
         hidden_count = max(0, len(normalized_models) - len(visible_models))
-        stats = model_vendor_stats(normalized_models)
+        stats = model_vendor_stats(normalized_models, self.model_vendor_keywords)
         stats_summary = "，".join(f"{vendor} {count}" for vendor, count in stats.items())
         summary = f"共 {len(normalized_models)} 个模型；标签显示前 {len(visible_models)} 个"
         if hidden_count:
@@ -2902,7 +2912,7 @@ class CodexSwitchApp:
     def _render_library_model_stats(self, models: list[str]) -> None:
         if not hasattr(self, "library_model_stats_text"):
             return
-        grouped = models_by_vendor(models)
+        grouped = models_by_vendor(models, self.model_vendor_keywords)
         lines: list[str] = []
         for vendor, names in grouped.items():
             lines.append(f"{vendor}（{len(names)}）")
@@ -3722,6 +3732,27 @@ class CodexSwitchApp:
             existing_names.add(source.name)
         return replace(group, skills=[*existing_skills, *imported]), len(imported)
 
+    def _load_model_metadata_from_repo(self, repo_root: Path) -> bool:
+        for relative_path in MODEL_METADATA_RELATIVE_PATHS:
+            metadata_path = repo_root / relative_path
+            if not metadata_path.exists() or not metadata_path.is_file():
+                continue
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            raw_keywords = payload.get("model_vendor_keywords") or payload.get("vendor_keywords")
+            if raw_keywords is None:
+                continue
+            updated_keywords = normalize_model_vendor_keywords(raw_keywords)
+            if updated_keywords == self.model_vendor_keywords:
+                return False
+            self.model_vendor_keywords = updated_keywords
+            return True
+        return False
+
     def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool) -> bool:
         if not repo.installed_group_id:
             if not automatic:
@@ -3738,6 +3769,7 @@ class CodexSwitchApp:
             if not automatic:
                 messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
+        metadata_updated = self._load_model_metadata_from_repo(cache_dir)
         sources = discover_skill_sources([cache_dir])
         updated_group, imported_count = self._import_skill_sources_to_group(
             group,
@@ -3747,10 +3779,13 @@ class CodexSwitchApp:
         self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
         self._sync_projects_from_skill_groups()
         self.persist_state()
+        if metadata_updated:
+            self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_skills_tab()
         if not automatic:
-            self.status_var.set(f"已重载 Skills 仓库：{repo.url}，导入 {imported_count} 个 Skills。")
+            metadata_text = "，模型元数据已更新" if metadata_updated else ""
+            self.status_var.set(f"已重载 Skills 仓库：{repo.url}，导入 {imported_count} 个 Skills{metadata_text}。")
         return True
 
     def install_selected_skill_repo_to_group(self) -> None:
@@ -3773,6 +3808,7 @@ class CodexSwitchApp:
         except RuntimeError as exc:
             messagebox.showerror("安装失败", str(exc), parent=self.root)
             return
+        metadata_updated = self._load_model_metadata_from_repo(cache_dir)
         sources = discover_skill_sources([cache_dir])
         updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
         synced_repo = self._skill_repo_by_id(repo.id) or repo
@@ -3780,11 +3816,15 @@ class CodexSwitchApp:
         self.skill_market_repos = [updated_repo if item.id == updated_repo.id else item for item in self.skill_market_repos]
         if not imported_count:
             self.persist_state()
+            if metadata_updated:
+                self.refresh_library_tab()
             self.refresh_skills_tab()
             messagebox.showinfo("提示", "仓库中没有新的 Skills，已绑定到目标组。", parent=self.root)
             return
         self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
         self.persist_state()
+        if metadata_updated:
+            self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_skills_tab()
         self.status_var.set(f"已从仓库安装 {imported_count} 个 Skills 到 {group.name}。")
@@ -4181,6 +4221,7 @@ class CodexSwitchApp:
             skill_market_repos=self.skill_market_repos,
             hot_update_enabled=self.hot_update_enabled,
             hot_update_interval_minutes=self.hot_update_interval_minutes,
+            model_vendor_keywords=self.model_vendor_keywords,
         )
 
     def save_settings(self) -> None:

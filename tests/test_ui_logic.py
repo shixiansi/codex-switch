@@ -32,6 +32,9 @@ from codex_switch.models import (
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     PROFILE_CATEGORY_IMAGE_GENERATION,
+    SkillDefinition,
+    SkillGroup,
+    SkillMarketRepo,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -51,6 +54,7 @@ from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
 from codex_switch.ui.app import (
     CodexSwitchApp,
+    GitRemoteUpdate,
     LIBRARY_VIEW_ALL,
     ModelBatchCache,
     ModelBatchResult,
@@ -108,6 +112,23 @@ class _ValueVar:
 
     def set(self, value: str) -> None:
         self.value = value
+
+
+def _make_minimal_app() -> CodexSwitchApp:
+    app = CodexSwitchApp.__new__(CodexSwitchApp)
+    app.root = None
+    app.profiles = []
+    app.projects = []
+    app.skill_groups = []
+    app.skill_market_repos = []
+    app.model_vendor_keywords = {}
+    app.status_var = _ValueVar("")
+    app.persist_count = 0
+    app.persist_state = lambda: setattr(app, "persist_count", app.persist_count + 1)
+    app.refresh_project_tab = lambda: None
+    app.refresh_skills_tab = lambda: None
+    app.refresh_library_tab = lambda: None
+    return app
 
 
 class UiFilterTests(unittest.TestCase):
@@ -695,6 +716,107 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(claude_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(claude_rule.upstream_model, "sonnet-real")
         self.assertTrue(claude_rule.manual_upstream_protocol)
+
+    def test_project_skill_groups_sync_to_flat_project_skills(self) -> None:
+        skill = SkillDefinition.create("python-helper", content="old")
+        group = SkillGroup.create("代码组", skills=[skill])
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            skill_group_ids=[group.id],
+            skills=[],
+            skill_names=[],
+        )
+        app = _make_minimal_app()
+        app.skill_groups = [group]
+        app.projects = [project]
+
+        app._sync_projects_from_skill_groups()
+
+        self.assertEqual([skill.name for skill in app.projects[0].skills], ["python-helper"])
+        self.assertEqual(app.projects[0].skill_names, ["python-helper"])
+        self.assertEqual(app.persist_count, 1)
+
+        updated_skill = SkillDefinition.create("python-helper", content="new")
+        extra_skill = SkillDefinition.create("review-helper", content="review")
+        app.skill_groups = [replace(group, skills=[updated_skill, extra_skill])]
+
+        app._sync_projects_from_skill_groups()
+
+        self.assertEqual([skill.content for skill in app.projects[0].skills], ["new", "review"])
+        self.assertEqual(app.projects[0].skill_names, ["python-helper", "review-helper"])
+
+    def test_hot_update_manual_decline_keeps_repo_and_project_pending(self) -> None:
+        repo = SkillMarketRepo.create(
+            "https://github.com/example/skills",
+            last_sync_commit="old-repo",
+            auto_update=False,
+        )
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            github_repo="https://github.com/example/project",
+            github_last_sync_commit="old-project",
+            github_auto_update=False,
+        )
+        app = _make_minimal_app()
+        app.skill_market_repos = [repo]
+        app.projects = [project]
+        app._skill_repo_remote_update = lambda _repo: GitRemoteUpdate("new-repo", "old-repo")
+        app._project_remote_update = lambda _project: GitRemoteUpdate("new-project", "old-project")
+
+        with patch("codex_switch.ui.app.messagebox.askyesno", return_value=False) as askyesno:
+            summary = app._check_and_apply_hot_updates(automatic=False)
+
+        self.assertEqual(askyesno.call_count, 2)
+        self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
+        self.assertEqual(app.projects[0].github_last_sync_commit, "old-project")
+        self.assertIn("待确认仓库 1、项目 1", summary)
+
+    def test_hot_update_auto_failure_keeps_project_pending(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            github_repo="https://github.com/example/project",
+            github_last_sync_commit="old-project",
+            github_auto_update=True,
+        )
+        app = _make_minimal_app()
+        app.projects = [project]
+        app._project_remote_update = lambda _project: GitRemoteUpdate("new-project", "old-project")
+        app._apply_project_update = lambda _project, _commit, automatic: False
+
+        summary = app._check_and_apply_hot_updates(automatic=True)
+
+        self.assertEqual(app.projects[0].github_last_sync_commit, "old-project")
+        self.assertIn("待确认仓库 0、项目 1", summary)
+
+    def test_skill_repo_update_reloads_skills_and_model_metadata(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            cache_dir = temp_dir / "repo"
+            skill_dir = cache_dir / "python-helper"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("Use Python.", encoding="utf-8")
+            (cache_dir / "codex-switch-model-metadata.json").write_text(
+                json.dumps({"model_vendor_keywords": {"Acme": ["acme-"]}}),
+                encoding="utf-8",
+            )
+            group = SkillGroup.create("代码组")
+            repo = SkillMarketRepo.create(
+                "https://github.com/example/skills",
+                installed_group_id=group.id,
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [group]
+            app.skill_market_repos = [repo]
+            app._sync_skill_repo_cache = lambda _repo: cache_dir
+
+            updated = app._apply_skill_repo_update(repo, automatic=False)
+
+            self.assertTrue(updated)
+            self.assertEqual([skill.name for skill in app.skill_groups[0].skills], ["python-helper"])
+            self.assertEqual(app.model_vendor_keywords["Acme"], ["acme-"])
+            self.assertIn("模型元数据已更新", app.status_var.get())
 
     def test_add_account_pool_channel_saves_only_after_models_check_success(self) -> None:
         class FakeRoot:
