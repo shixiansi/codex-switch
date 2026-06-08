@@ -180,6 +180,46 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_CLAUDE), [claude, generic])
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_OTHER), [other])
 
+    def test_library_model_tags_show_first_twenty_and_summary(self) -> None:
+        app = _make_minimal_app()
+        app.selected_profile_id = None
+        app.library_models_summary_var = _ValueVar("")
+        app.library_model_stats_button_var = _ValueVar("")
+        app.library_model_stats_expanded = False
+        models = [f"gpt-model-{index}" for index in range(25)]
+
+        app._render_library_model_tags(models, "empty")
+
+        self.assertEqual(app.library_model_tag_models, models[:20])
+        self.assertIn("共 25 个模型", app.library_models_summary_var.get())
+        self.assertIn("隐藏 5 个", app.library_models_summary_var.get())
+        self.assertIn("OpenAI 25", app.library_models_summary_var.get())
+
+    def test_library_model_tag_layout_wraps_by_width(self) -> None:
+        class FakeFrame:
+            def __init__(self) -> None:
+                self.columns: list[int] = []
+
+            def columnconfigure(self, column: int, weight: int) -> None:
+                self.columns.append(column)
+
+        class FakeTag:
+            def __init__(self) -> None:
+                self.grid_calls: list[dict] = []
+
+            def grid(self, **kwargs) -> None:
+                self.grid_calls.append(kwargs)
+
+        app = _make_minimal_app()
+        tags = [FakeTag() for _ in range(5)]
+        app.library_model_tags_frame = FakeFrame()
+        app.library_model_tag_widgets = [(f"model-{index}", tag) for index, tag in enumerate(tags)]
+
+        app._layout_library_model_tags(560)
+
+        self.assertEqual([tag.grid_calls[-1]["row"] for tag in tags], [0, 0, 0, 1, 1])
+        self.assertEqual([tag.grid_calls[-1]["column"] for tag in tags], [0, 1, 2, 0, 1])
+
     def test_global_profile_ids_are_resolved_per_target(self) -> None:
         codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
         claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
