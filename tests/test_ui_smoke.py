@@ -89,11 +89,27 @@ class TkSmokeTests(unittest.TestCase):
             dialog._toggle_api_fields()
             dialog.api_provided_var.set(True)
             dialog._toggle_api_fields()
+            dialog.base_url_var.set("https://image.example.com")
             self.root.update_idletasks()
 
             self.assertTrue(dialog.api_provided_var.get())
             self.assertTrue(all(widget.winfo_manager() == "grid" for widget in dialog.api_key_widgets))
             self.assertTrue(all(entry.instate(["!disabled"]) for entry in dialog.api_key_entries))
+
+            with patch("codex_switch.ui.dialogs.messagebox.showerror") as showerror:
+                dialog._on_submit()
+
+            self.assertIsNone(dialog.result)
+            showerror.assert_called_once()
+            self.assertIn("请输入 API Key", showerror.call_args.args[1])
+
+            dialog.api_key_vars[0].set("sk-image")
+            dialog._on_submit()
+
+            self.assertIsNotNone(dialog.result)
+            self.assertTrue(dialog.result["api_provided"])
+            self.assertEqual(dialog.result["base_url"], "https://image.example.com")
+            self.assertEqual(dialog.result["api_keys"], ["sk-image"])
         finally:
             if dialog is not None:
                 destroy_widget(dialog)
