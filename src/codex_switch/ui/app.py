@@ -45,6 +45,7 @@ from codex_switch.models import (
     ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
     ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
     CurrentCodexConfig,
+    DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
     HealthResult,
     Profile,
     ProjectRecord,
@@ -71,6 +72,7 @@ from codex_switch.models import (
     VENDOR_OTHER,
     normalize_route_proxy_port,
     normalize_account_pool_recovery_interval_minutes,
+    normalize_hot_update_interval_minutes,
     now_iso,
     model_vendor_stats,
     models_by_vendor,
@@ -194,6 +196,20 @@ class ModelBatchCache:
     results: dict[str, ModelBatchResult]
     completed: bool = False
     tested_at: str | None = None
+
+
+@dataclass(frozen=True)
+class GitRemoteUpdate:
+    latest_commit: str
+    previous_commit: str
+
+    @property
+    def has_update(self) -> bool:
+        return bool(self.latest_commit) and self.latest_commit != self.previous_commit
+
+    @property
+    def short_latest(self) -> str:
+        return self.latest_commit[:12] if self.latest_commit else "-"
 
 
 @dataclass
@@ -529,6 +545,10 @@ class CodexSwitchApp:
             self.account_pool_settings = load_state[15] if len(load_state) >= 16 else AccountPoolSettings()
             self.skill_groups = load_state[16] if len(load_state) >= 17 else []
             self.skill_market_repos = load_state[17] if len(load_state) >= 18 else []
+            self.hot_update_enabled = bool(load_state[18]) if len(load_state) >= 19 else False
+            self.hot_update_interval_minutes = normalize_hot_update_interval_minutes(
+                load_state[19] if len(load_state) >= 20 else DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
+            )
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -547,6 +567,8 @@ class CodexSwitchApp:
             self.account_pool_settings = AccountPoolSettings()
             self.skill_groups = []
             self.skill_market_repos = []
+            self.hot_update_enabled = False
+            self.hot_update_interval_minutes = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
         self.global_codex_profile_id = resolve_global_profile_id(
             raw_codex_global_profile_id,
             self.selected_profile_id,
@@ -582,6 +604,7 @@ class CodexSwitchApp:
         self.updating_health_override = False
         self.suppress_selection_events = False
         self.sign_in_status_day = today_iso()
+        self.hot_update_check_running = False
 
         self._init_variables()
         self._setup_theme()
@@ -589,6 +612,7 @@ class CodexSwitchApp:
         self.refresh_all()
         self.persist_state()
         self._schedule_sign_in_status_refresh()
+        self._schedule_hot_update_check()
         if self.route_proxy_settings.enabled:
             self.start_route_proxy(show_errors=False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -643,6 +667,7 @@ class CodexSwitchApp:
         self.project_script_var = tk.StringVar(value="-")
         self.project_run_var = tk.StringVar(value="-")
         self.project_github_var = tk.StringVar(value="-")
+        self.project_github_update_var = tk.StringVar(value="-")
         self.project_mcp_var = tk.StringVar(value="-")
         self.project_skills_var = tk.StringVar(value="-")
 
@@ -682,6 +707,9 @@ class CodexSwitchApp:
         self.account_pool_recovery_interval_var = tk.StringVar(
             value=str(self.account_pool_settings.recovery_interval_minutes)
         )
+        self.hot_update_enabled_var = tk.BooleanVar(value=self.hot_update_enabled)
+        self.hot_update_interval_var = tk.StringVar(value=str(self.hot_update_interval_minutes))
+        self.hot_update_status_var = tk.StringVar(value="热更新未启用。")
         self.settings_version_var = tk.StringVar(value="-")
         self.settings_python_var = tk.StringVar(value="-")
         self.settings_tk_var = tk.StringVar(value="-")
@@ -1194,14 +1222,15 @@ class CodexSwitchApp:
         self._create_info_row(detail, 6, "运行脚本", self.project_script_var, wraplength=440)
         self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
         self._create_info_row(detail, 8, "GitHub 地址", self.project_github_var, wraplength=440)
-        self._create_info_row(detail, 9, "项目 MCP", self.project_mcp_var, wraplength=440)
-        self._create_info_row(detail, 10, "项目 Skills", self.project_skills_var, wraplength=440)
+        self._create_info_row(detail, 9, "GitHub 更新", self.project_github_update_var, wraplength=440)
+        self._create_info_row(detail, 10, "项目 MCP", self.project_mcp_var, wraplength=440)
+        self._create_info_row(detail, 11, "项目 Skills", self.project_skills_var, wraplength=440)
 
         return detail
 
     def _build_project_actions(self, detail: tk.Misc) -> None:
         actions = tk.Frame(detail, bg=PALETTE["card_bg"])
-        actions.grid(row=11, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        actions.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         actions.columnconfigure(0, weight=1)
 
         self._create_project_action_group(
@@ -1762,7 +1791,30 @@ class CodexSwitchApp:
             relief="solid",
             borderwidth=1,
         ).grid(row=3, column=1, sticky="w", pady=(10, 0))
-        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=3, column=2, sticky="e", pady=(10, 0))
+        ttk.Checkbutton(
+            settings_card,
+            text="启用 GitHub 热更新轮询",
+            variable=self.hot_update_enabled_var,
+        ).grid(row=4, column=0, sticky="w", pady=(10, 0))
+        tk.Spinbox(
+            settings_card,
+            from_=5,
+            to=1440,
+            textvariable=self.hot_update_interval_var,
+            width=8,
+            font=self.body_font,
+            relief="solid",
+            borderwidth=1,
+        ).grid(row=4, column=1, sticky="w", pady=(10, 0))
+        make_button(settings_card, text="立即检查热更新", variant="secondary", command=self.check_hot_updates_now).grid(row=4, column=2, sticky="e", pady=(10, 0))
+        tk.Label(settings_card, textvariable=self.hot_update_status_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=5, column=2, sticky="e", pady=(8, 0))
 
         info_card = self._make_card(parent)
         info_card.grid(row=1, column=0, sticky="nsew")
@@ -2456,6 +2508,11 @@ class CodexSwitchApp:
     def refresh_settings_tab(self) -> None:
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
         self.account_pool_recovery_interval_var.set(str(self.account_pool_settings.recovery_interval_minutes))
+        self.hot_update_enabled_var.set(self.hot_update_enabled)
+        self.hot_update_interval_var.set(str(self.hot_update_interval_minutes))
+        self.hot_update_status_var.set(
+            f"热更新轮询：{'已启用' if self.hot_update_enabled else '未启用'}，间隔 {self.hot_update_interval_minutes} 分钟。"
+        )
         self.settings_version_var.set(__version__)
         self.settings_python_var.set(sys.version.split()[0])
         self.settings_tk_var.set(f"Tcl/Tk {self.root.tk.call('info', 'patchlevel')}")
@@ -2479,6 +2536,102 @@ class CodexSwitchApp:
             self.refresh_library_tab()
             self.refresh_test_tab()
         self.root.after(60_000, self._schedule_sign_in_status_refresh)
+
+    def _schedule_hot_update_check(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        if self.hot_update_enabled and not self.hot_update_check_running:
+            self._run_hot_update_check(automatic=True)
+        delay_ms = normalize_hot_update_interval_minutes(self.hot_update_interval_minutes) * 60_000
+        self.root.after(delay_ms, self._schedule_hot_update_check)
+
+    def check_hot_updates_now(self) -> None:
+        self._run_hot_update_check(automatic=False)
+
+    def _run_hot_update_check(self, *, automatic: bool) -> None:
+        if self.hot_update_check_running:
+            if not automatic:
+                messagebox.showinfo("提示", "热更新检查正在进行。", parent=self.root)
+            return
+        self.hot_update_check_running = True
+        self.hot_update_status_var.set("正在检查 GitHub 热更新...")
+        summary = "热更新检查失败。"
+        try:
+            summary = self._check_and_apply_hot_updates(automatic=automatic)
+        except Exception as exc:
+            summary = f"热更新检查失败：{exc}"
+        finally:
+            self.hot_update_check_running = False
+        self._finish_hot_update_check(summary)
+
+    def _finish_hot_update_check(self, summary: str) -> None:
+        self.hot_update_status_var.set(summary)
+        self.status_var.set(summary)
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+
+    def _check_and_apply_hot_updates(self, *, automatic: bool) -> str:
+        repo_updates = 0
+        project_updates = 0
+        pending_repo_updates = 0
+        pending_project_updates = 0
+        errors: list[str] = []
+
+        for repo in list(self.skill_market_repos):
+            try:
+                update = self._skill_repo_remote_update(repo)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                errors.append(f"Skills仓库 {repo.url}: {exc}")
+                continue
+            if not update.has_update:
+                self._set_skill_repo_commit(repo, update.latest_commit)
+                continue
+            if repo.auto_update:
+                if self._apply_skill_repo_update(repo, automatic=True):
+                    repo_updates += 1
+                else:
+                    pending_repo_updates += 1
+            elif not automatic:
+                if messagebox.askyesno("发现 Skills 仓库更新", f"{repo.url}\n最新提交：{update.short_latest}\n是否拉取并重载？", parent=self.root):
+                    if self._apply_skill_repo_update(repo, automatic=False):
+                        repo_updates += 1
+                else:
+                    pending_repo_updates += 1
+            else:
+                pending_repo_updates += 1
+
+        for project in list(self.projects):
+            if not project.github_repo:
+                continue
+            try:
+                update = self._project_remote_update(project)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                errors.append(f"项目 {project.name}: {exc}")
+                continue
+            if not update.has_update:
+                self._set_project_commit(project, update.latest_commit)
+                continue
+            if project.github_auto_update:
+                if self._apply_project_update(project, update.latest_commit, automatic=True):
+                    project_updates += 1
+                else:
+                    pending_project_updates += 1
+            elif not automatic:
+                if messagebox.askyesno("发现项目更新", f"{project.name}\n最新提交：{update.short_latest}\n是否执行 git pull --ff-only？", parent=self.root):
+                    if self._apply_project_update(project, update.latest_commit, automatic=False):
+                        project_updates += 1
+                else:
+                    pending_project_updates += 1
+            else:
+                pending_project_updates += 1
+
+        self.persist_state()
+        pending_text = ""
+        if pending_repo_updates or pending_project_updates:
+            pending_text = f"，待确认仓库 {pending_repo_updates}、项目 {pending_project_updates}"
+        if errors:
+            return f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {len(errors)} 个。"
+        return f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
 
     def refresh_global_tab(self) -> None:
         self.current_config = self.manager.read_current_config()
@@ -3132,6 +3285,7 @@ class CodexSwitchApp:
             self.project_script_var.set("-")
             self.project_run_var.set("-")
             self.project_github_var.set("-")
+            self.project_github_update_var.set("-")
             self.project_mcp_var.set("-")
             self.project_skills_var.set("-")
             self.project_status_badge.configure(text="未生成", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
@@ -3141,6 +3295,8 @@ class CodexSwitchApp:
         self.project_selected_dir_var.set(project.project_dir)
         self.project_run_var.set(project.run_command or "未配置")
         self.project_github_var.set(project.github_repo or "未配置")
+        commit = project.github_last_sync_commit[:12] if project.github_last_sync_commit else "未同步"
+        self.project_github_update_var.set(f"{'自动' if project.github_auto_update else '手动'} / {commit}")
         self.project_script_var.set(str(self._get_project_script_path(project)))
         self.project_mcp_var.set(self._project_mcp_selection_summary(project))
         self.project_skills_var.set(self._project_skill_selection_summary(project))
@@ -3421,33 +3577,66 @@ class CodexSwitchApp:
         self.refresh_skills_tab()
         self.status_var.set("已删除 Skills 仓库。")
 
+    def _git_remote_commit(self, url: str, ref: str) -> str:
+        completed = subprocess.run(
+            ["git", "ls-remote", url, ref],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            detail = completed.stderr.strip() or "远端没有返回提交信息。"
+            raise RuntimeError(detail)
+        return completed.stdout.split()[0]
+
+    def _git_local_commit(self, git_root: Path) -> str:
+        if not (git_root / ".git").exists():
+            return ""
+        completed = subprocess.run(
+            ["git", "-C", str(git_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        return completed.stdout.strip() if completed.returncode == 0 else ""
+
+    def _skill_repo_remote_update(self, repo: SkillMarketRepo) -> GitRemoteUpdate:
+        latest_commit = self._git_remote_commit(repo.url, repo.branch)
+        previous_commit = repo.last_sync_commit or self._git_local_commit(self._skill_repo_cache_dir(repo))
+        return GitRemoteUpdate(latest_commit=latest_commit, previous_commit=previous_commit)
+
+    def _project_remote_update(self, project: ProjectRecord) -> GitRemoteUpdate:
+        latest_commit = self._git_remote_commit(project.github_repo, "HEAD")
+        previous_commit = project.github_last_sync_commit or self._git_local_commit(project_root_path(project))
+        return GitRemoteUpdate(latest_commit=latest_commit, previous_commit=previous_commit)
+
+    def _set_skill_repo_commit(self, repo: SkillMarketRepo, latest_commit: str) -> SkillMarketRepo:
+        if repo.last_sync_commit == latest_commit:
+            return repo
+        updated = replace(repo, last_sync_commit=latest_commit)
+        self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
+        return updated
+
     def check_selected_skill_repo_update(self) -> None:
         repo = self._selected_skill_repo()
         if not repo:
             messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
             return
         try:
-            completed = subprocess.run(
-                ["git", "ls-remote", repo.url, repo.branch],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            update = self._skill_repo_remote_update(repo)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             messagebox.showerror("检查失败", f"无法检查仓库更新：{exc}", parent=self.root)
             return
-        if completed.returncode != 0 or not completed.stdout.strip():
-            detail = completed.stderr.strip() or "远端没有返回提交信息。"
-            messagebox.showerror("检查失败", detail, parent=self.root)
-            return
-        latest_commit = completed.stdout.split()[0]
-        if latest_commit == repo.last_sync_commit:
+        if not update.has_update:
             messagebox.showinfo("检查完成", "当前已是最新。", parent=self.root)
+            self._set_skill_repo_commit(repo, update.latest_commit)
         else:
-            messagebox.showinfo("检查完成", f"发现更新：{latest_commit[:12]}", parent=self.root)
-        updated = replace(repo, last_sync_commit=latest_commit)
-        self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
+            if messagebox.askyesno("发现更新", f"发现更新：{update.short_latest}。是否拉取并重载到本地组？", parent=self.root):
+                self._apply_skill_repo_update(repo, automatic=False)
+            else:
+                self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
         self.persist_state()
         self.refresh_skills_tab()
 
@@ -3467,6 +3656,16 @@ class CodexSwitchApp:
                 check=False,
             )
         else:
+            remote = subprocess.run(
+                ["git", "-C", str(cache_dir), "remote", "set-url", "origin", repo.url],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            if remote.returncode != 0:
+                detail = remote.stderr.strip() or remote.stdout.strip() or "更新远端地址失败。"
+                raise RuntimeError(detail)
             completed = subprocess.run(
                 ["git", "-C", str(cache_dir), "pull", "--ff-only", "origin", repo.branch],
                 capture_output=True,
@@ -3489,6 +3688,71 @@ class CodexSwitchApp:
             self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
         return cache_dir
 
+    def _import_skill_sources_to_group(
+        self,
+        group: SkillGroup,
+        sources: list[SkillSource],
+        *,
+        replace_existing_from_root: Path | None = None,
+    ) -> tuple[SkillGroup, int]:
+        existing_skills = list(group.skills)
+        if replace_existing_from_root is not None:
+            root_text = str(replace_existing_from_root).casefold()
+            existing_skills = [
+                skill
+                for skill in existing_skills
+                if not skill.source_path or not str(skill.source_path).casefold().startswith(root_text)
+            ]
+        existing_names = {skill.name for skill in existing_skills}
+        imported: list[SkillDefinition] = []
+        for source in sources:
+            if source.name in existing_names:
+                continue
+            try:
+                content = (source.source_path / "SKILL.md").read_text(encoding="utf-8")
+            except OSError:
+                content = ""
+            imported.append(
+                SkillDefinition.create(
+                    source.name,
+                    content=content,
+                    source_path=str(source.source_path),
+                )
+            )
+            existing_names.add(source.name)
+        return replace(group, skills=[*existing_skills, *imported]), len(imported)
+
+    def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool) -> bool:
+        if not repo.installed_group_id:
+            if not automatic:
+                messagebox.showinfo("提示", "该仓库尚未绑定本地 Skills 组，请先使用“安装到组”。", parent=self.root)
+            return False
+        group = self._skill_group_by_id(repo.installed_group_id)
+        if group is None:
+            if not automatic:
+                messagebox.showinfo("提示", "仓库绑定的本地 Skills 组已不存在。", parent=self.root)
+            return False
+        try:
+            cache_dir = self._sync_skill_repo_cache(repo)
+        except RuntimeError as exc:
+            if not automatic:
+                messagebox.showerror("更新失败", str(exc), parent=self.root)
+            return False
+        sources = discover_skill_sources([cache_dir])
+        updated_group, imported_count = self._import_skill_sources_to_group(
+            group,
+            sources,
+            replace_existing_from_root=cache_dir,
+        )
+        self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
+        self._sync_projects_from_skill_groups()
+        self.persist_state()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        if not automatic:
+            self.status_var.set(f"已重载 Skills 仓库：{repo.url}，导入 {imported_count} 个 Skills。")
+        return True
+
     def install_selected_skill_repo_to_group(self) -> None:
         repo = self._selected_skill_repo()
         if not repo:
@@ -3510,33 +3774,61 @@ class CodexSwitchApp:
             messagebox.showerror("安装失败", str(exc), parent=self.root)
             return
         sources = discover_skill_sources([cache_dir])
-        existing_names = {skill.name for skill in group.skills}
-        imported: list[SkillDefinition] = []
-        for source in sources:
-            if source.name in existing_names:
-                continue
-            try:
-                content = (source.source_path / "SKILL.md").read_text(encoding="utf-8")
-            except OSError:
-                content = ""
-            imported.append(
-                SkillDefinition.create(
-                    source.name,
-                    content=content,
-                    source_path=str(source.source_path),
-                )
-            )
-        if not imported:
-            messagebox.showinfo("提示", "仓库中没有新的 Skills 可安装。", parent=self.root)
+        updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
+        synced_repo = self._skill_repo_by_id(repo.id) or repo
+        updated_repo = replace(synced_repo, installed_group_id=group.id)
+        self.skill_market_repos = [updated_repo if item.id == updated_repo.id else item for item in self.skill_market_repos]
+        if not imported_count:
             self.persist_state()
             self.refresh_skills_tab()
+            messagebox.showinfo("提示", "仓库中没有新的 Skills，已绑定到目标组。", parent=self.root)
             return
-        updated_group = replace(group, skills=[*group.skills, *imported])
         self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
         self.persist_state()
         self.refresh_project_tab()
         self.refresh_skills_tab()
-        self.status_var.set(f"已从仓库安装 {len(imported)} 个 Skills 到 {group.name}。")
+        self.status_var.set(f"已从仓库安装 {imported_count} 个 Skills 到 {group.name}。")
+
+    def _set_project_commit(self, project: ProjectRecord, latest_commit: str) -> ProjectRecord:
+        if project.github_last_sync_commit == latest_commit:
+            return project
+        updated = replace(project, github_last_sync_commit=latest_commit, updated_at=now_iso())
+        self.projects = [updated if item.id == updated.id else item for item in self.projects]
+        return updated
+
+    def _apply_project_update(self, project: ProjectRecord, latest_commit: str, *, automatic: bool) -> bool:
+        project_root = project_root_path(project)
+        if not (project_root / ".git").exists():
+            if not automatic:
+                messagebox.showinfo("提示", "项目目录不是 Git 仓库，无法自动拉取。", parent=self.root)
+            return False
+        completed = subprocess.run(
+            ["git", "-C", str(project_root), "pull", "--ff-only"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "git pull 失败。"
+            if not automatic:
+                messagebox.showerror("更新失败", detail, parent=self.root)
+            return False
+        local_commit = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        synced_commit = local_commit.stdout.strip() if local_commit.returncode == 0 and local_commit.stdout.strip() else latest_commit
+        self._set_project_commit(project, synced_commit)
+        self.persist_state()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        if not automatic:
+            self.status_var.set(f"已更新项目代码：{project.name} @ {synced_commit[:12]}")
+        return True
 
     def check_selected_project_update(self) -> None:
         project = self.get_selected_project()
@@ -3547,23 +3839,20 @@ class CodexSwitchApp:
             messagebox.showinfo("提示", "该项目未配置 GitHub 地址。", parent=self.root)
             return
         try:
-            completed = subprocess.run(
-                ["git", "ls-remote", project.github_repo, "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            update = self._project_remote_update(project)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             messagebox.showerror("检查失败", f"无法检查项目更新：{exc}", parent=self.root)
             return
-        if completed.returncode != 0 or not completed.stdout.strip():
-            detail = completed.stderr.strip() or "远端没有返回提交信息。"
-            messagebox.showerror("检查失败", detail, parent=self.root)
+        if not update.has_update:
+            self._set_project_commit(project, update.latest_commit)
+            self.persist_state()
+            self.refresh_project_tab()
+            messagebox.showinfo("检查完成", "项目远端已是最新。", parent=self.root)
             return
-        latest_commit = completed.stdout.split()[0]
-        messagebox.showinfo("检查完成", f"远端 HEAD：{latest_commit[:12]}", parent=self.root)
-        self.status_var.set(f"项目远端 HEAD：{latest_commit[:12]}")
+        if messagebox.askyesno("发现更新", f"发现项目更新：{update.short_latest}。是否执行 git pull --ff-only？", parent=self.root):
+            self._apply_project_update(project, update.latest_commit, automatic=False)
+        else:
+            self.status_var.set(f"已保留待更新的项目：{update.short_latest}")
 
     def add_skill_group(self) -> None:
         name = simpledialog.askstring("Skills组", "组名：", parent=self.root)
@@ -3890,6 +4179,8 @@ class CodexSwitchApp:
             account_pool_settings=self.account_pool_settings,
             skill_groups=self.skill_groups,
             skill_market_repos=self.skill_market_repos,
+            hot_update_enabled=self.hot_update_enabled,
+            hot_update_interval_minutes=self.hot_update_interval_minutes,
         )
 
     def save_settings(self) -> None:
@@ -3899,10 +4190,17 @@ class CodexSwitchApp:
             self.account_pool_recovery_interval_var.get()
         )
         self.account_pool_recovery_interval_var.set(str(self.account_pool_settings.recovery_interval_minutes))
+        self.hot_update_enabled = bool(self.hot_update_enabled_var.get())
+        self.hot_update_interval_minutes = normalize_hot_update_interval_minutes(self.hot_update_interval_var.get())
+        self.hot_update_interval_var.set(str(self.hot_update_interval_minutes))
         self.persist_state()
         self.settings_hint_var.set(
             f"已保存设置：模型批量测试最多 {self.model_batch_concurrency} 个并发请求，"
-            f"号池检测间隔 {self.account_pool_settings.recovery_interval_minutes} 分钟。"
+            f"号池检测间隔 {self.account_pool_settings.recovery_interval_minutes} 分钟，"
+            f"热更新轮询 {'开启' if self.hot_update_enabled else '关闭'}。"
+        )
+        self.hot_update_status_var.set(
+            f"热更新轮询：{'已启用' if self.hot_update_enabled else '未启用'}，间隔 {self.hot_update_interval_minutes} 分钟。"
         )
         self.status_var.set("已保存设置。")
 
@@ -4547,6 +4845,7 @@ class CodexSwitchApp:
             skill_group_ids=dialog.result["skill_group_ids"],
             skills=dialog.result["skills"],
             github_repo=dialog.result["github_repo"],
+            github_auto_update=dialog.result["github_auto_update"],
             codex_profile_id=dialog.result["codex_profile_id"],
             claude_profile_id=dialog.result["claude_profile_id"],
         )
@@ -4641,6 +4940,7 @@ class CodexSwitchApp:
             skill_group_ids=dialog.result["skill_group_ids"],
             skills=dialog.result["skills"],
             github_repo=dialog.result["github_repo"],
+            github_auto_update=dialog.result["github_auto_update"],
             updated_at=now_iso(),
         )
         api_binding_changed = project_codex_binding_changed(project, updated)

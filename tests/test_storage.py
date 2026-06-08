@@ -13,6 +13,9 @@ from codex_switch.models import (
     ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
+    DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
+    HOT_UPDATE_INTERVAL_MINUTES_MAX,
+    HOT_UPDATE_INTERVAL_MINUTES_MIN,
     HealthResult,
     PROFILE_CATEGORY_IMAGE_GENERATION,
     PROFILE_CATEGORY_TEXT,
@@ -33,6 +36,7 @@ from codex_switch.models import (
     VENDOR_GENERIC,
     model_vendor_stats,
     models_by_vendor,
+    normalize_hot_update_interval_minutes,
     normalize_profile_vendor,
     profile_supports_codex,
     today_iso,
@@ -68,6 +72,8 @@ class ProfileStoreTests(unittest.TestCase):
                 account_pool_settings,
                 skill_groups,
                 skill_market_repos,
+                hot_update_enabled,
+                hot_update_interval_minutes,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -99,6 +105,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(account_pool_settings.channels, [])
             self.assertEqual(skill_groups, [])
             self.assertEqual(skill_market_repos, [])
+            self.assertFalse(hot_update_enabled)
+            self.assertEqual(hot_update_interval_minutes, DEFAULT_HOT_UPDATE_INTERVAL_MINUTES)
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -109,7 +117,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 13)
+            self.assertEqual(payload["version"], 14)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -166,7 +174,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 13)
+            self.assertEqual(payload["version"], 14)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -270,6 +278,8 @@ class ProfileStoreTests(unittest.TestCase):
                 skill_group_ids=["group-1"],
                 skills=[skill],
                 github_repo="https://github.com/example/project",
+                github_last_sync_commit="def456",
+                github_auto_update=True,
                 codex_profile_id="codex-profile",
                 claude_profile_id="claude-profile",
             )
@@ -283,6 +293,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded_projects[0].skill_group_ids, ["group-1"])
             self.assertEqual(loaded_projects[0].skills[0].name, "frontend-dev")
             self.assertEqual(loaded_projects[0].github_repo, "https://github.com/example/project")
+            self.assertEqual(loaded_projects[0].github_last_sync_commit, "def456")
+            self.assertTrue(loaded_projects[0].github_auto_update)
             self.assertEqual(loaded_projects[0].profile_id, "codex-profile")
             self.assertEqual(loaded_projects[0].codex_profile_id, "codex-profile")
             self.assertEqual(loaded_projects[0].claude_profile_id, "claude-profile")
@@ -291,6 +303,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(payload["projects"][0]["skill_group_ids"], ["group-1"])
             self.assertEqual(payload["projects"][0]["skills"][0]["name"], "frontend-dev")
             self.assertEqual(payload["projects"][0]["github_repo"], "https://github.com/example/project")
+            self.assertEqual(payload["projects"][0]["github_last_sync_commit"], "def456")
+            self.assertTrue(payload["projects"][0]["github_auto_update"])
             self.assertEqual(payload["projects"][0]["codex_profile_id"], "codex-profile")
             self.assertEqual(payload["projects"][0]["claude_profile_id"], "claude-profile")
 
@@ -304,9 +318,17 @@ class ProfileStoreTests(unittest.TestCase):
                 branch="main",
                 last_sync_commit="abc123",
                 auto_update=True,
+                installed_group_id=group.id,
             )
 
-            store.save([], None, skill_groups=[group], skill_market_repos=[repo])
+            store.save(
+                [],
+                None,
+                skill_groups=[group],
+                skill_market_repos=[repo],
+                hot_update_enabled=True,
+                hot_update_interval_minutes=15,
+            )
             loaded = store.load()
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
 
@@ -314,8 +336,14 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[16][0].skills[0].content, "Use Python carefully.")
             self.assertEqual(loaded[17][0].url, "https://github.com/example/skills")
             self.assertTrue(loaded[17][0].auto_update)
+            self.assertEqual(loaded[17][0].installed_group_id, group.id)
+            self.assertTrue(loaded[18])
+            self.assertEqual(loaded[19], 15)
             self.assertEqual(payload["settings"]["skill_groups"][0]["skills"][0]["name"], "python-helper")
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["last_sync_commit"], "abc123")
+            self.assertEqual(payload["settings"]["skill_market_repos"][0]["installed_group_id"], group.id)
+            self.assertTrue(payload["settings"]["hot_update_enabled"])
+            self.assertEqual(payload["settings"]["hot_update_interval_minutes"], 15)
 
     def test_store_loads_legacy_project_without_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -515,3 +543,8 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertEqual(clamp_model_batch_concurrency(0), 1)
         self.assertEqual(clamp_model_batch_concurrency(9), 5)
         self.assertEqual(clamp_model_batch_concurrency("bad"), DEFAULT_MODEL_BATCH_CONCURRENCY)
+
+    def test_hot_update_interval_is_normalized(self) -> None:
+        self.assertEqual(normalize_hot_update_interval_minutes(0), HOT_UPDATE_INTERVAL_MINUTES_MIN)
+        self.assertEqual(normalize_hot_update_interval_minutes(2000), HOT_UPDATE_INTERVAL_MINUTES_MAX)
+        self.assertEqual(normalize_hot_update_interval_minutes("bad"), DEFAULT_HOT_UPDATE_INTERVAL_MINUTES)

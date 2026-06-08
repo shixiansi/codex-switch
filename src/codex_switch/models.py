@@ -87,6 +87,9 @@ DEFAULT_ACCOUNT_POOL_GROUP_NAME = "默认号池"
 DEFAULT_ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES = 5
 ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MIN = 1
 ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MAX = 1440
+DEFAULT_HOT_UPDATE_INTERVAL_MINUTES = 30
+HOT_UPDATE_INTERVAL_MINUTES_MIN = 5
+HOT_UPDATE_INTERVAL_MINUTES_MAX = 1440
 
 
 def now_iso() -> str:
@@ -281,6 +284,18 @@ def normalize_account_pool_recovery_interval_minutes(value: int | str | None) ->
     return max(
         ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MIN,
         min(ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MAX, minutes),
+    )
+
+
+def normalize_hot_update_interval_minutes(value: int | str | None) -> int:
+    try:
+        source = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES if value is None or value == "" else value
+        minutes = int(source)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
+    return max(
+        HOT_UPDATE_INTERVAL_MINUTES_MIN,
+        min(HOT_UPDATE_INTERVAL_MINUTES_MAX, minutes),
     )
 
 
@@ -1139,6 +1154,7 @@ class SkillMarketRepo:
     branch: str = "main"
     last_sync_commit: str = ""
     auto_update: bool = False
+    installed_group_id: str = ""
 
     @classmethod
     def create(
@@ -1148,6 +1164,7 @@ class SkillMarketRepo:
         branch: str = "main",
         last_sync_commit: str = "",
         auto_update: bool = False,
+        installed_group_id: str = "",
     ) -> "SkillMarketRepo":
         return cls(
             id=str(uuid.uuid4()),
@@ -1155,6 +1172,7 @@ class SkillMarketRepo:
             branch=branch.strip() or "main",
             last_sync_commit=last_sync_commit.strip(),
             auto_update=bool(auto_update),
+            installed_group_id=installed_group_id.strip(),
         )
 
     @classmethod
@@ -1165,6 +1183,7 @@ class SkillMarketRepo:
             branch=str(data.get("branch") or "main").strip() or "main",
             last_sync_commit=str(data.get("last_sync_commit") or "").strip(),
             auto_update=bool(data.get("auto_update", False)),
+            installed_group_id=str(data.get("installed_group_id") or "").strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1188,6 +1207,8 @@ class ProjectRecord:
     skill_group_ids: list[str] | None = None
     skills: list[SkillDefinition] = field(default_factory=list)
     github_repo: str = ""
+    github_last_sync_commit: str = ""
+    github_auto_update: bool = False
 
     @classmethod
     def create(
@@ -1201,6 +1222,8 @@ class ProjectRecord:
         skill_group_ids: list[str] | None = None,
         skills: list[SkillDefinition] | None = None,
         github_repo: str = "",
+        github_last_sync_commit: str = "",
+        github_auto_update: bool = False,
         codex_profile_id: str | None = None,
         claude_profile_id: str | None = None,
     ) -> "ProjectRecord":
@@ -1225,6 +1248,8 @@ class ProjectRecord:
             skill_group_ids=list(skill_group_ids) if skill_group_ids is not None else None,
             skills=list(skills or []),
             github_repo=github_repo.strip(),
+            github_last_sync_commit=github_last_sync_commit.strip(),
+            github_auto_update=bool(github_auto_update),
         )
 
     @classmethod
@@ -1280,6 +1305,8 @@ class ProjectRecord:
             skill_group_ids=skill_group_ids,
             skills=skills,
             github_repo=str(data.get("github_repo", "") or "").strip(),
+            github_last_sync_commit=str(data.get("github_last_sync_commit", "") or "").strip(),
+            github_auto_update=bool(data.get("github_auto_update", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
