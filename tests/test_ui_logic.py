@@ -1960,6 +1960,49 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
             self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
 
+    def test_project_hot_update_can_read_public_github_repo(self) -> None:
+        if os.environ.get("CODEX_SWITCH_RUN_GITHUB_NETWORK") != "1":
+            self.skipTest("set CODEX_SWITCH_RUN_GITHUB_NETWORK=1 to run public GitHub integration")
+        git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
+        if git_available.returncode != 0:
+            self.skipTest("git is not available")
+
+        repo_url = os.environ.get("CODEX_SWITCH_GITHUB_TEST_REPO", "https://github.com/octocat/Hello-World")
+
+        def run_git(*args: str, timeout: int = 120) -> str:
+            completed = subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+            if completed.returncode != 0:
+                raise AssertionError(completed.stderr.strip() or completed.stdout.strip())
+            return completed.stdout.strip()
+
+        with workspace_tempdir() as temp_dir:
+            local_repo = temp_dir / "public-github"
+            run_git("clone", "--depth", "1", repo_url, str(local_repo))
+            local_commit = run_git("-C", str(local_repo), "rev-parse", "HEAD", timeout=20)
+            project = ProjectRecord.create(
+                str(local_repo),
+                "profile-id",
+                github_repo=repo_url,
+                github_last_sync_commit=local_commit,
+                github_auto_update=True,
+            )
+            app = _make_minimal_app()
+            app.projects = [project]
+
+            update = app._project_remote_update(project)
+            applied = app._apply_project_update(project, update.latest_commit, automatic=True)
+
+            self.assertTrue(applied)
+            self.assertTrue(update.latest_commit)
+            self.assertEqual(app.projects[0].github_last_sync_commit, update.latest_commit)
+            self.assertGreaterEqual(app.persist_count, 1)
+
     def test_add_account_pool_channel_saves_only_after_models_check_success(self) -> None:
         class FakeRoot:
             def wait_window(self, _dialog) -> None:
