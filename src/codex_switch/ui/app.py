@@ -4528,6 +4528,34 @@ class CodexSwitchApp:
                 group_ids.append(group_id)
         return group_ids
 
+    def _project_metadata_profile_id(self, payload: dict, key: str, current_id: str, supports_profile) -> str:
+        raw_profile_id = payload.get(key)
+        if raw_profile_id is None:
+            raw_profile_id = payload.get("profile_id")
+        candidate_id = str(raw_profile_id or "").strip()
+        if not candidate_id:
+            return current_id
+        profile = self._profile_by_id(candidate_id)
+        if profile is None or not supports_profile(profile):
+            return current_id
+        return profile.id
+
+    def _project_metadata_profile_ids(self, payload: dict, project: ProjectRecord) -> tuple[str, str]:
+        return (
+            self._project_metadata_profile_id(
+                payload,
+                "codex_profile_id",
+                project_codex_profile_id(project),
+                profile_supports_codex,
+            ),
+            self._project_metadata_profile_id(
+                payload,
+                "claude_profile_id",
+                project_claude_profile_id(project),
+                profile_supports_claude,
+            ),
+        )
+
     def _load_project_metadata_from_repo(self, project: ProjectRecord, repo_root: Path) -> tuple[ProjectRecord, bool]:
         for relative_path in PROJECT_METADATA_RELATIVE_PATHS:
             metadata_path = repo_root / relative_path
@@ -4539,13 +4567,43 @@ class CodexSwitchApp:
                 continue
             if not isinstance(payload, dict):
                 continue
-            group_ids = self._project_metadata_group_ids(payload)
-            if group_ids is None:
+            has_group_metadata = "skill_group_ids" in payload or "skill_groups" in payload
+            has_profile_metadata = any(
+                key in payload
+                for key in ("profile_id", "codex_profile_id", "claude_profile_id")
+            )
+            if not has_group_metadata and not has_profile_metadata:
                 continue
-            skills, names = self._expanded_skills_for_group_ids(group_ids)
-            if project.skill_group_ids == group_ids and project.skills == skills and project.skill_names == names:
+            if has_group_metadata:
+                group_ids = self._project_metadata_group_ids(payload)
+                if group_ids is None:
+                    continue
+                skills, names = self._expanded_skills_for_group_ids(group_ids)
+            else:
+                group_ids = project.skill_group_ids
+                skills = list(project.skills)
+                names = None if project.skill_names is None else list(project.skill_names)
+            codex_profile_id, claude_profile_id = self._project_metadata_profile_ids(payload, project)
+            profile_id = codex_profile_id or claude_profile_id or project.profile_id
+            if (
+                project.skill_group_ids == group_ids
+                and project.skills == skills
+                and project.skill_names == names
+                and project_codex_profile_id(project) == codex_profile_id
+                and project_claude_profile_id(project) == claude_profile_id
+                and project.profile_id == profile_id
+            ):
                 return project, False
-            updated = replace(project, skill_group_ids=group_ids, skills=skills, skill_names=names, updated_at=now_iso())
+            updated = replace(
+                project,
+                profile_id=profile_id,
+                codex_profile_id=codex_profile_id,
+                claude_profile_id=claude_profile_id,
+                skill_group_ids=group_ids,
+                skills=skills,
+                skill_names=names,
+                updated_at=now_iso(),
+            )
             self.projects = [updated if item.id == updated.id else item for item in self.projects]
             return updated, True
         return project, False
@@ -4710,13 +4768,25 @@ class CodexSwitchApp:
             if not automatic:
                 messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
+        previous_codex_profile_id = project_codex_profile_id(project)
+        previous_claude_profile_id = project_claude_profile_id(project)
         updated_project, project_metadata_updated = self._load_project_metadata_from_repo(project, project_root)
+        sync_codex = project_codex_profile_id(updated_project) != previous_codex_profile_id
+        sync_claude = project_claude_profile_id(updated_project) != previous_claude_profile_id
+        if sync_codex or sync_claude:
+            if not self._sync_project_api_binding(
+                updated_project,
+                sync_codex=sync_codex,
+                sync_claude=sync_claude,
+            ):
+                self.projects = [project if item.id == updated_project.id else item for item in self.projects]
+                return False
         self._set_project_commit(updated_project, synced_commit)
         self.persist_state()
         self.refresh_project_tab()
         self.refresh_skills_tab()
         if not automatic:
-            metadata_text = "，项目 Skills 已同步" if project_metadata_updated else ""
+            metadata_text = "，项目元数据已同步" if project_metadata_updated else ""
             self.status_var.set(f"已更新项目代码：{project.name} @ {synced_commit[:12]}{metadata_text}")
         return True
 

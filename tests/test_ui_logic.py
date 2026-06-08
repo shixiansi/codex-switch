@@ -1411,6 +1411,63 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(updated.skill_names, ["new-helper"])
             self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
 
+    def test_project_metadata_reloads_profile_ids_from_repo(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            old_codex = Profile.create("old-codex", "https://old-codex.example.com", "sk-old-codex", vendor=VENDOR_CODEX)
+            old_claude = Profile.create("old-claude", "https://old-claude.example.com", "sk-old-claude", vendor=VENDOR_CLAUDE)
+            new_codex = Profile.create("new-codex", "https://new-codex.example.com", "sk-new-codex", vendor=VENDOR_CODEX)
+            new_claude = Profile.create("new-claude", "https://new-claude.example.com", "sk-new-claude", vendor=VENDOR_CLAUDE)
+            project = ProjectRecord.create(
+                str(temp_dir),
+                old_codex.id,
+                codex_profile_id=old_codex.id,
+                claude_profile_id=old_claude.id,
+            )
+            metadata_dir = temp_dir / ".codex-switch"
+            metadata_dir.mkdir()
+            (metadata_dir / "project.json").write_text(
+                json.dumps({"codex_profile_id": new_codex.id, "claude_profile_id": new_claude.id}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.profiles = [old_codex, old_claude, new_codex, new_claude]
+            app.projects = [project]
+
+            updated, changed = app._load_project_metadata_from_repo(project, temp_dir)
+
+            self.assertTrue(changed)
+            self.assertEqual(updated.profile_id, new_codex.id)
+            self.assertEqual(project_codex_profile_id(updated), new_codex.id)
+            self.assertEqual(project_claude_profile_id(updated), new_claude.id)
+            self.assertEqual(project_codex_profile_id(app.projects[0]), new_codex.id)
+            self.assertEqual(project_claude_profile_id(app.projects[0]), new_claude.id)
+
+    def test_project_metadata_ignores_unknown_or_unsupported_profile_ids(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+            claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+            project = ProjectRecord.create(
+                str(temp_dir),
+                codex.id,
+                codex_profile_id=codex.id,
+                claude_profile_id=claude.id,
+            )
+            (temp_dir / "codex-switch-project.json").write_text(
+                json.dumps({"codex_profile_id": claude.id, "claude_profile_id": "missing-profile"}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.profiles = [codex, claude]
+            app.projects = [project]
+
+            updated, changed = app._load_project_metadata_from_repo(project, temp_dir)
+
+            self.assertFalse(changed)
+            self.assertEqual(project_codex_profile_id(updated), codex.id)
+            self.assertEqual(project_claude_profile_id(updated), claude.id)
+            self.assertEqual(project_codex_profile_id(app.projects[0]), codex.id)
+            self.assertEqual(project_claude_profile_id(app.projects[0]), claude.id)
+
     def test_project_metadata_ignores_unknown_skill_group_ids(self) -> None:
         with workspace_tempdir() as temp_dir:
             skill = SkillDefinition.create("old-helper", content="old")
@@ -1482,8 +1539,113 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(app.projects[0].github_last_sync_commit, "newcommit")
             self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
             self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
-            self.assertIn("项目 Skills 已同步", app.status_var.get())
+            self.assertIn("项目元数据已同步", app.status_var.get())
             self.assertEqual(app.persist_count, 1)
+
+    def test_project_update_syncs_api_binding_after_metadata_profile_change(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            (temp_dir / ".git").mkdir()
+            old_codex = Profile.create("old-codex", "https://old-codex.example.com", "sk-old-codex", vendor=VENDOR_CODEX)
+            old_claude = Profile.create("old-claude", "https://old-claude.example.com", "sk-old-claude", vendor=VENDOR_CLAUDE)
+            new_codex = Profile.create("new-codex", "https://new-codex.example.com", "sk-new-codex", vendor=VENDOR_CODEX)
+            new_claude = Profile.create("new-claude", "https://new-claude.example.com", "sk-new-claude", vendor=VENDOR_CLAUDE)
+            project = ProjectRecord.create(
+                str(temp_dir),
+                old_codex.id,
+                codex_profile_id=old_codex.id,
+                claude_profile_id=old_claude.id,
+                github_repo="https://github.com/example/project",
+                github_last_sync_commit="oldcommit",
+            )
+            metadata_dir = temp_dir / ".codex-switch"
+            metadata_dir.mkdir()
+            (metadata_dir / "project.json").write_text(
+                json.dumps({"codex_profile_id": new_codex.id, "claude_profile_id": new_claude.id}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.profiles = [old_codex, old_claude, new_codex, new_claude]
+            app.projects = [project]
+            sync_calls = []
+
+            def fake_sync_project_api_binding(project_arg, *, sync_codex=True, sync_claude=True):
+                sync_calls.append((project_arg, sync_codex, sync_claude))
+                return True
+
+            app._sync_project_api_binding = fake_sync_project_api_binding
+
+            def fake_run(args, **_kwargs):
+                if args[-2:] == ["pull", "--ff-only"]:
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="newcommit\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                applied = app._apply_project_update(project, "newcommit", automatic=False)
+
+            self.assertTrue(applied)
+            self.assertEqual(len(sync_calls), 1)
+            synced_project, sync_codex, sync_claude = sync_calls[0]
+            self.assertTrue(sync_codex)
+            self.assertTrue(sync_claude)
+            self.assertEqual(project_codex_profile_id(synced_project), new_codex.id)
+            self.assertEqual(project_claude_profile_id(synced_project), new_claude.id)
+            self.assertEqual(app.projects[0].github_last_sync_commit, "newcommit")
+            self.assertEqual(app.persist_count, 1)
+
+    def test_project_update_rolls_back_metadata_profile_change_when_api_sync_fails(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            (temp_dir / ".git").mkdir()
+            old_codex = Profile.create("old-codex", "https://old-codex.example.com", "sk-old-codex", vendor=VENDOR_CODEX)
+            old_claude = Profile.create("old-claude", "https://old-claude.example.com", "sk-old-claude", vendor=VENDOR_CLAUDE)
+            new_codex = Profile.create("new-codex", "https://new-codex.example.com", "sk-new-codex", vendor=VENDOR_CODEX)
+            project = ProjectRecord.create(
+                str(temp_dir),
+                old_codex.id,
+                codex_profile_id=old_codex.id,
+                claude_profile_id=old_claude.id,
+                github_repo="https://github.com/example/project",
+                github_last_sync_commit="oldcommit",
+            )
+            metadata_dir = temp_dir / ".codex-switch"
+            metadata_dir.mkdir()
+            (metadata_dir / "project.json").write_text(
+                json.dumps({"codex_profile_id": new_codex.id}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.profiles = [old_codex, old_claude, new_codex]
+            app.projects = [project]
+            app._sync_project_api_binding = lambda *_args, **_kwargs: False
+
+            def fake_run(args, **_kwargs):
+                if args[-2:] == ["pull", "--ff-only"]:
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="newcommit\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                applied = app._apply_project_update(project, "newcommit", automatic=False)
+
+            self.assertFalse(applied)
+            self.assertEqual(project_codex_profile_id(app.projects[0]), old_codex.id)
+            self.assertEqual(project_claude_profile_id(app.projects[0]), old_claude.id)
+            self.assertEqual(app.projects[0].github_last_sync_commit, "oldcommit")
+            self.assertEqual(app.persist_count, 0)
 
     def test_project_update_rejects_head_mismatch_after_git_pull(self) -> None:
         class FakeCompleted:
