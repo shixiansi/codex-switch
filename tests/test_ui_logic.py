@@ -138,6 +138,9 @@ def _make_minimal_app() -> CodexSwitchApp:
     app.hot_update_events = []
     app.status_var = _ValueVar("")
     app.skill_repo_preview_var = _ValueVar("")
+    app.skill_repo_preview_filter_var = _ValueVar("")
+    app.skill_repo_preview_sources = []
+    app.skill_repo_preview_repo_id = ""
     app.persist_count = 0
     app.persist_state = lambda: setattr(app, "persist_count", app.persist_count + 1)
     app.refresh_project_tab = lambda: None
@@ -1101,6 +1104,52 @@ class UiFilterTests(unittest.TestCase):
             sources = app._preview_skill_repo_sources(repo)
 
             self.assertEqual([source.name for source in sources], ["alpha-helper", "beta-helper"])
+
+    def test_skill_repo_preview_filter_uses_cached_sources(self) -> None:
+        class FakePreviewTree:
+            def __init__(self) -> None:
+                self.rows: dict[str, tuple[str, str]] = {}
+
+            def get_children(self) -> list[str]:
+                return list(self.rows)
+
+            def delete(self, item_id: str) -> None:
+                self.rows.pop(item_id, None)
+
+            def insert(self, _parent: str, _index: str, *, iid: str, values: tuple[str, str]) -> None:
+                self.rows[iid] = values
+
+        with workspace_tempdir() as temp_dir:
+            repo = SkillMarketRepo.create("https://github.com/example/skills")
+            sources = [
+                SkillSource("alpha-helper", "Alpha Helper", temp_dir / "alpha-helper"),
+                SkillSource("beta-helper", "Beta Helper", temp_dir / "tooling" / "beta-helper"),
+                SkillSource("gamma-helper", "Gamma Helper", temp_dir / "category" / "gamma-helper"),
+            ]
+            app = _make_minimal_app()
+            app.skill_market_repos = [repo]
+            app.skill_repo_preview_tree = FakePreviewTree()
+
+            app._render_skill_repo_preview(repo, sources)
+
+            self.assertEqual(set(app.skill_repo_preview_tree.rows), {str(source.source_path) for source in sources})
+
+            app.skill_repo_preview_filter_var.set("beta")
+            app.apply_skill_repo_preview_filter()
+
+            self.assertEqual(list(app.skill_repo_preview_tree.rows.values())[0][0], "beta-helper")
+            self.assertIn("1 / 3", app.skill_repo_preview_var.get())
+            self.assertEqual([source.name for source in app.skill_repo_preview_sources], ["alpha-helper", "beta-helper", "gamma-helper"])
+
+            app.skill_repo_preview_filter_var.set("category")
+            app.apply_skill_repo_preview_filter()
+
+            self.assertEqual(list(app.skill_repo_preview_tree.rows.values())[0][0], "gamma-helper")
+
+            app.clear_skill_repo_preview_filter()
+            app.apply_skill_repo_preview_filter()
+
+            self.assertEqual(set(app.skill_repo_preview_tree.rows), {str(source.source_path) for source in sources})
 
     def test_skill_repo_preview_sync_does_not_mark_repo_synced(self) -> None:
         class FakeCompleted:

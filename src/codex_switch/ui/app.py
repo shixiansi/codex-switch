@@ -883,6 +883,9 @@ class CodexSwitchApp:
         self.skills_hint_var = tk.StringVar(value="管理 Skills 仓库、本地组和项目关联。")
         self.skill_repo_detail_var = tk.StringVar(value="未选择仓库")
         self.skill_repo_preview_var = tk.StringVar(value="未选择仓库")
+        self.skill_repo_preview_filter_var = tk.StringVar(value="")
+        self.skill_repo_preview_sources: list[SkillSource] = []
+        self.skill_repo_preview_repo_id = ""
         self.skill_group_detail_var = tk.StringVar(value="未选择 Skills 组")
         self.skill_project_detail_var = tk.StringVar(value="未选择项目")
         self.docs_hint_var = tk.StringVar(value="编辑后的 AGENTS 模板会用于后续项目模板生成。")
@@ -1828,11 +1831,19 @@ class CodexSwitchApp:
         preview = tk.Frame(parent, bg=PALETTE["card_bg"])
         preview.grid(row=0, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
-        preview.rowconfigure(2, weight=1)
+        preview.rowconfigure(3, weight=1)
         tk.Label(preview, text="仓库 Skills 预览", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
         tk.Label(preview, textvariable=self.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font, wraplength=360, justify="left").grid(row=1, column=0, sticky="w", pady=(4, 8))
+        filter_bar = tk.Frame(preview, bg=PALETTE["card_bg"])
+        filter_bar.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        filter_bar.columnconfigure(1, weight=1)
+        tk.Label(filter_bar, text="筛选", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.skill_repo_preview_filter_entry = ttk.Entry(filter_bar, textvariable=self.skill_repo_preview_filter_var)
+        self.skill_repo_preview_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(filter_bar, text="清除", variant="secondary", command=self.clear_skill_repo_preview_filter).grid(row=0, column=2, sticky="e")
+        self.skill_repo_preview_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_preview_filter())
         preview_wrap = tk.Frame(preview, bg=PALETTE["card_bg"])
-        preview_wrap.grid(row=2, column=0, sticky="nsew")
+        preview_wrap.grid(row=3, column=0, sticky="nsew")
         preview_wrap.columnconfigure(0, weight=1)
         preview_wrap.rowconfigure(0, weight=1)
         self.skill_repo_preview_tree = ttk.Treeview(preview_wrap, columns=("name", "path"), show="headings")
@@ -1845,7 +1856,7 @@ class CodexSwitchApp:
         preview_scroll.grid(row=0, column=1, sticky="ns")
         self.skill_repo_preview_tree.configure(yscrollcommand=preview_scroll.set)
         preview_actions = tk.Frame(preview, bg=PALETTE["card_bg"])
-        preview_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        preview_actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         preview_actions.columnconfigure(0, weight=1)
         make_button(
             preview_actions,
@@ -3894,6 +3905,10 @@ class CodexSwitchApp:
         self._refresh_skill_project_detail()
 
     def _clear_skill_repo_preview(self, message: str = "未选择仓库") -> None:
+        self.skill_repo_preview_sources = []
+        self.skill_repo_preview_repo_id = ""
+        if hasattr(self, "skill_repo_preview_filter_var"):
+            self.skill_repo_preview_filter_var.set("")
         if hasattr(self, "skill_repo_preview_var"):
             self.skill_repo_preview_var.set(message)
         if hasattr(self, "skill_repo_preview_tree"):
@@ -3901,6 +3916,25 @@ class CodexSwitchApp:
                 self.skill_repo_preview_tree.delete(item)
 
     def _render_skill_repo_preview(self, repo: SkillMarketRepo, sources: list[SkillSource]) -> None:
+        self.skill_repo_preview_repo_id = repo.id
+        self.skill_repo_preview_sources = list(sources)
+        self._render_skill_repo_preview_rows(repo, self._filtered_skill_repo_preview_sources(sources))
+
+    def _filtered_skill_repo_preview_sources(self, sources: list[SkillSource] | None = None) -> list[SkillSource]:
+        candidates = list(self.skill_repo_preview_sources if sources is None else sources)
+        query_var = getattr(self, "skill_repo_preview_filter_var", None)
+        query = query_var.get().strip().casefold() if query_var is not None else ""
+        if not query:
+            return candidates
+        return [
+            source
+            for source in candidates
+            if query in source.name.casefold()
+            or query in source.display_name.casefold()
+            or query in str(source.source_path).casefold()
+        ]
+
+    def _render_skill_repo_preview_rows(self, repo: SkillMarketRepo, sources: list[SkillSource]) -> None:
         if not hasattr(self, "skill_repo_preview_tree"):
             return
         for item in self.skill_repo_preview_tree.get_children():
@@ -3912,7 +3946,23 @@ class CodexSwitchApp:
                 iid=str(source.source_path),
                 values=(source.name, compact_text(str(source.source_path), 54)),
             )
-        self.skill_repo_preview_var.set(f"{repo.url}：{len(sources)} 个 Skills。")
+        total_count = len(self.skill_repo_preview_sources)
+        visible_count = len(sources)
+        query = self.skill_repo_preview_filter_var.get().strip() if hasattr(self, "skill_repo_preview_filter_var") else ""
+        if query:
+            self.skill_repo_preview_var.set(f"{repo.url}：{visible_count} / {total_count} 个 Skills，筛选“{query}”。")
+        else:
+            self.skill_repo_preview_var.set(f"{repo.url}：{total_count} 个 Skills。")
+
+    def apply_skill_repo_preview_filter(self) -> None:
+        repo = self._skill_repo_by_id(getattr(self, "skill_repo_preview_repo_id", ""))
+        if repo is None:
+            return
+        self._render_skill_repo_preview_rows(repo, self._filtered_skill_repo_preview_sources())
+
+    def clear_skill_repo_preview_filter(self) -> None:
+        if hasattr(self, "skill_repo_preview_filter_var"):
+            self.skill_repo_preview_filter_var.set("")
 
     def _sync_skill_repo_preview_cache(self, repo: SkillMarketRepo) -> Path:
         preview_repo = replace(repo, id=f"{repo.id}-preview")
