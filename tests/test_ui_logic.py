@@ -882,6 +882,33 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual([skill.content for skill in app.projects[0].skills], ["new", "review"])
         self.assertEqual(app.projects[0].skill_names, ["python-helper", "review-helper"])
 
+    def test_refresh_skills_tab_syncs_project_skill_groups(self) -> None:
+        stale_skill = SkillDefinition.create("python-helper", content="old")
+        fresh_skill = SkillDefinition.create("python-helper", content="new")
+        extra_skill = SkillDefinition.create("review-helper", content="review")
+        group = SkillGroup.create("代码组", skills=[fresh_skill, extra_skill])
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            skill_group_ids=[group.id],
+            skills=[stale_skill],
+            skill_names=[stale_skill.name],
+        )
+        app = _make_minimal_app()
+        app.skill_groups = [group]
+        app.projects = [project]
+        app.skills_hint_var = _ValueVar("")
+        app._refresh_skill_repo_detail = lambda: None
+        app._refresh_skill_group_detail = lambda: None
+        app._refresh_skill_project_detail = lambda: None
+        app.refresh_skills_tab = CodexSwitchApp.refresh_skills_tab.__get__(app, CodexSwitchApp)
+
+        app.refresh_skills_tab()
+
+        self.assertEqual([skill.content for skill in app.projects[0].skills], ["new", "review"])
+        self.assertEqual(app.projects[0].skill_names, ["python-helper", "review-helper"])
+        self.assertEqual(app.persist_count, 1)
+
     def test_hot_update_manual_decline_keeps_repo_and_project_pending(self) -> None:
         repo = SkillMarketRepo.create(
             "https://github.com/example/skills",
