@@ -1960,6 +1960,182 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(app.projects[0].skill_group_ids, [new_group.id])
             self.assertEqual([skill.name for skill in app.projects[0].skills], ["new-helper"])
 
+    def test_real_git_hot_update_syncs_skills_profile_project_metadata_and_checksums(self) -> None:
+        git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
+        if git_available.returncode != 0:
+            self.skipTest("git is not available")
+
+        def run_git(*args: str) -> str:
+            completed = subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            if completed.returncode != 0:
+                raise AssertionError(completed.stderr.strip() or completed.stdout.strip())
+            return completed.stdout.strip()
+
+        def write_checksums(repo_root: Path, paths: list[Path]) -> None:
+            manifest_dir = repo_root / ".codex-switch"
+            manifest_dir.mkdir(exist_ok=True)
+            manifest = {
+                "sha256": {
+                    path.relative_to(repo_root).as_posix(): _file_sha256(path)
+                    for path in paths
+                }
+            }
+            (manifest_dir / "checksums.json").write_text(
+                json.dumps(manifest, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        with workspace_tempdir() as temp_dir:
+            profile = Profile.create("vision-api", "https://image.example.com", "sk-local")
+            group = SkillGroup.create("repo group")
+            app = _make_minimal_app()
+            app.store = type("FakeStore", (), {"root_dir": temp_dir / "state"})()
+            app.profiles = [profile]
+            app.skill_groups = [group]
+
+            skills_remote = temp_dir / "skills-remote"
+            skills_remote.mkdir()
+            skill_dir = skills_remote / "combo-helper"
+            skill_dir.mkdir()
+            skill_file = skill_dir / "SKILL.md"
+            skill_file.write_text("combo helper", encoding="utf-8")
+            model_metadata_dir = skills_remote / ".codex-switch"
+            model_metadata_dir.mkdir()
+            model_metadata_path = model_metadata_dir / "model-metadata.json"
+            model_metadata_path.write_text(
+                json.dumps(
+                    {
+                        "profiles": [
+                            {
+                                "id": profile.id,
+                                "category": PROFILE_CATEGORY_IMAGE_GENERATION,
+                                "api_provided": False,
+                                "provider_name": "VisionVendor",
+                                "models": ["image-fast", "image-pro"],
+                            }
+                        ]
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            write_checksums(skills_remote, [skill_file, model_metadata_path])
+            run_git("-C", str(skills_remote), "init")
+            run_git("-C", str(skills_remote), "add", ".")
+            run_git(
+                "-C",
+                str(skills_remote),
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.test",
+                "commit",
+                "-m",
+                "skills metadata",
+            )
+            run_git("-C", str(skills_remote), "branch", "-M", "main")
+
+            skill_repo = SkillMarketRepo.create(
+                str(skills_remote),
+                installed_group_id=group.id,
+                auto_update=True,
+            )
+            app.skill_market_repos = [skill_repo]
+
+            skill_update = app._skill_repo_remote_update(skill_repo)
+            skill_applied = app._apply_skill_repo_update(
+                skill_repo,
+                automatic=True,
+                expected_commit=skill_update.latest_commit,
+            )
+
+            self.assertTrue(skill_update.has_update)
+            self.assertTrue(skill_applied)
+            self.assertEqual(app.skill_market_repos[0].last_sync_commit, skill_update.latest_commit)
+            self.assertEqual([skill.name for skill in app.skill_groups[0].skills], ["combo-helper"])
+            self.assertEqual(app.profiles[0].category, PROFILE_CATEGORY_IMAGE_GENERATION)
+            self.assertFalse(app.profiles[0].api_provided)
+            self.assertEqual(app.profiles[0].api_keys, [])
+            self.assertEqual(app.profiles[0].provider_name, "VisionVendor")
+            self.assertEqual(app.profiles[0].health.models, ["image-fast", "image-pro"])
+
+            project_remote = temp_dir / "project-remote"
+            local_project = temp_dir / "project-local"
+            project_remote.mkdir()
+            run_git("-C", str(project_remote), "init")
+            project_metadata_dir = project_remote / ".codex-switch"
+            project_metadata_dir.mkdir()
+            project_metadata_path = project_metadata_dir / "project.json"
+            project_metadata_path.write_text(
+                json.dumps({"skill_group_ids": []}, sort_keys=True),
+                encoding="utf-8",
+            )
+            write_checksums(project_remote, [project_metadata_path])
+            run_git("-C", str(project_remote), "add", ".")
+            run_git(
+                "-C",
+                str(project_remote),
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.test",
+                "commit",
+                "-m",
+                "initial project metadata",
+            )
+            old_project_commit = run_git("-C", str(project_remote), "rev-parse", "HEAD")
+            run_git("clone", str(project_remote), str(local_project))
+
+            project_metadata_path.write_text(
+                json.dumps({"skill_group_ids": [group.id]}, sort_keys=True),
+                encoding="utf-8",
+            )
+            write_checksums(project_remote, [project_metadata_path])
+            run_git("-C", str(project_remote), "add", ".")
+            run_git(
+                "-C",
+                str(project_remote),
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=codex@example.test",
+                "commit",
+                "-m",
+                "bind project skills",
+            )
+
+            project = ProjectRecord.create(
+                str(local_project),
+                profile.id,
+                skill_group_ids=[],
+                skills=[],
+                skill_names=[],
+                github_repo=str(project_remote),
+                github_last_sync_commit=old_project_commit,
+                github_auto_update=True,
+            )
+            app.projects = [project]
+
+            project_update = app._project_remote_update(project)
+            project_applied = app._apply_project_update(
+                project,
+                project_update.latest_commit,
+                automatic=True,
+            )
+
+            self.assertTrue(project_update.has_update)
+            self.assertTrue(project_applied)
+            self.assertEqual(app.projects[0].github_last_sync_commit, project_update.latest_commit)
+            self.assertEqual(app.projects[0].skill_group_ids, [group.id])
+            self.assertEqual([skill.name for skill in app.projects[0].skills], ["combo-helper"])
+            self.assertGreaterEqual(app.persist_count, 2)
+
     def test_project_hot_update_can_read_public_github_repo(self) -> None:
         if os.environ.get("CODEX_SWITCH_RUN_GITHUB_NETWORK") != "1":
             self.skipTest("set CODEX_SWITCH_RUN_GITHUB_NETWORK=1 to run public GitHub integration")
