@@ -14,9 +14,11 @@ from codex_switch.models import (
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
+    HOT_UPDATE_EVENT_LIMIT,
     HOT_UPDATE_INTERVAL_MINUTES_MAX,
     HOT_UPDATE_INTERVAL_MINUTES_MIN,
     HealthResult,
+    HotUpdateEvent,
     PROFILE_CATEGORY_IMAGE_GENERATION,
     PROFILE_CATEGORY_TEXT,
     Profile,
@@ -77,6 +79,7 @@ class ProfileStoreTests(unittest.TestCase):
                 hot_update_enabled,
                 hot_update_interval_minutes,
                 model_vendor_keywords,
+                hot_update_events,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -111,6 +114,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertFalse(hot_update_enabled)
             self.assertEqual(hot_update_interval_minutes, DEFAULT_HOT_UPDATE_INTERVAL_MINUTES)
             self.assertEqual(model_vendor_keywords, default_model_vendor_keywords())
+            self.assertEqual(hot_update_events, [])
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -121,7 +125,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 15)
+            self.assertEqual(payload["version"], 16)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -178,7 +182,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 15)
+            self.assertEqual(payload["version"], 16)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -333,6 +337,16 @@ class ProfileStoreTests(unittest.TestCase):
                 hot_update_enabled=True,
                 hot_update_interval_minutes=15,
                 model_vendor_keywords={"Acme": ["acme-"]},
+                hot_update_events=[
+                    HotUpdateEvent.create(
+                        scope="skill_repo",
+                        target="https://github.com/example/skills",
+                        status="updated",
+                        detail="ok",
+                        commit="abc123",
+                        automatic=True,
+                    )
+                ],
             )
             loaded = store.load()
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
@@ -345,12 +359,36 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertTrue(loaded[18])
             self.assertEqual(loaded[19], 15)
             self.assertEqual(loaded[20]["Acme"], ["acme-"])
+            self.assertEqual(loaded[21][0].scope, "skill_repo")
+            self.assertEqual(loaded[21][0].commit, "abc123")
+            self.assertTrue(loaded[21][0].automatic)
             self.assertEqual(payload["settings"]["skill_groups"][0]["skills"][0]["name"], "python-helper")
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["last_sync_commit"], "abc123")
             self.assertEqual(payload["settings"]["skill_market_repos"][0]["installed_group_id"], group.id)
             self.assertTrue(payload["settings"]["hot_update_enabled"])
             self.assertEqual(payload["settings"]["hot_update_interval_minutes"], 15)
             self.assertEqual(payload["settings"]["model_vendor_keywords"]["Acme"], ["acme-"])
+            self.assertEqual(payload["settings"]["hot_update_events"][0]["target"], "https://github.com/example/skills")
+
+    def test_store_trims_hot_update_events(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            events = [
+                HotUpdateEvent.create(
+                    scope="check",
+                    target=f"check-{index}",
+                    status="summary",
+                )
+                for index in range(HOT_UPDATE_EVENT_LIMIT + 3)
+            ]
+
+            store.save([], None, hot_update_events=events)
+            loaded_events = store.load()[21]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(len(loaded_events), HOT_UPDATE_EVENT_LIMIT)
+            self.assertEqual(loaded_events[0].target, "check-3")
+            self.assertEqual(payload["settings"]["hot_update_events"][0]["target"], "check-3")
 
     def test_store_loads_legacy_project_without_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:

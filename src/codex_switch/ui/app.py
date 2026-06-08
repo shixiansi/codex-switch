@@ -47,6 +47,8 @@ from codex_switch.models import (
     CurrentCodexConfig,
     DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
     HealthResult,
+    HOT_UPDATE_EVENT_LIMIT,
+    HotUpdateEvent,
     Profile,
     ProjectRecord,
     RouteProxyEvent,
@@ -182,6 +184,18 @@ LIBRARY_PROFILE_VIEW_TABS = (
 LIBRARY_PROFILE_VIEW_VALUES = {view for view, _label in LIBRARY_PROFILE_VIEW_TABS}
 LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
+HOT_UPDATE_SCOPE_LABELS = {
+    "skill_repo": "Skills仓库",
+    "project": "项目",
+    "check": "检查",
+}
+HOT_UPDATE_STATUS_LABELS = {
+    "current": "已是最新",
+    "updated": "已更新",
+    "pending": "待确认",
+    "error": "错误",
+    "summary": "完成",
+}
 MODEL_METADATA_RELATIVE_PATHS = (
     Path("codex-switch-model-metadata.json"),
     Path("model-metadata.json"),
@@ -563,6 +577,7 @@ class CodexSwitchApp:
             self.model_vendor_keywords = normalize_model_vendor_keywords(
                 load_state[20] if len(load_state) >= 21 else None
             )
+            self.hot_update_events = load_state[21] if len(load_state) >= 22 else []
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -584,6 +599,7 @@ class CodexSwitchApp:
             self.hot_update_enabled = False
             self.hot_update_interval_minutes = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
             self.model_vendor_keywords = normalize_model_vendor_keywords()
+            self.hot_update_events = []
         self.global_codex_profile_id = resolve_global_profile_id(
             raw_codex_global_profile_id,
             self.selected_profile_id,
@@ -1759,7 +1775,7 @@ class CodexSwitchApp:
 
     def _build_settings_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(2, weight=1)
 
         settings_card = self._make_card(parent)
         settings_card.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -1831,8 +1847,32 @@ class CodexSwitchApp:
         )
         make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=5, column=2, sticky="e", pady=(8, 0))
 
+        hot_update_log_card = self._make_card(parent)
+        hot_update_log_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        hot_update_log_card.columnconfigure(0, weight=1)
+        tk.Label(hot_update_log_card, text="最近热更新记录", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+        hot_update_log_wrap = tk.Frame(hot_update_log_card, bg=PALETTE["card_bg"])
+        hot_update_log_wrap.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        hot_update_log_wrap.columnconfigure(0, weight=1)
+        self.hot_update_log_text = tk.Text(
+            hot_update_log_wrap,
+            height=6,
+            wrap="word",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            font=self.small_font,
+            bg="#FBFDFE",
+            fg=PALETTE["text"],
+            state="disabled",
+        )
+        self.hot_update_log_text.grid(row=0, column=0, sticky="ew")
+        hot_update_log_scroll = ttk.Scrollbar(hot_update_log_wrap, orient="vertical", command=self.hot_update_log_text.yview)
+        hot_update_log_scroll.grid(row=0, column=1, sticky="ns")
+        self.hot_update_log_text.configure(yscrollcommand=hot_update_log_scroll.set)
+
         info_card = self._make_card(parent)
-        info_card.grid(row=1, column=0, sticky="nsew")
+        info_card.grid(row=2, column=0, sticky="nsew")
         info_card.columnconfigure(1, weight=1)
         info_card.columnconfigure(3, weight=1)
         tk.Label(info_card, text="版本与环境", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=4, sticky="w")
@@ -2541,6 +2581,7 @@ class CodexSwitchApp:
         self.settings_codex_auth_path_var.set(str(self.manager.auth_path))
         self.settings_project_root_var.set(str(self.project_root))
         self.settings_platform_var.set(platform.platform())
+        self._render_hot_update_log()
 
     def _schedule_sign_in_status_refresh(self) -> None:
         if not self.root.winfo_exists():
@@ -2563,6 +2604,50 @@ class CodexSwitchApp:
     def check_hot_updates_now(self) -> None:
         self._run_hot_update_check(automatic=False)
 
+    def _record_hot_update_event(
+        self,
+        *,
+        scope: str,
+        target: str,
+        status: str,
+        detail: str = "",
+        commit: str = "",
+        automatic: bool = False,
+    ) -> None:
+        self.hot_update_events = [
+            *getattr(self, "hot_update_events", []),
+            HotUpdateEvent.create(
+                scope=scope,
+                target=target,
+                status=status,
+                detail=detail,
+                commit=commit,
+                automatic=automatic,
+            ),
+        ][-HOT_UPDATE_EVENT_LIMIT:]
+        self._render_hot_update_log()
+
+    def _hot_update_event_line(self, event: HotUpdateEvent) -> str:
+        scope = HOT_UPDATE_SCOPE_LABELS.get(event.scope, event.scope or "-")
+        status = HOT_UPDATE_STATUS_LABELS.get(event.status, event.status or "-")
+        mode = "自动" if event.automatic else "手动"
+        commit = f" @{event.commit[:12]}" if event.commit else ""
+        detail = f" - {event.detail}" if event.detail else ""
+        return f"{event.timestamp} [{mode}][{scope}][{status}] {event.target}{commit}{detail}"
+
+    def _render_hot_update_log(self) -> None:
+        if not hasattr(self, "hot_update_log_text"):
+            return
+        lines = [
+            self._hot_update_event_line(event)
+            for event in reversed(getattr(self, "hot_update_events", [])[-20:])
+        ]
+        self._set_text_content(
+            self.hot_update_log_text,
+            "\n".join(lines) if lines else "暂无热更新记录。",
+            disabled=True,
+        )
+
     def _run_hot_update_check(self, *, automatic: bool) -> None:
         if self.hot_update_check_running:
             if not automatic:
@@ -2575,6 +2660,14 @@ class CodexSwitchApp:
             summary = self._check_and_apply_hot_updates(automatic=automatic)
         except Exception as exc:
             summary = f"热更新检查失败：{exc}"
+            self._record_hot_update_event(
+                scope="check",
+                target="自动检查" if automatic else "手动检查",
+                status="error",
+                detail=str(exc),
+                automatic=automatic,
+            )
+            self.persist_state()
         finally:
             self.hot_update_check_running = False
         self._finish_hot_update_check(summary)
@@ -2584,6 +2677,7 @@ class CodexSwitchApp:
         self.status_var.set(summary)
         self.refresh_project_tab()
         self.refresh_skills_tab()
+        self._render_hot_update_log()
 
     def _check_and_apply_hot_updates(self, *, automatic: bool) -> str:
         repo_updates = 0
@@ -2596,24 +2690,91 @@ class CodexSwitchApp:
             try:
                 update = self._skill_repo_remote_update(repo)
             except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                errors.append(f"Skills仓库 {repo.url}: {exc}")
+                detail = str(exc)
+                errors.append(f"Skills仓库 {repo.url}: {detail}")
+                self._record_hot_update_event(
+                    scope="skill_repo",
+                    target=repo.url,
+                    status="error",
+                    detail=detail,
+                    automatic=automatic,
+                )
                 continue
             if not update.has_update:
                 self._set_skill_repo_commit(repo, update.latest_commit)
+                if not automatic:
+                    self._record_hot_update_event(
+                        scope="skill_repo",
+                        target=repo.url,
+                        status="current",
+                        detail="远端提交未变化。",
+                        commit=update.latest_commit,
+                        automatic=False,
+                    )
                 continue
             if repo.auto_update:
                 if self._apply_skill_repo_update(repo, automatic=True, expected_commit=update.latest_commit):
                     repo_updates += 1
+                    self._record_hot_update_event(
+                        scope="skill_repo",
+                        target=repo.url,
+                        status="updated",
+                        detail="自动拉取并重载本地 Skills。",
+                        commit=update.latest_commit,
+                        automatic=True,
+                    )
                 else:
                     pending_repo_updates += 1
+                    self._record_hot_update_event(
+                        scope="skill_repo",
+                        target=repo.url,
+                        status="pending",
+                        detail="自动更新未完成，保留待确认。",
+                        commit=update.latest_commit,
+                        automatic=True,
+                    )
             elif not automatic:
                 if messagebox.askyesno("发现 Skills 仓库更新", f"{repo.url}\n最新提交：{update.short_latest}\n是否拉取并重载？", parent=self.root):
                     if self._apply_skill_repo_update(repo, automatic=False, expected_commit=update.latest_commit):
                         repo_updates += 1
+                        self._record_hot_update_event(
+                            scope="skill_repo",
+                            target=repo.url,
+                            status="updated",
+                            detail="用户确认后拉取并重载本地 Skills。",
+                            commit=update.latest_commit,
+                            automatic=False,
+                        )
+                    else:
+                        pending_repo_updates += 1
+                        self._record_hot_update_event(
+                            scope="skill_repo",
+                            target=repo.url,
+                            status="pending",
+                            detail="手动更新未完成，保留待确认。",
+                            commit=update.latest_commit,
+                            automatic=False,
+                        )
                 else:
                     pending_repo_updates += 1
+                    self._record_hot_update_event(
+                        scope="skill_repo",
+                        target=repo.url,
+                        status="pending",
+                        detail="用户暂不拉取。",
+                        commit=update.latest_commit,
+                        automatic=False,
+                    )
             else:
                 pending_repo_updates += 1
+                self._record_hot_update_event(
+                    scope="skill_repo",
+                    target=repo.url,
+                    status="pending",
+                    detail="未启用仓库自动更新。",
+                    commit=update.latest_commit,
+                    automatic=True,
+                )
 
         for project in list(self.projects):
             if not project.github_repo:
@@ -2621,32 +2782,108 @@ class CodexSwitchApp:
             try:
                 update = self._project_remote_update(project)
             except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                errors.append(f"项目 {project.name}: {exc}")
+                detail = str(exc)
+                errors.append(f"项目 {project.name}: {detail}")
+                self._record_hot_update_event(
+                    scope="project",
+                    target=project.name,
+                    status="error",
+                    detail=detail,
+                    automatic=automatic,
+                )
                 continue
             if not update.has_update:
                 self._set_project_commit(project, update.latest_commit)
+                if not automatic:
+                    self._record_hot_update_event(
+                        scope="project",
+                        target=project.name,
+                        status="current",
+                        detail="远端提交未变化。",
+                        commit=update.latest_commit,
+                        automatic=False,
+                    )
                 continue
             if project.github_auto_update:
                 if self._apply_project_update(project, update.latest_commit, automatic=True):
                     project_updates += 1
+                    self._record_hot_update_event(
+                        scope="project",
+                        target=project.name,
+                        status="updated",
+                        detail="自动执行 git pull --ff-only 并同步项目元数据。",
+                        commit=update.latest_commit,
+                        automatic=True,
+                    )
                 else:
                     pending_project_updates += 1
+                    self._record_hot_update_event(
+                        scope="project",
+                        target=project.name,
+                        status="pending",
+                        detail="自动更新未完成，保留待确认。",
+                        commit=update.latest_commit,
+                        automatic=True,
+                    )
             elif not automatic:
                 if messagebox.askyesno("发现项目更新", f"{project.name}\n最新提交：{update.short_latest}\n是否执行 git pull --ff-only？", parent=self.root):
                     if self._apply_project_update(project, update.latest_commit, automatic=False):
                         project_updates += 1
+                        self._record_hot_update_event(
+                            scope="project",
+                            target=project.name,
+                            status="updated",
+                            detail="用户确认后执行 git pull --ff-only 并同步项目元数据。",
+                            commit=update.latest_commit,
+                            automatic=False,
+                        )
+                    else:
+                        pending_project_updates += 1
+                        self._record_hot_update_event(
+                            scope="project",
+                            target=project.name,
+                            status="pending",
+                            detail="手动更新未完成，保留待确认。",
+                            commit=update.latest_commit,
+                            automatic=False,
+                        )
                 else:
                     pending_project_updates += 1
+                    self._record_hot_update_event(
+                        scope="project",
+                        target=project.name,
+                        status="pending",
+                        detail="用户暂不拉取。",
+                        commit=update.latest_commit,
+                        automatic=False,
+                    )
             else:
                 pending_project_updates += 1
+                self._record_hot_update_event(
+                    scope="project",
+                    target=project.name,
+                    status="pending",
+                    detail="未启用项目自动更新。",
+                    commit=update.latest_commit,
+                    automatic=True,
+                )
 
-        self.persist_state()
         pending_text = ""
         if pending_repo_updates or pending_project_updates:
             pending_text = f"，待确认仓库 {pending_repo_updates}、项目 {pending_project_updates}"
         if errors:
-            return f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {len(errors)} 个。"
-        return f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
+            summary = f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {len(errors)} 个。"
+        else:
+            summary = f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
+        self._record_hot_update_event(
+            scope="check",
+            target="自动检查" if automatic else "手动检查",
+            status="summary",
+            detail=summary,
+            automatic=automatic,
+        )
+        self.persist_state()
+        return summary
 
     def refresh_global_tab(self) -> None:
         self.current_config = self.manager.read_current_config()
@@ -3642,15 +3879,56 @@ class CodexSwitchApp:
         try:
             update = self._skill_repo_remote_update(repo)
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            self._record_hot_update_event(
+                scope="skill_repo",
+                target=repo.url,
+                status="error",
+                detail=str(exc),
+                automatic=False,
+            )
+            self.persist_state()
             messagebox.showerror("检查失败", f"无法检查仓库更新：{exc}", parent=self.root)
             return
         if not update.has_update:
             messagebox.showinfo("检查完成", "当前已是最新。", parent=self.root)
             self._set_skill_repo_commit(repo, update.latest_commit)
+            self._record_hot_update_event(
+                scope="skill_repo",
+                target=repo.url,
+                status="current",
+                detail="远端提交未变化。",
+                commit=update.latest_commit,
+                automatic=False,
+            )
         else:
             if messagebox.askyesno("发现更新", f"发现更新：{update.short_latest}。是否拉取并重载到本地组？", parent=self.root):
-                self._apply_skill_repo_update(repo, automatic=False, expected_commit=update.latest_commit)
+                if self._apply_skill_repo_update(repo, automatic=False, expected_commit=update.latest_commit):
+                    self._record_hot_update_event(
+                        scope="skill_repo",
+                        target=repo.url,
+                        status="updated",
+                        detail="用户确认后拉取并重载本地 Skills。",
+                        commit=update.latest_commit,
+                        automatic=False,
+                    )
+                else:
+                    self._record_hot_update_event(
+                        scope="skill_repo",
+                        target=repo.url,
+                        status="pending",
+                        detail="手动更新未完成，保留待确认。",
+                        commit=update.latest_commit,
+                        automatic=False,
+                    )
             else:
+                self._record_hot_update_event(
+                    scope="skill_repo",
+                    target=repo.url,
+                    status="pending",
+                    detail="用户暂不拉取。",
+                    commit=update.latest_commit,
+                    automatic=False,
+                )
                 self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
         self.persist_state()
         self.refresh_skills_tab()
@@ -3942,18 +4220,61 @@ class CodexSwitchApp:
         try:
             update = self._project_remote_update(project)
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            self._record_hot_update_event(
+                scope="project",
+                target=project.name,
+                status="error",
+                detail=str(exc),
+                automatic=False,
+            )
+            self.persist_state()
             messagebox.showerror("检查失败", f"无法检查项目更新：{exc}", parent=self.root)
             return
         if not update.has_update:
             self._set_project_commit(project, update.latest_commit)
+            self._record_hot_update_event(
+                scope="project",
+                target=project.name,
+                status="current",
+                detail="远端提交未变化。",
+                commit=update.latest_commit,
+                automatic=False,
+            )
             self.persist_state()
             self.refresh_project_tab()
             messagebox.showinfo("检查完成", "项目远端已是最新。", parent=self.root)
             return
         if messagebox.askyesno("发现更新", f"发现项目更新：{update.short_latest}。是否执行 git pull --ff-only？", parent=self.root):
-            self._apply_project_update(project, update.latest_commit, automatic=False)
+            if self._apply_project_update(project, update.latest_commit, automatic=False):
+                self._record_hot_update_event(
+                    scope="project",
+                    target=project.name,
+                    status="updated",
+                    detail="用户确认后执行 git pull --ff-only 并同步项目元数据。",
+                    commit=update.latest_commit,
+                    automatic=False,
+                )
+            else:
+                self._record_hot_update_event(
+                    scope="project",
+                    target=project.name,
+                    status="pending",
+                    detail="手动更新未完成，保留待确认。",
+                    commit=update.latest_commit,
+                    automatic=False,
+                )
         else:
+            self._record_hot_update_event(
+                scope="project",
+                target=project.name,
+                status="pending",
+                detail="用户暂不拉取。",
+                commit=update.latest_commit,
+                automatic=False,
+            )
             self.status_var.set(f"已保留待更新的项目：{update.short_latest}")
+        self.persist_state()
+        self.refresh_project_tab()
 
     def add_skill_group(self) -> None:
         name = simpledialog.askstring("Skills组", "组名：", parent=self.root)
@@ -4283,6 +4604,7 @@ class CodexSwitchApp:
             hot_update_enabled=self.hot_update_enabled,
             hot_update_interval_minutes=self.hot_update_interval_minutes,
             model_vendor_keywords=self.model_vendor_keywords,
+            hot_update_events=self.hot_update_events,
         )
 
     def save_settings(self) -> None:

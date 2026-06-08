@@ -91,6 +91,7 @@ ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES_MAX = 1440
 DEFAULT_HOT_UPDATE_INTERVAL_MINUTES = 30
 HOT_UPDATE_INTERVAL_MINUTES_MIN = 5
 HOT_UPDATE_INTERVAL_MINUTES_MAX = 1440
+HOT_UPDATE_EVENT_LIMIT = 50
 
 
 def now_iso() -> str:
@@ -866,6 +867,66 @@ class RouteProxySettings:
 
     def append_event(self, event: RouteProxyEvent) -> None:
         self.events = [*self.events, event][-50:]
+
+
+@dataclass
+class HotUpdateEvent:
+    timestamp: str
+    scope: str
+    target: str
+    status: str
+    detail: str = ""
+    commit: str = ""
+    automatic: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        scope: str,
+        target: str,
+        status: str,
+        detail: str = "",
+        commit: str = "",
+        automatic: bool = False,
+    ) -> "HotUpdateEvent":
+        return cls(
+            timestamp=now_iso(),
+            scope=scope.strip(),
+            target=target.strip(),
+            status=status.strip(),
+            detail=detail.strip(),
+            commit=commit.strip(),
+            automatic=bool(automatic),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "HotUpdateEvent":
+        data = data or {}
+        return cls(
+            timestamp=str(data.get("timestamp") or now_iso()),
+            scope=str(data.get("scope") or "").strip(),
+            target=str(data.get("target") or "").strip(),
+            status=str(data.get("status") or "").strip(),
+            detail=str(data.get("detail") or "").strip(),
+            commit=str(data.get("commit") or "").strip(),
+            automatic=bool(data.get("automatic", False)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def normalize_hot_update_events(items: list[Any] | None) -> list[HotUpdateEvent]:
+    if not isinstance(items, list):
+        return []
+    events: list[HotUpdateEvent] = []
+    for item in items:
+        if isinstance(item, HotUpdateEvent):
+            events.append(item)
+        elif isinstance(item, dict):
+            events.append(HotUpdateEvent.from_dict(item))
+    return events[-HOT_UPDATE_EVENT_LIMIT:]
 
 
 @dataclass

@@ -123,6 +123,7 @@ def _make_minimal_app() -> CodexSwitchApp:
     app.skill_groups = []
     app.skill_market_repos = []
     app.model_vendor_keywords = {}
+    app.hot_update_events = []
     app.status_var = _ValueVar("")
     app.persist_count = 0
     app.persist_state = lambda: setattr(app, "persist_count", app.persist_count + 1)
@@ -834,6 +835,10 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
         self.assertEqual(app.projects[0].github_last_sync_commit, "old-project")
         self.assertIn("待确认仓库 1、项目 1", summary)
+        self.assertEqual([event.status for event in app.hot_update_events], ["pending", "pending", "summary"])
+        self.assertEqual(app.hot_update_events[0].target, "https://github.com/example/skills")
+        self.assertEqual(app.hot_update_events[1].target, project.name)
+        self.assertFalse(app.hot_update_events[-1].automatic)
 
     def test_hot_update_auto_failure_keeps_project_pending(self) -> None:
         project = ProjectRecord.create(
@@ -852,6 +857,9 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual(app.projects[0].github_last_sync_commit, "old-project")
         self.assertIn("待确认仓库 0、项目 1", summary)
+        self.assertEqual([event.status for event in app.hot_update_events], ["pending", "summary"])
+        self.assertEqual(app.hot_update_events[0].scope, "project")
+        self.assertTrue(app.hot_update_events[0].automatic)
 
     def test_hot_update_auto_skill_repo_head_mismatch_keeps_pending(self) -> None:
         group = SkillGroup.create("代码组")
@@ -876,6 +884,8 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
         self.assertIn("待确认仓库 1、项目 0", summary)
+        self.assertEqual([event.status for event in app.hot_update_events], ["pending", "summary"])
+        self.assertEqual(app.hot_update_events[0].commit, "new-repo")
 
     def test_skill_repo_cache_rejects_synced_head_mismatch(self) -> None:
         class FakeCompleted:
