@@ -10,10 +10,12 @@ from codex_switch.models import (
     PROFILE_CATEGORY_IMAGE_GENERATION,
     PROFILE_CATEGORY_LABELS,
     Profile,
+    ProjectRecord,
     SkillDefinition,
     SkillGroup,
     VENDOR_CODEX,
 )
+from codex_switch.storage import ProfileStore
 from codex_switch.ui.app import CodexSwitchApp
 from codex_switch.ui.dialogs import ProfileDialog, ProjectDialog
 from codex_switch.ui.styles import BOOTSTRAP_THEME, BootstrapWindow, PALETTE
@@ -164,6 +166,48 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertTrue(app.hot_update_log_text.winfo_exists())
                     self.assertIn("热更新", app.hot_update_status_var.get())
                     self.assertTrue(app.store.storage_path.is_file())
+        finally:
+            destroy_widget(app_root)
+
+    def test_app_hidden_init_syncs_project_skills_from_groups(self) -> None:
+        app_root = tk.Toplevel(self.root)
+        app_root.withdraw()
+        try:
+            with workspace_tempdir() as temp_dir:
+                old_skill = SkillDefinition.create("python-helper", content="old")
+                fresh_skill = SkillDefinition.create("python-helper", content="new")
+                extra_skill = SkillDefinition.create("review-helper", content="review")
+                group = SkillGroup.create("coding", skills=[fresh_skill, extra_skill])
+                profile = Profile.create("api", "https://api.example.com", "sk-api")
+                project = ProjectRecord.create(
+                    str(temp_dir),
+                    profile.id,
+                    skill_group_ids=[group.id],
+                    skills=[old_skill],
+                    skill_names=[old_skill.name],
+                )
+
+                with patch.dict(os.environ, {"APPDATA": str(temp_dir / "appdata")}, clear=False):
+                    store = ProfileStore()
+                    store.save(
+                        [profile],
+                        profile.id,
+                        projects=[project],
+                        selected_project_id=project.id,
+                        skill_groups=[group],
+                    )
+
+                    app = CodexSwitchApp(app_root)
+                    app_root.update_idletasks()
+
+                    synced_project = app.projects[0]
+                    self.assertEqual([skill.name for skill in synced_project.skills], ["python-helper", "review-helper"])
+                    self.assertEqual([skill.content for skill in synced_project.skills], ["new", "review"])
+                    self.assertEqual(synced_project.skill_names, ["python-helper", "review-helper"])
+
+                    loaded_project = app.store.load()[2][0]
+                    self.assertEqual([skill.content for skill in loaded_project.skills], ["new", "review"])
+                    self.assertEqual(loaded_project.skill_names, ["python-helper", "review-helper"])
         finally:
             destroy_widget(app_root)
 
