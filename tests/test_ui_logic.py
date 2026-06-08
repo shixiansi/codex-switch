@@ -125,6 +125,7 @@ def _make_minimal_app() -> CodexSwitchApp:
     app.model_vendor_keywords = {}
     app.hot_update_events = []
     app.status_var = _ValueVar("")
+    app.skill_repo_preview_var = _ValueVar("")
     app.persist_count = 0
     app.persist_state = lambda: setattr(app, "persist_count", app.persist_count + 1)
     app.refresh_project_tab = lambda: None
@@ -939,6 +940,47 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual([skill.name for skill in app.skill_groups[0].skills], ["python-helper"])
             self.assertEqual(app.model_vendor_keywords["Acme"], ["acme-"])
             self.assertIn("模型元数据已更新", app.status_var.get())
+
+    def test_skill_repo_preview_discovers_repo_skills(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            repo_root = temp_dir / "preview"
+            for name in ("alpha-helper", "beta-helper"):
+                skill_dir = repo_root / name
+                skill_dir.mkdir(parents=True)
+                (skill_dir / "SKILL.md").write_text(f"{name} content", encoding="utf-8")
+            repo = SkillMarketRepo.create("https://github.com/example/skills")
+            app = _make_minimal_app()
+            app._sync_skill_repo_preview_cache = lambda _repo: repo_root
+
+            sources = app._preview_skill_repo_sources(repo)
+
+            self.assertEqual([source.name for source in sources], ["alpha-helper", "beta-helper"])
+
+    def test_skill_repo_preview_sync_does_not_mark_repo_synced(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            repo = SkillMarketRepo.create("https://github.com/example/skills", last_sync_commit="old-repo")
+            app = _make_minimal_app()
+            app.store = type("FakeStore", (), {"root_dir": temp_dir})()
+            app.skill_market_repos = [repo]
+
+            def fake_run(args, **_kwargs):
+                if args[1] == "clone":
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="new-repo\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                cache_dir = app._sync_skill_repo_preview_cache(repo)
+
+            self.assertEqual(cache_dir.name, f"{repo.id}-preview")
+            self.assertEqual(app.skill_market_repos[0].last_sync_commit, "old-repo")
 
     def test_project_metadata_reloads_skill_group_ids_from_repo(self) -> None:
         with workspace_tempdir() as temp_dir:

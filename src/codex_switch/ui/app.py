@@ -729,6 +729,7 @@ class CodexSwitchApp:
         self.mcp_selected_summary_var = tk.StringVar(value="选择左侧工具后查看配置预览。")
         self.skills_hint_var = tk.StringVar(value="管理 Skills 仓库、本地组和项目关联。")
         self.skill_repo_detail_var = tk.StringVar(value="未选择仓库")
+        self.skill_repo_preview_var = tk.StringVar(value="未选择仓库")
         self.skill_group_detail_var = tk.StringVar(value="未选择 Skills 组")
         self.skill_project_detail_var = tk.StringVar(value="未选择项目")
         self.docs_hint_var = tk.StringVar(value="编辑后的 AGENTS 模板会用于后续项目模板生成。")
@@ -1637,10 +1638,11 @@ class CodexSwitchApp:
         self._build_project_skills_panel(project_tab)
 
     def _build_skill_repos_panel(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=3)
+        parent.columnconfigure(1, weight=2)
         parent.rowconfigure(0, weight=1)
         wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        wrap.grid(row=0, column=0, sticky="nsew")
+        wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         wrap.columnconfigure(0, weight=1)
         wrap.rowconfigure(0, weight=1)
         self.skill_repo_tree = ttk.Treeview(wrap, columns=("url", "branch", "commit", "auto"), show="headings")
@@ -1659,15 +1661,36 @@ class CodexSwitchApp:
         self.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
 
         actions = tk.Frame(parent, bg=PALETTE["card_bg"])
-        actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        for column in range(6):
+        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        for column in range(7):
             actions.columnconfigure(column, weight=1)
         make_button(actions, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=0, sticky="ew", padx=(0, 8))
         make_button(actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         make_button(actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="ew", padx=(0, 8))
         make_button(actions, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        make_button(actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=4, sticky="ew", padx=(0, 8))
-        tk.Label(actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=5, sticky="w")
+        make_button(actions, text="浏览 Skills", variant="secondary", command=self.preview_selected_skill_repo).grid(row=0, column=4, sticky="ew", padx=(0, 8))
+        make_button(actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=5, sticky="ew", padx=(0, 8))
+        tk.Label(actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=6, sticky="w")
+
+        preview = tk.Frame(parent, bg=PALETTE["card_bg"])
+        preview.grid(row=0, column=1, sticky="nsew")
+        preview.columnconfigure(0, weight=1)
+        preview.rowconfigure(2, weight=1)
+        tk.Label(preview, text="仓库 Skills 预览", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+        tk.Label(preview, textvariable=self.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font, wraplength=360, justify="left").grid(row=1, column=0, sticky="w", pady=(4, 8))
+        preview_wrap = tk.Frame(preview, bg=PALETTE["card_bg"])
+        preview_wrap.grid(row=2, column=0, sticky="nsew")
+        preview_wrap.columnconfigure(0, weight=1)
+        preview_wrap.rowconfigure(0, weight=1)
+        self.skill_repo_preview_tree = ttk.Treeview(preview_wrap, columns=("name", "path"), show="headings")
+        self.skill_repo_preview_tree.heading("name", text="Skill", anchor="w")
+        self.skill_repo_preview_tree.heading("path", text="路径", anchor="w")
+        self.skill_repo_preview_tree.column("name", width=150, anchor="w", stretch=False)
+        self.skill_repo_preview_tree.column("path", width=260, anchor="w")
+        self.skill_repo_preview_tree.grid(row=0, column=0, sticky="nsew")
+        preview_scroll = ttk.Scrollbar(preview_wrap, orient="vertical", command=self.skill_repo_preview_tree.yview)
+        preview_scroll.grid(row=0, column=1, sticky="ns")
+        self.skill_repo_preview_tree.configure(yscrollcommand=preview_scroll.set)
 
     def _build_local_skills_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -3705,6 +3728,35 @@ class CodexSwitchApp:
         self._refresh_skill_group_detail()
         self._refresh_skill_project_detail()
 
+    def _clear_skill_repo_preview(self, message: str = "未选择仓库") -> None:
+        if hasattr(self, "skill_repo_preview_var"):
+            self.skill_repo_preview_var.set(message)
+        if hasattr(self, "skill_repo_preview_tree"):
+            for item in self.skill_repo_preview_tree.get_children():
+                self.skill_repo_preview_tree.delete(item)
+
+    def _render_skill_repo_preview(self, repo: SkillMarketRepo, sources: list[SkillSource]) -> None:
+        if not hasattr(self, "skill_repo_preview_tree"):
+            return
+        for item in self.skill_repo_preview_tree.get_children():
+            self.skill_repo_preview_tree.delete(item)
+        for source in sources:
+            self.skill_repo_preview_tree.insert(
+                "",
+                "end",
+                iid=str(source.source_path),
+                values=(source.name, compact_text(str(source.source_path), 54)),
+            )
+        self.skill_repo_preview_var.set(f"{repo.url}：{len(sources)} 个 Skills。")
+
+    def _sync_skill_repo_preview_cache(self, repo: SkillMarketRepo) -> Path:
+        preview_repo = replace(repo, id=f"{repo.id}-preview")
+        return self._sync_skill_repo_cache(preview_repo)
+
+    def _preview_skill_repo_sources(self, repo: SkillMarketRepo) -> list[SkillSource]:
+        cache_dir = self._sync_skill_repo_preview_cache(repo)
+        return discover_skill_sources([cache_dir])
+
     def _expanded_skills_for_group_ids(self, group_ids: list[str] | None) -> tuple[list[SkillDefinition], list[str]]:
         if group_ids is None:
             return [], []
@@ -3760,8 +3812,10 @@ class CodexSwitchApp:
         repo = self._selected_skill_repo()
         if not repo:
             self.skill_repo_detail_var.set("未选择仓库")
+            self._clear_skill_repo_preview()
             return
         self.skill_repo_detail_var.set(f"{repo.branch} / {repo.last_sync_commit or '未同步'}")
+        self._clear_skill_repo_preview("尚未浏览仓库内容。")
 
     def _refresh_skill_group_detail(self) -> None:
         group = self._selected_skill_group()
@@ -3932,6 +3986,24 @@ class CodexSwitchApp:
                 self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
         self.persist_state()
         self.refresh_skills_tab()
+
+    def preview_selected_skill_repo(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        self.skill_repo_preview_var.set("正在同步仓库并扫描 Skills...")
+        try:
+            sources = self._preview_skill_repo_sources(repo)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            self._clear_skill_repo_preview(f"预览失败：{exc}")
+            messagebox.showerror("预览失败", f"无法浏览仓库 Skills：{exc}", parent=self.root)
+            return
+        self._render_skill_repo_preview(repo, sources)
+        if sources:
+            self.status_var.set(f"已浏览 Skills 仓库：{repo.url}，发现 {len(sources)} 个 Skills。")
+        else:
+            self.status_var.set(f"仓库中未发现 Skills：{repo.url}")
 
     def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
         return self.store.root_dir / "skill-market" / repo.id
