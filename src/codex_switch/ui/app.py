@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 import ctypes
 from ctypes import wintypes
+import hashlib
 import json
 import os
 import platform
@@ -208,6 +209,10 @@ PROJECT_METADATA_RELATIVE_PATHS = (
     Path("project-skills.json"),
     Path(".codex-switch") / "project.json",
 )
+HOT_UPDATE_CHECKSUM_MANIFEST_RELATIVE_PATHS = (
+    Path("codex-switch-checksums.json"),
+    Path(".codex-switch") / "checksums.json",
+)
 DEFAULT_PROJECT_GITHUB_REF = "HEAD"
 DEFAULT_SKILL_REPO_REF = "main"
 
@@ -265,6 +270,95 @@ def remote_commit_from_ls_remote(output: str, ref: str) -> str:
             if remote_ref == pattern:
                 return commit
     return entries[0][0]
+
+
+def _normalize_checksum_manifest_path(value: object) -> str:
+    raw_path = str(value or "").strip().replace("\\", "/")
+    if not raw_path or raw_path.startswith("/"):
+        raise RuntimeError("Checksum manifest contains an unsafe path.")
+    parts = [part for part in raw_path.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts) or parts[0].endswith(":"):
+        raise RuntimeError("Checksum manifest contains an unsafe path.")
+    return Path(*parts).as_posix()
+
+
+def _normalize_sha256_digest(value: object) -> str:
+    digest = str(value or "").strip().casefold()
+    if digest.startswith("sha256:"):
+        digest = digest[len("sha256:") :]
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise RuntimeError("Checksum manifest contains an invalid SHA-256 digest.")
+    return digest
+
+
+def checksum_manifest_entries(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Checksum manifest must be a JSON object.")
+    algorithm = str(payload.get("algorithm") or "sha256").strip().casefold()
+    if algorithm != "sha256":
+        raise RuntimeError("Checksum manifest must use SHA-256.")
+    raw_entries = payload.get("sha256")
+    entries: dict[str, str] = {}
+    if isinstance(raw_entries, dict):
+        for raw_path, raw_digest in raw_entries.items():
+            entries[_normalize_checksum_manifest_path(raw_path)] = _normalize_sha256_digest(raw_digest)
+    elif isinstance(payload.get("files"), list):
+        for item in payload["files"]:
+            if not isinstance(item, dict):
+                raise RuntimeError("Checksum manifest file entries must be objects.")
+            entries[_normalize_checksum_manifest_path(item.get("path"))] = _normalize_sha256_digest(
+                item.get("sha256") or item.get("digest")
+            )
+    else:
+        raise RuntimeError("Checksum manifest must contain SHA-256 entries.")
+    if not entries:
+        raise RuntimeError("Checksum manifest must contain SHA-256 entries.")
+    return entries
+
+
+def hot_update_checksum_manifest_path(repo_root: Path) -> Path | None:
+    for relative_path in HOT_UPDATE_CHECKSUM_MANIFEST_RELATIVE_PATHS:
+        manifest_path = repo_root / relative_path
+        if manifest_path.is_file():
+            return manifest_path
+    return None
+
+
+def sha256_file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_hot_update_checksums(repo_root: Path, required_paths: list[Path]) -> bool:
+    manifest_path = hot_update_checksum_manifest_path(repo_root)
+    if manifest_path is None:
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Checksum manifest is unreadable: {exc}") from exc
+    checksums = checksum_manifest_entries(payload)
+    root = repo_root.resolve()
+    for relative_path in checksums:
+        target = (root / relative_path).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise RuntimeError("Checksum manifest contains an unsafe path.") from exc
+    for required_path in required_paths:
+        if not required_path.is_file():
+            continue
+        relative_path = required_path.resolve().relative_to(root).as_posix()
+        expected_digest = checksums.get(relative_path)
+        if expected_digest is None:
+            raise RuntimeError(f"Checksum manifest is missing {relative_path}.")
+        actual_digest = sha256_file_digest(required_path)
+        if actual_digest != expected_digest:
+            raise RuntimeError(f"Checksum mismatch for {relative_path}.")
+    return True
 
 
 @dataclass
@@ -3826,7 +3920,43 @@ class CodexSwitchApp:
 
     def _preview_skill_repo_sources(self, repo: SkillMarketRepo) -> list[SkillSource]:
         cache_dir = self._sync_skill_repo_preview_cache(repo)
-        return discover_skill_sources([cache_dir])
+        sources = discover_skill_sources([cache_dir])
+        self._verify_skill_repo_checksums(cache_dir, sources)
+        return sources
+
+    def _existing_repo_files(self, repo_root: Path, relative_paths: tuple[Path, ...]) -> list[Path]:
+        return [
+            repo_root / relative_path
+            for relative_path in relative_paths
+            if (repo_root / relative_path).is_file()
+        ]
+
+    def _skill_repo_checksum_required_paths(self, repo_root: Path, sources: list[SkillSource]) -> list[Path]:
+        required_paths: list[Path] = []
+        root = repo_root.resolve()
+        for source in sources:
+            skill_file = source.source_path / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            try:
+                skill_file.resolve().relative_to(root)
+            except ValueError:
+                continue
+            required_paths.append(skill_file)
+        required_paths.extend(self._existing_repo_files(repo_root, MODEL_METADATA_RELATIVE_PATHS))
+        return required_paths
+
+    def _verify_skill_repo_checksums(self, repo_root: Path, sources: list[SkillSource]) -> bool:
+        return verify_hot_update_checksums(
+            repo_root,
+            self._skill_repo_checksum_required_paths(repo_root, sources),
+        )
+
+    def _verify_project_repo_checksums(self, repo_root: Path) -> bool:
+        return verify_hot_update_checksums(
+            repo_root,
+            self._existing_repo_files(repo_root, PROJECT_METADATA_RELATIVE_PATHS),
+        )
 
     def _selected_skill_repo_preview_sources(self) -> list[SkillSource]:
         if not hasattr(self, "skill_repo_preview_tree"):
@@ -4330,12 +4460,13 @@ class CodexSwitchApp:
             return False
         try:
             cache_dir = self._sync_skill_repo_cache(repo, expected_commit)
+            sources = discover_skill_sources([cache_dir])
+            self._verify_skill_repo_checksums(cache_dir, sources)
         except RuntimeError as exc:
             if not automatic:
                 messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
         metadata_updated = self._load_model_metadata_from_repo(cache_dir)
-        sources = discover_skill_sources([cache_dir])
         updated_group, imported_count = self._import_skill_sources_to_group(
             group,
             sources,
@@ -4370,11 +4501,12 @@ class CodexSwitchApp:
             return
         try:
             cache_dir = self._sync_skill_repo_cache(repo)
+            sources = discover_skill_sources([cache_dir])
+            self._verify_skill_repo_checksums(cache_dir, sources)
         except RuntimeError as exc:
             messagebox.showerror("安装失败", str(exc), parent=self.root)
             return
         metadata_updated = self._load_model_metadata_from_repo(cache_dir)
-        sources = discover_skill_sources([cache_dir])
         updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
         synced_repo = self._skill_repo_by_id(repo.id) or repo
         updated_repo = replace(synced_repo, installed_group_id=group.id)
@@ -4469,6 +4601,12 @@ class CodexSwitchApp:
         if not same_git_commit(synced_commit, latest_commit):
             if not automatic:
                 messagebox.showerror("更新失败", "项目更新后的 HEAD 与检测到的远端提交不一致，请重新检查更新。", parent=self.root)
+            return False
+        try:
+            self._verify_project_repo_checksums(project_root)
+        except RuntimeError as exc:
+            if not automatic:
+                messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
         updated_project, project_metadata_updated = self._load_project_metadata_from_repo(project, project_root)
         self._set_project_commit(updated_project, synced_commit)

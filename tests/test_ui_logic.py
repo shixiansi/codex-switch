@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,7 @@ from codex_switch.ui.app import (
     LIBRARY_VIEW_ALL,
     ModelBatchCache,
     ModelBatchResult,
+    checksum_manifest_entries,
     git_fetch_ref_candidates,
     git_remote_ref_patterns,
     remote_commit_from_ls_remote,
@@ -121,6 +123,10 @@ class _ValueVar:
         self.value = value
 
 
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _make_minimal_app() -> CodexSwitchApp:
     app = CodexSwitchApp.__new__(CodexSwitchApp)
     app.root = None
@@ -161,6 +167,13 @@ class UiFilterTests(unittest.TestCase):
             self.assertTrue(is_github_repo_url(url), url)
         for url in rejected:
             self.assertFalse(is_github_repo_url(url), url)
+
+    def test_checksum_manifest_rejects_unsafe_paths(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "unsafe path"):
+            checksum_manifest_entries({"sha256": {"../outside.txt": "0" * 64}})
+
+        with self.assertRaisesRegex(RuntimeError, "unsafe path"):
+            checksum_manifest_entries({"files": [{"path": "C:/outside.txt", "sha256": "0" * 64}]})
 
     def test_git_ref_helpers_support_branches_tags_and_commits(self) -> None:
         self.assertEqual(
@@ -985,9 +998,24 @@ class UiFilterTests(unittest.TestCase):
             cache_dir = temp_dir / "repo"
             skill_dir = cache_dir / "python-helper"
             skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text("Use Python.", encoding="utf-8")
-            (cache_dir / "codex-switch-model-metadata.json").write_text(
+            skill_file = skill_dir / "SKILL.md"
+            skill_file.write_text("Use Python.", encoding="utf-8")
+            metadata_path = cache_dir / "codex-switch-model-metadata.json"
+            metadata_path.write_text(
                 json.dumps({"model_vendor_keywords": {"Acme": ["acme-"]}}),
+                encoding="utf-8",
+            )
+            manifest_dir = cache_dir / ".codex-switch"
+            manifest_dir.mkdir()
+            (manifest_dir / "checksums.json").write_text(
+                json.dumps(
+                    {
+                        "sha256": {
+                            skill_file.relative_to(cache_dir).as_posix(): _file_sha256(skill_file),
+                            metadata_path.relative_to(cache_dir).as_posix(): _file_sha256(metadata_path),
+                        }
+                    }
+                ),
                 encoding="utf-8",
             )
             group = SkillGroup.create("代码组")
@@ -1006,6 +1034,58 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual([skill.name for skill in app.skill_groups[0].skills], ["python-helper"])
             self.assertEqual(app.model_vendor_keywords["Acme"], ["acme-"])
             self.assertIn("模型元数据已更新", app.status_var.get())
+
+    def test_skill_repo_update_rejects_missing_checksum_entry(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            cache_dir = temp_dir / "repo"
+            skill_dir = cache_dir / "python-helper"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("Use Python.", encoding="utf-8")
+            other_file = cache_dir / "README.md"
+            other_file.write_text("checksummed", encoding="utf-8")
+            manifest_dir = cache_dir / ".codex-switch"
+            manifest_dir.mkdir()
+            (manifest_dir / "checksums.json").write_text(
+                json.dumps({"sha256": {other_file.relative_to(cache_dir).as_posix(): _file_sha256(other_file)}}),
+                encoding="utf-8",
+            )
+            group = SkillGroup.create("代码组")
+            repo = SkillMarketRepo.create(
+                "https://github.com/example/skills",
+                installed_group_id=group.id,
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [group]
+            app.skill_market_repos = [repo]
+            app._sync_skill_repo_cache = lambda _repo, _expected=None: cache_dir
+
+            with patch("codex_switch.ui.app.messagebox.showerror") as showerror:
+                updated = app._apply_skill_repo_update(repo, automatic=False)
+
+            self.assertFalse(updated)
+            self.assertEqual(app.skill_groups[0].skills, [])
+            self.assertEqual(app.persist_count, 0)
+            self.assertIn("missing python-helper/SKILL.md", showerror.call_args.args[1])
+
+    def test_skill_repo_preview_rejects_checksum_mismatch(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            repo_root = temp_dir / "preview"
+            skill_dir = repo_root / "alpha-helper"
+            skill_dir.mkdir(parents=True)
+            skill_file = skill_dir / "SKILL.md"
+            skill_file.write_text("alpha content", encoding="utf-8")
+            manifest_dir = repo_root / ".codex-switch"
+            manifest_dir.mkdir()
+            (manifest_dir / "checksums.json").write_text(
+                json.dumps({"sha256": {skill_file.relative_to(repo_root).as_posix(): "0" * 64}}),
+                encoding="utf-8",
+            )
+            repo = SkillMarketRepo.create("https://github.com/example/skills")
+            app = _make_minimal_app()
+            app._sync_skill_repo_preview_cache = lambda _repo: repo_root
+
+            with self.assertRaisesRegex(RuntimeError, "Checksum mismatch"):
+                app._preview_skill_repo_sources(repo)
 
     def test_skill_repo_preview_discovers_repo_skills(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -1355,6 +1435,61 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(app.projects[0].github_last_sync_commit, "oldcommit")
             self.assertEqual(app.persist_count, 0)
             self.assertIn("不一致", showerror.call_args.args[1])
+
+    def test_project_update_rejects_metadata_checksum_mismatch(self) -> None:
+        class FakeCompleted:
+            def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+                self.returncode = returncode
+                self.stdout = stdout
+                self.stderr = stderr
+
+        with workspace_tempdir() as temp_dir:
+            (temp_dir / ".git").mkdir()
+            old_skill = SkillDefinition.create("old-helper", content="old")
+            new_skill = SkillDefinition.create("new-helper", content="new")
+            old_group = SkillGroup.create("old", skills=[old_skill])
+            new_group = SkillGroup.create("new", skills=[new_skill])
+            project = ProjectRecord.create(
+                str(temp_dir),
+                "profile-id",
+                skill_group_ids=[old_group.id],
+                skills=[old_skill],
+                skill_names=[old_skill.name],
+                github_repo="https://github.com/example/project",
+                github_last_sync_commit="oldcommit",
+            )
+            metadata_dir = temp_dir / ".codex-switch"
+            metadata_dir.mkdir()
+            metadata_path = metadata_dir / "project.json"
+            metadata_path.write_text(
+                json.dumps({"skill_group_ids": [new_group.id]}),
+                encoding="utf-8",
+            )
+            (metadata_dir / "checksums.json").write_text(
+                json.dumps({"sha256": {metadata_path.relative_to(temp_dir).as_posix(): "0" * 64}}),
+                encoding="utf-8",
+            )
+            app = _make_minimal_app()
+            app.skill_groups = [old_group, new_group]
+            app.projects = [project]
+
+            def fake_run(args, **_kwargs):
+                if args[-2:] == ["pull", "--ff-only"]:
+                    return FakeCompleted()
+                if args[-2:] == ["rev-parse", "HEAD"]:
+                    return FakeCompleted(stdout="newcommit\n")
+                raise AssertionError(args)
+
+            with patch("codex_switch.ui.app.subprocess.run", side_effect=fake_run):
+                with patch("codex_switch.ui.app.messagebox.showerror") as showerror:
+                    applied = app._apply_project_update(project, "newcommit", automatic=False)
+
+            self.assertFalse(applied)
+            self.assertEqual(app.projects[0].github_last_sync_commit, "oldcommit")
+            self.assertEqual(app.projects[0].skill_group_ids, [old_group.id])
+            self.assertEqual([skill.name for skill in app.projects[0].skills], ["old-helper"])
+            self.assertEqual(app.persist_count, 0)
+            self.assertIn("Checksum mismatch", showerror.call_args.args[1])
 
     def test_project_hot_update_uses_real_git_to_sync_project_metadata(self) -> None:
         git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
