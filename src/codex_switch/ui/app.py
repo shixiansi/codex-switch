@@ -166,7 +166,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_rules_for_project_profiles,
 )
-from codex_switch.ui.utils import compact_text, hidden_secret, is_http_url
+from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_url, is_http_url
 
 
 _SINGLE_INSTANCE_HANDLE = None
@@ -3550,8 +3550,8 @@ class CodexSwitchApp:
         if not url:
             return
         url = url.strip()
-        if not is_http_url(url):
-            messagebox.showerror("校验失败", "仓库地址必须以 http:// 或 https:// 开头。", parent=self.root)
+        if not is_github_repo_url(url):
+            messagebox.showerror("校验失败", "Skills 仓库必须是可信的 GitHub HTTPS 仓库地址，例如 https://github.com/owner/repo。", parent=self.root)
             return
         branch = simpledialog.askstring("Skills仓库", "分支：", initialvalue="main", parent=self.root) or "main"
         auto_update = messagebox.askyesno("自动更新", "是否允许该仓库自动检查更新？", parent=self.root)
@@ -3569,8 +3569,8 @@ class CodexSwitchApp:
         url = simpledialog.askstring("Skills仓库", "GitHub 仓库地址：", initialvalue=repo.url, parent=self.root)
         if not url:
             return
-        if not is_http_url(url.strip()):
-            messagebox.showerror("校验失败", "仓库地址必须以 http:// 或 https:// 开头。", parent=self.root)
+        if not is_github_repo_url(url.strip()):
+            messagebox.showerror("校验失败", "Skills 仓库必须是可信的 GitHub HTTPS 仓库地址，例如 https://github.com/owner/repo。", parent=self.root)
             return
         branch = simpledialog.askstring("Skills仓库", "分支：", initialvalue=repo.branch, parent=self.root) or repo.branch
         auto_update = messagebox.askyesno("自动更新", "是否允许该仓库自动检查更新？", parent=self.root)

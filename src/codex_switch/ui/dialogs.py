@@ -33,7 +33,7 @@ from codex_switch.models import (
 )
 from codex_switch.skills import SkillSource
 from codex_switch.ui.styles import PALETTE, make_button, ttk
-from codex_switch.ui.utils import compact_text, is_http_url
+from codex_switch.ui.utils import compact_text, is_github_repo_url, is_http_url
 
 
 class ChatSettingsDialog(tk.Toplevel):
@@ -1380,8 +1380,8 @@ class ProjectDialog(tk.Toplevel):
 
         project_name = self.name_var.get().strip() or project_root.name or "未命名项目"
         github_repo = self.github_repo_var.get().strip()
-        if github_repo and not is_http_url(github_repo):
-            messagebox.showerror("校验失败", "GitHub 地址必须以 http:// 或 https:// 开头。", parent=self)
+        if github_repo and not is_github_repo_url(github_repo):
+            messagebox.showerror("校验失败", "GitHub 地址必须是可信的 GitHub HTTPS 仓库地址，例如 https://github.com/owner/repo。", parent=self)
             return
         selected_skill_group_ids, selected_skills, selected_skill_names = self._selected_project_skills()
         self.result = {

@@ -101,7 +101,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_rules_for_project,
     route_proxy_rules_for_project_profiles,
 )
-from codex_switch.ui.utils import resolve_mcp_editor_text
+from codex_switch.ui.utils import is_github_repo_url, resolve_mcp_editor_text
 
 
 class _ValueVar:
@@ -133,6 +133,27 @@ def _make_minimal_app() -> CodexSwitchApp:
 
 
 class UiFilterTests(unittest.TestCase):
+    def test_github_repo_url_validation_requires_trusted_https_repo(self) -> None:
+        accepted = (
+            "https://github.com/example/skills",
+            "https://github.com/example/skills.git",
+            "https://www.github.com/example/project",
+        )
+        rejected = (
+            "http://github.com/example/skills",
+            "https://gitlab.com/example/skills",
+            "https://github.com.evil/example/skills",
+            "https://github.com/example",
+            "https://github.com/example/skills/tree/main",
+            "https://github.com/example/skills?tab=readme",
+            "not-a-url",
+        )
+
+        for url in accepted:
+            self.assertTrue(is_github_repo_url(url), url)
+        for url in rejected:
+            self.assertFalse(is_github_repo_url(url), url)
+
     def test_other_vendor_is_not_a_codex_or_claude_binding(self) -> None:
         profile = Profile.create("other", "https://other.example.com", "sk-other", vendor=VENDOR_OTHER)
 

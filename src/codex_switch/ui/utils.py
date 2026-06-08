@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from codex_switch.project_template import CODEX_SCRIPT_DIRNAME
 
@@ -14,6 +15,21 @@ def hidden_secret(value: str | None) -> str:
 
 def is_http_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
+
+
+def is_github_repo_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    host = (parsed.hostname or "").casefold()
+    if host == "www.github.com":
+        host = "github.com"
+    if parsed.scheme != "https" or host != "github.com" or parsed.query or parsed.fragment:
+        return False
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) != 2:
+        return False
+    owner, repo = parts
+    return bool(owner and repo and repo != ".git")
+
 
 def project_start_script_paths(project_dir: Path | str) -> tuple[Path, Path]:
     project_root = Path(project_dir)
