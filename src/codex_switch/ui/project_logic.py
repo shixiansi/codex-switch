@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from codex_switch.models import ProjectRecord
+from codex_switch.models import ProjectRecord, SkillDefinition
 from codex_switch.skills import SkillSource, resolve_selected_skill_sources
 from codex_switch.ui.utils import project_start_script_paths
 
@@ -16,6 +16,7 @@ class CodexProjectTemplateOptions:
     agents_doc_text: str
     route_proxy_base_url: str | None
     skill_sources: list[SkillSource]
+    skill_definitions: list[SkillDefinition]
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ def codex_project_template_options(
         agents_doc_text=agents_doc_text,
         route_proxy_base_url=route_proxy_base_url,
         skill_sources=resolve_selected_skill_sources(available_skill_sources, project.skill_names),
+        skill_definitions=list(project.skills),
     )
 
 

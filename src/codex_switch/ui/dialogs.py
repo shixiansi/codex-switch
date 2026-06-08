@@ -15,12 +15,19 @@ from codex_switch.models import (
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
+    PROFILE_CATEGORY_CHOICES,
+    PROFILE_CATEGORY_IMAGE_GENERATION,
+    PROFILE_CATEGORY_LABELS,
+    PROFILE_CATEGORY_TEXT,
     PROFILE_VENDOR_CHOICES,
     Profile,
     ProjectRecord,
+    SkillDefinition,
+    SkillGroup,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
+    normalize_profile_category,
     profile_supports_claude,
     profile_supports_codex,
 )
@@ -730,6 +737,13 @@ class ProfileDialog(tk.Toplevel):
         self.name_var = tk.StringVar(value=defaults.name)
         self.base_url_var = tk.StringVar(value=defaults.base_url)
         self.vendor_var = tk.StringVar(value=defaults.vendor)
+        self.category_values = {
+            PROFILE_CATEGORY_LABELS[category]: category
+            for category in PROFILE_CATEGORY_CHOICES
+        }
+        default_category = normalize_profile_category(defaults.category)
+        self.category_var = tk.StringVar(value=PROFILE_CATEGORY_LABELS.get(default_category, "文本"))
+        self.api_provided_var = tk.BooleanVar(value=bool(defaults.api_provided))
         self.codex_model_var = tk.StringVar(value=defaults.codex_display_model)
         self.claude_model_var = tk.StringVar(value=defaults.claude_display_model)
         self.claude_fallback_model_var = tk.StringVar(value=defaults.claude_display_fallback_model)
@@ -741,6 +755,7 @@ class ProfileDialog(tk.Toplevel):
         self.active_api_key_var = tk.IntVar(value=defaults.effective_active_api_key_index)
         self.api_key_vars: list[tk.StringVar] = []
         self.api_key_entries: list[ttk.Entry] = []
+        self.api_key_widgets: list[tk.Widget] = []
 
         card = tk.Frame(
             self,
@@ -812,16 +827,45 @@ class ProfileDialog(tk.Toplevel):
 
         tk.Label(
             card,
+            text="分类",
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).grid(row=4, column=2, sticky="w", padx=(12, 0), pady=6)
+        self.category_combo = ttk.Combobox(
+            card,
+            textvariable=self.category_var,
+            values=list(self.category_values.keys()),
+            state="readonly",
+            width=12,
+        )
+        self.category_combo.grid(row=4, column=3, sticky="ew", pady=6)
+        self.category_combo.bind("<<ComboboxSelected>>", self._toggle_api_fields)
+
+        self.api_provided_check = ttk.Checkbutton(
+            card,
+            text="提供 API",
+            variable=self.api_provided_var,
+            command=self._toggle_api_fields,
+        )
+        self.api_provided_check.grid(row=4, column=4, sticky="w", padx=(12, 0), pady=6)
+
+        api_key_label = tk.Label(
+            card,
             text="API Key",
             bg=PALETTE["card_bg"],
             fg=PALETTE["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=5, column=0, sticky="nw", pady=6)
+        )
+        api_key_label.grid(row=5, column=0, sticky="nw", pady=6)
+        self.api_key_widgets.append(api_key_label)
         self.api_keys_frame = tk.Frame(card, bg=PALETTE["card_bg"])
         self.api_keys_frame.grid(row=5, column=1, sticky="ew", pady=6)
+        self.api_key_widgets.append(self.api_keys_frame)
         self.api_keys_frame.columnconfigure(0, weight=1)
         key_actions = ttk.Frame(card)
         key_actions.grid(row=5, column=2, sticky="nw", padx=(8, 0), pady=4)
+        self.api_key_widgets.append(key_actions)
         key_actions.columnconfigure(1, weight=1)
         make_button(
             key_actions,
@@ -885,6 +929,7 @@ class ProfileDialog(tk.Toplevel):
 
         card.columnconfigure(1, weight=1)
         self._toggle_model_fields()
+        self._toggle_api_fields()
         self._toggle_sign_in_fields()
         self.transient(master)
         self.grab_set()
@@ -922,6 +967,34 @@ class ProfileDialog(tk.Toplevel):
         for entry in self.api_key_entries:
             entry.configure(show=show)
 
+    def _selected_category(self) -> str:
+        return self.category_values.get(self.category_var.get(), PROFILE_CATEGORY_TEXT)
+
+    def _api_fields_enabled(self) -> bool:
+        return self._selected_category() != PROFILE_CATEGORY_IMAGE_GENERATION or self.api_provided_var.get()
+
+    def _toggle_api_fields(self, _event: object | None = None) -> None:
+        is_image_generation = self._selected_category() == PROFILE_CATEGORY_IMAGE_GENERATION
+        if not is_image_generation:
+            self.api_provided_var.set(True)
+            self.api_provided_check.state(["disabled"])
+        else:
+            self.api_provided_check.state(["!disabled"])
+
+        visible = self._api_fields_enabled()
+        if not visible:
+            for variable in self.api_key_vars:
+                variable.set("")
+            self.active_api_key_var.set(0)
+        for widget in self.api_key_widgets:
+            if visible:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        entry_state = "normal" if visible else "disabled"
+        for entry in self.api_key_entries:
+            entry.configure(state=entry_state)
+
     def _toggle_sign_in_fields(self) -> None:
         state = "normal" if self.requires_sign_in_var.get() else "disabled"
         self.sign_in_url_entry.configure(state=state)
@@ -944,6 +1017,8 @@ class ProfileDialog(tk.Toplevel):
         name = self.name_var.get().strip()
         base_url = self.base_url_var.get().strip()
         vendor = self.vendor_var.get().strip() or VENDOR_GENERIC
+        category = self._selected_category()
+        api_provided = self._api_fields_enabled()
         codex_model = self.codex_model_var.get().strip() or DEFAULT_CODEX_MODEL
         claude_model = self.claude_model_var.get().strip() or DEFAULT_CLAUDE_MODEL
         claude_fallback_model = self.claude_fallback_model_var.get().strip() or DEFAULT_CLAUDE_FALLBACK_MODEL
@@ -965,13 +1040,13 @@ class ProfileDialog(tk.Toplevel):
         if not name:
             messagebox.showerror("校验失败", "请输入配置名称。", parent=self)
             return
-        if not is_http_url(base_url):
+        if api_provided and not is_http_url(base_url):
             messagebox.showerror("校验失败", "API 地址必须以 http:// 或 https:// 开头。", parent=self)
             return
-        if not api_keys:
+        if api_provided and not api_keys:
             messagebox.showerror("校验失败", "请输入 API Key。", parent=self)
             return
-        if not active_row_has_key:
+        if api_provided and not active_row_has_key:
             messagebox.showerror("校验失败", "请选择一个已填写的活动 API Key。", parent=self)
             return
         if vendor == VENDOR_CODEX and not codex_model:
@@ -989,16 +1064,18 @@ class ProfileDialog(tk.Toplevel):
 
         self.result = {
             "name": name,
-            "base_url": base_url.rstrip("/"),
-            "api_key": api_keys[active_api_key_index],
-            "api_keys": api_keys,
-            "active_api_key_index": active_api_key_index,
+            "base_url": base_url.rstrip("/") if api_provided else "",
+            "api_key": api_keys[active_api_key_index] if api_provided else "",
+            "api_keys": api_keys if api_provided else [],
+            "active_api_key_index": active_api_key_index if api_provided else 0,
             "model": codex_model,
             "vendor": vendor,
             "codex_model": codex_model,
             "claude_model": claude_model,
             "claude_fallback_model": claude_fallback_model,
             "provider_name": self.provider_name_var.get().strip() or "OpenAI",
+            "category": category,
+            "api_provided": api_provided,
             "wire_api": self.wire_api_var.get().strip() or "responses",
             "requires_sign_in": requires_sign_in,
             "sign_in_url": sign_in_url if requires_sign_in else "",
@@ -1015,6 +1092,7 @@ class ProjectDialog(tk.Toplevel):
         profiles: list[Profile],
         mcp_server_names: list[str] | None = None,
         skill_sources: list[SkillSource] | None = None,
+        skill_groups: list[SkillGroup] | None = None,
         project: ProjectRecord | None = None,
         initial_project_dir: str = "",
     ) -> None:
@@ -1029,6 +1107,8 @@ class ProjectDialog(tk.Toplevel):
         self.mcp_server_vars: dict[str, tk.BooleanVar] = {}
         self.skill_sources = list(skill_sources or [])
         self.skill_vars: dict[str, tk.BooleanVar] = {}
+        self.skill_groups = list(skill_groups or [])
+        self.skill_group_vars: dict[str, tk.BooleanVar] = {}
         codex_profiles = [profile for profile in profiles if profile_supports_codex(profile)]
         claude_profiles = [profile for profile in profiles if profile_supports_claude(profile)]
 
@@ -1039,8 +1119,10 @@ class ProjectDialog(tk.Toplevel):
             default_codex_profile_id = codex_profiles[0].id if codex_profiles else default_profile_id
             default_claude_profile_id = claude_profiles[0].id if claude_profiles else default_profile_id
             default_run_command = ""
+            default_github_repo = ""
             default_mcp_server_names = list(self.mcp_server_names)
             default_skill_names = [source.name for source in self.skill_sources]
+            default_skill_group_ids = [group.id for group in self.skill_groups]
         else:
             default_name = project.name
             default_project_dir = project.project_dir
@@ -1048,6 +1130,7 @@ class ProjectDialog(tk.Toplevel):
             default_codex_profile_id = project.codex_profile_id or project.profile_id
             default_claude_profile_id = project.claude_profile_id or project.profile_id
             default_run_command = project.run_command
+            default_github_repo = project.github_repo
             default_mcp_server_names = (
                 list(project.mcp_server_names)
                 if project.mcp_server_names is not None
@@ -1058,11 +1141,17 @@ class ProjectDialog(tk.Toplevel):
                 if project.skill_names is not None
                 else [source.name for source in self.skill_sources]
             )
+            default_skill_group_ids = (
+                list(project.skill_group_ids)
+                if project.skill_group_ids is not None
+                else [group.id for group in self.skill_groups]
+            )
         self.name_var = tk.StringVar(value=default_name)
         self.project_dir_var = tk.StringVar(value=default_project_dir)
         self.codex_profile_var = tk.StringVar()
         self.claude_profile_var = tk.StringVar()
         self.run_command_var = tk.StringVar(value=default_run_command)
+        self.github_repo_var = tk.StringVar(value=default_github_repo)
 
         card = tk.Frame(
             self,
@@ -1140,9 +1229,12 @@ class ProjectDialog(tk.Toplevel):
             wraplength=420,
         ).grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 6))
 
-        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=8, column=0, sticky="nw", pady=6)
+        tk.Label(card, text="GitHub 地址", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=8, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.github_repo_var, width=52).grid(row=8, column=1, columnspan=2, sticky="ew", pady=6)
+
+        tk.Label(card, text="项目 MCP", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=9, column=0, sticky="nw", pady=6)
         mcp_frame = tk.Frame(card, bg=PALETTE["card_bg"])
-        mcp_frame.grid(row=8, column=1, columnspan=2, sticky="ew", pady=6)
+        mcp_frame.grid(row=9, column=1, columnspan=2, sticky="ew", pady=6)
         for column in range(2):
             mcp_frame.columnconfigure(column, weight=1)
         if self.mcp_server_names:
@@ -1166,12 +1258,25 @@ class ProjectDialog(tk.Toplevel):
                 font=("Microsoft YaHei UI", 9),
             ).grid(row=0, column=0, sticky="w")
 
-        tk.Label(card, text="项目 Skills", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=9, column=0, sticky="nw", pady=6)
+        tk.Label(card, text="项目 Skills", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=10, column=0, sticky="nw", pady=6)
         skill_frame = tk.Frame(card, bg=PALETTE["card_bg"])
-        skill_frame.grid(row=9, column=1, columnspan=2, sticky="ew", pady=6)
+        skill_frame.grid(row=10, column=1, columnspan=2, sticky="ew", pady=6)
         for column in range(3):
             skill_frame.columnconfigure(column, weight=1)
-        if self.skill_sources:
+        if self.skill_groups:
+            selected_group_set = set(default_skill_group_ids)
+            for index, group in enumerate(self.skill_groups):
+                var = tk.BooleanVar(value=group.id in selected_group_set)
+                self.skill_group_vars[group.id] = var
+                label = f"{group.name}（{len(group.skills)}）"
+                ttk.Checkbutton(skill_frame, text=compact_text(label, 26), variable=var).grid(
+                    row=index // 3,
+                    column=index % 3,
+                    sticky="w",
+                    padx=(0, 12),
+                    pady=(0, 4),
+                )
+        elif self.skill_sources:
             selected_skill_set = set(default_skill_names)
             for index, source in enumerate(self.skill_sources):
                 var = tk.BooleanVar(value=source.name in selected_skill_set)
@@ -1195,7 +1300,7 @@ class ProjectDialog(tk.Toplevel):
             ).grid(row=0, column=0, sticky="w")
 
         buttons = ttk.Frame(card)
-        buttons.grid(row=10, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=11, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存项目", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
@@ -1220,6 +1325,34 @@ class ProjectDialog(tk.Toplevel):
         if selected:
             self.project_dir_var.set(selected)
 
+    def _selected_project_skills(self) -> tuple[list[str], list[SkillDefinition], list[str]]:
+        selected_group_ids = [
+            group_id
+            for group_id, variable in self.skill_group_vars.items()
+            if variable.get()
+        ]
+        if selected_group_ids:
+            group_by_id = {group.id: group for group in self.skill_groups}
+            skills: list[SkillDefinition] = []
+            skill_names: list[str] = []
+            for group_id in selected_group_ids:
+                group = group_by_id.get(group_id)
+                if group is None:
+                    continue
+                for skill in group.skills:
+                    skills.append(skill)
+                    if skill.name and skill.name not in skill_names:
+                        skill_names.append(skill.name)
+            return selected_group_ids, skills, skill_names
+
+        skill_names = [
+            skill_name
+            for skill_name, variable in self.skill_vars.items()
+            if variable.get()
+        ]
+        skills = [SkillDefinition.create(name) for name in skill_names]
+        return [], skills, skill_names
+
     def _on_submit(self) -> None:
         project_dir_raw = self.project_dir_var.get().strip()
         if not project_dir_raw:
@@ -1242,6 +1375,11 @@ class ProjectDialog(tk.Toplevel):
             return
 
         project_name = self.name_var.get().strip() or project_root.name or "未命名项目"
+        github_repo = self.github_repo_var.get().strip()
+        if github_repo and not is_http_url(github_repo):
+            messagebox.showerror("校验失败", "GitHub 地址必须以 http:// 或 https:// 开头。", parent=self)
+            return
+        selected_skill_group_ids, selected_skills, selected_skill_names = self._selected_project_skills()
         self.result = {
             "name": project_name,
             "project_dir": str(project_root),
@@ -1249,16 +1387,15 @@ class ProjectDialog(tk.Toplevel):
             "codex_profile_id": selected_codex_profile,
             "claude_profile_id": selected_claude_profile,
             "run_command": self.run_command_var.get().strip(),
+            "github_repo": github_repo,
             "mcp_server_names": [
                 server_name
                 for server_name, variable in self.mcp_server_vars.items()
                 if variable.get()
             ],
-            "skill_names": [
-                skill_name
-                for skill_name, variable in self.skill_vars.items()
-                if variable.get()
-            ],
+            "skill_names": selected_skill_names,
+            "skill_group_ids": selected_skill_group_ids,
+            "skills": selected_skills,
         }
         self.destroy()
 

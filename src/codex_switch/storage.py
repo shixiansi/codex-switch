@@ -5,7 +5,14 @@ import json
 import os
 
 from codex_switch.codex_config import load_default_global_mcp_toml
-from codex_switch.models import AccountPoolSettings, Profile, ProjectRecord, RouteProxySettings
+from codex_switch.models import (
+    AccountPoolSettings,
+    Profile,
+    ProjectRecord,
+    RouteProxySettings,
+    SkillGroup,
+    SkillMarketRepo,
+)
 from codex_switch.project_template import load_default_agents_doc_text
 
 
@@ -53,6 +60,8 @@ class ProfileStore:
         str | None,
         str | None,
         AccountPoolSettings,
+        list[SkillGroup],
+        list[SkillMarketRepo],
     ]:
         default_global_mcp_toml = load_default_global_mcp_toml()
         default_agents_doc_text = load_default_agents_doc_text()
@@ -74,6 +83,8 @@ class ProfileStore:
                 None,
                 None,
                 AccountPoolSettings(),
+                [],
+                [],
             )
 
         try:
@@ -97,6 +108,8 @@ class ProfileStore:
                 None,
                 None,
                 AccountPoolSettings(),
+                [],
+                [],
             )
 
         profiles = [Profile.from_dict(item) for item in payload.get("profiles", [])]
@@ -121,6 +134,8 @@ class ProfileStore:
         model_batch_cache_by_profile: dict = {}
         route_proxy_settings = RouteProxySettings()
         account_pool_settings = AccountPoolSettings()
+        skill_groups: list[SkillGroup] = []
+        skill_market_repos: list[SkillMarketRepo] = []
         if isinstance(settings_payload, dict):
             global_mcp_opt_out = bool(settings_payload.get("global_mcp_opt_out", False))
             if "global_mcp_toml" in settings_payload:
@@ -150,6 +165,20 @@ class ProfileStore:
                 model_batch_cache_by_profile = stored_model_batch_cache
             route_proxy_settings = RouteProxySettings.from_dict(settings_payload.get("route_proxy"))
             account_pool_settings = AccountPoolSettings.from_dict(settings_payload.get("account_pool"))
+            raw_skill_groups = settings_payload.get("skill_groups", [])
+            if isinstance(raw_skill_groups, list):
+                skill_groups = [
+                    SkillGroup.from_dict(item)
+                    for item in raw_skill_groups
+                    if isinstance(item, dict)
+                ]
+            raw_skill_market_repos = settings_payload.get("skill_market_repos", [])
+            if isinstance(raw_skill_market_repos, list):
+                skill_market_repos = [
+                    SkillMarketRepo.from_dict(item)
+                    for item in raw_skill_market_repos
+                    if isinstance(item, dict)
+                ]
         return (
             profiles,
             selected_profile_id,
@@ -167,6 +196,8 @@ class ProfileStore:
             selected_codex_global_profile_id,
             selected_claude_global_profile_id,
             account_pool_settings,
+            skill_groups,
+            skill_market_repos,
         )
 
     def save(
@@ -187,6 +218,8 @@ class ProfileStore:
         selected_codex_global_profile_id: str | None = None,
         selected_claude_global_profile_id: str | None = None,
         account_pool_settings: AccountPoolSettings | None = None,
+        skill_groups: list[SkillGroup] | None = None,
+        skill_market_repos: list[SkillMarketRepo] | None = None,
     ) -> None:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
@@ -195,7 +228,7 @@ class ProfileStore:
         if account_pool_settings is None:
             account_pool_settings = AccountPoolSettings()
         payload = {
-            "version": 11,
+            "version": 13,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,
@@ -217,6 +250,8 @@ class ProfileStore:
                 "model_batch_cache_by_profile": dict(model_batch_cache_by_profile or {}),
                 "route_proxy": route_proxy_settings.to_dict(),
                 "account_pool": account_pool_settings.to_dict(),
+                "skill_groups": [group.to_dict() for group in (skill_groups or [])],
+                "skill_market_repos": [repo.to_dict() for repo in (skill_market_repos or [])],
             },
         }
         with self.storage_path.open("w", encoding="utf-8") as handle:

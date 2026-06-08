@@ -31,6 +31,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    PROFILE_CATEGORY_IMAGE_GENERATION,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
@@ -116,6 +117,19 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(normalize_profile_vendor("other"), VENDOR_OTHER)
         self.assertEqual(profile.vendor, VENDOR_OTHER)
         self.assertEqual(profile.vendor_label, "其他")
+        self.assertFalse(profile_supports_codex(profile))
+        self.assertFalse(profile_supports_claude(profile))
+
+    def test_image_generation_without_api_is_not_bindable(self) -> None:
+        profile = Profile.create(
+            "image",
+            "",
+            "",
+            category=PROFILE_CATEGORY_IMAGE_GENERATION,
+            api_provided=False,
+        )
+
+        self.assertFalse(profile.api_provided)
         self.assertFalse(profile_supports_codex(profile))
         self.assertFalse(profile_supports_claude(profile))
 

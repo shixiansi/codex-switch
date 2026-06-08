@@ -50,6 +50,9 @@ from codex_switch.models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
+    SkillDefinition,
+    SkillGroup,
+    SkillMarketRepo,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PLACEHOLDER_KEY,
@@ -69,6 +72,8 @@ from codex_switch.models import (
     normalize_route_proxy_port,
     normalize_account_pool_recovery_interval_minutes,
     now_iso,
+    model_vendor_stats,
+    models_by_vendor,
     profile_supports_claude,
     profile_supports_codex,
     project_dir_key,
@@ -522,6 +527,8 @@ class CodexSwitchApp:
             raw_codex_global_profile_id = load_state[13] if len(load_state) >= 14 else None
             raw_claude_global_profile_id = load_state[14] if len(load_state) >= 15 else None
             self.account_pool_settings = load_state[15] if len(load_state) >= 16 else AccountPoolSettings()
+            self.skill_groups = load_state[16] if len(load_state) >= 17 else []
+            self.skill_market_repos = load_state[17] if len(load_state) >= 18 else []
         else:
             self.profiles, self.selected_profile_id = load_state  # type: ignore[misc]
             self.projects = []
@@ -538,6 +545,8 @@ class CodexSwitchApp:
             raw_codex_global_profile_id = None
             raw_claude_global_profile_id = None
             self.account_pool_settings = AccountPoolSettings()
+            self.skill_groups = []
+            self.skill_market_repos = []
         self.global_codex_profile_id = resolve_global_profile_id(
             raw_codex_global_profile_id,
             self.selected_profile_id,
@@ -603,6 +612,7 @@ class CodexSwitchApp:
         self.library_hint_var = tk.StringVar(value="还没有保存的配置。")
         self.library_selected_name_var = tk.StringVar(value="未选择配置")
         self.library_selected_provider_var = tk.StringVar(value="-")
+        self.library_selected_category_var = tk.StringVar(value="-")
         self.library_selected_model_var = tk.StringVar(value="-")
         self.library_selected_api_var = tk.StringVar(value="-")
         self.library_selected_key_var = tk.StringVar(value="-")
@@ -611,6 +621,10 @@ class CodexSwitchApp:
         self.library_selected_sign_in_url_var = tk.StringVar(value="-")
         self.library_selected_notes_var = tk.StringVar(value="暂无备注")
         self.library_models_summary_var = tk.StringVar(value="最近检测尚未返回模型列表。")
+        self.library_model_stats_button_var = tk.StringVar(value="展开统计")
+        self.library_model_stats_expanded = False
+        self.library_model_tag_models: list[str] = []
+        self.library_model_tag_widgets: list[tuple[str, tk.Canvas]] = []
         self.hide_error_button_var = tk.StringVar(value="")
         self.library_profile_view = LIBRARY_VIEW_ALL
         self.library_scope_tabs: dict[str, tk.Label] = {}
@@ -628,6 +642,7 @@ class CodexSwitchApp:
         self.project_generated_var = tk.StringVar(value="-")
         self.project_script_var = tk.StringVar(value="-")
         self.project_run_var = tk.StringVar(value="-")
+        self.project_github_var = tk.StringVar(value="-")
         self.project_mcp_var = tk.StringVar(value="-")
         self.project_skills_var = tk.StringVar(value="-")
 
@@ -656,6 +671,10 @@ class CodexSwitchApp:
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
         self.mcp_selected_summary_var = tk.StringVar(value="选择左侧工具后查看配置预览。")
+        self.skills_hint_var = tk.StringVar(value="管理 Skills 仓库、本地组和项目关联。")
+        self.skill_repo_detail_var = tk.StringVar(value="未选择仓库")
+        self.skill_group_detail_var = tk.StringVar(value="未选择 Skills 组")
+        self.skill_project_detail_var = tk.StringVar(value="未选择项目")
         self.docs_hint_var = tk.StringVar(value="编辑后的 AGENTS 模板会用于后续项目模板生成。")
 
         self.settings_hint_var = tk.StringVar(value="模型批量测试设置会从下一次测试开始生效。")
@@ -744,6 +763,7 @@ class CodexSwitchApp:
             ("account_pool", "号池"),
             ("test", "模型测试"),
             ("mcp", "MCP配置"),
+            ("skills", "Skills"),
             ("docs", "文档配置"),
             ("settings", "设置"),
         ]
@@ -761,6 +781,7 @@ class CodexSwitchApp:
         self.proxy_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.account_pool_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.mcp_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
+        self.skills_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.docs_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.settings_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.test_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
@@ -771,6 +792,7 @@ class CodexSwitchApp:
             "proxy": self.proxy_tab,
             "account_pool": self.account_pool_tab,
             "mcp": self.mcp_tab,
+            "skills": self.skills_tab,
             "docs": self.docs_tab,
             "settings": self.settings_tab,
             "test": self.test_tab,
@@ -784,6 +806,7 @@ class CodexSwitchApp:
         self._build_proxy_tab(self.proxy_tab)
         self._build_account_pool_tab(self.account_pool_tab)
         self._build_mcp_tab(self.mcp_tab)
+        self._build_skills_tab(self.skills_tab)
         self._build_docs_tab(self.docs_tab)
         self._build_settings_tab(self.settings_tab)
         self._build_test_tab(self.test_tab)
@@ -1026,21 +1049,61 @@ class CodexSwitchApp:
         detail.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         detail.columnconfigure(1, weight=1)
         detail.columnconfigure(3, weight=1)
-        self._create_dual_info_row(detail, 0, "供应商", self.library_selected_provider_var, "模型", self.library_selected_model_var)
-        self.library_api_link_label = self._create_link_info_row(detail, 1, "API 地址", self.library_selected_api_var, self._open_selected_api_url, wraplength=460)
-        self._create_dual_info_row(detail, 2, "活动 Key", self.library_selected_key_var, "Wire API", self.library_selected_wire_var)
-        self._create_info_row(detail, 3, "签到状态", self.library_selected_sign_in_status_var, wraplength=460)
-        self.library_sign_in_link_label = self._create_link_info_row(detail, 4, "签到地址", self.library_selected_sign_in_url_var, self._open_selected_sign_in_url, wraplength=460)
-        self._create_info_row(detail, 5, "备注", self.library_selected_notes_var, wraplength=460)
+        self._create_dual_info_row(detail, 0, "供应商", self.library_selected_provider_var, "分类", self.library_selected_category_var)
+        self._create_info_row(detail, 1, "模型", self.library_selected_model_var, wraplength=460)
+        self.library_api_link_label = self._create_link_info_row(detail, 2, "API 地址", self.library_selected_api_var, self._open_selected_api_url, wraplength=460)
+        self._create_dual_info_row(detail, 3, "活动 Key", self.library_selected_key_var, "Wire API", self.library_selected_wire_var)
+        self._create_info_row(detail, 4, "签到状态", self.library_selected_sign_in_status_var, wraplength=460)
+        self.library_sign_in_link_label = self._create_link_info_row(detail, 5, "签到地址", self.library_selected_sign_in_url_var, self._open_selected_sign_in_url, wraplength=460)
+        self._create_info_row(detail, 6, "备注", self.library_selected_notes_var, wraplength=460)
 
-        tk.Label(detail, text="返回模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=6, column=0, sticky="nw", padx=(0, 14), pady=(12, 4))
+        tk.Label(detail, text="返回模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=7, column=0, sticky="nw", padx=(0, 14), pady=(12, 4))
         models_wrap = tk.Frame(detail, bg=PALETTE["card_bg"])
-        models_wrap.grid(row=6, column=1, columnspan=3, sticky="nsew", pady=(12, 4))
+        models_wrap.grid(row=7, column=1, columnspan=3, sticky="nsew", pady=(12, 4))
         models_wrap.columnconfigure(0, weight=1)
-        models_wrap.rowconfigure(0, weight=1)
-        self.library_models_text = tk.Text(
+        models_wrap.rowconfigure(1, weight=1)
+
+        models_summary = tk.Frame(models_wrap, bg=PALETTE["card_bg"])
+        models_summary.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        models_summary.columnconfigure(0, weight=1)
+        tk.Label(
+            models_summary,
+            textvariable=self.library_models_summary_var,
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["text"],
+            font=self.small_font,
+            justify="left",
+            wraplength=520,
+        ).grid(row=0, column=0, sticky="w")
+        make_button(
+            models_summary,
+            textvariable=self.library_model_stats_button_var,
+            variant="secondary",
+            command=self._toggle_library_model_stats,
+        ).grid(row=0, column=1, sticky="e", padx=(10, 0))
+
+        self.library_models_canvas = tk.Canvas(
             models_wrap,
-            height=12,
+            height=176,
+            bg="#FBFDFE",
+            highlightbackground=PALETTE["card_border"],
+            highlightthickness=1,
+        )
+        self.library_models_canvas.grid(row=1, column=0, sticky="nsew")
+        library_models_scroll = ttk.Scrollbar(models_wrap, orient="vertical", command=self.library_models_canvas.yview)
+        library_models_scroll.grid(row=1, column=1, sticky="ns")
+        self.library_models_canvas.configure(yscrollcommand=library_models_scroll.set)
+        self.library_model_tags_frame = tk.Frame(self.library_models_canvas, bg="#FBFDFE")
+        self.library_model_tags_window = self.library_models_canvas.create_window((0, 0), window=self.library_model_tags_frame, anchor="nw")
+        self.library_model_tags_frame.bind(
+            "<Configure>",
+            lambda _event: self.library_models_canvas.configure(scrollregion=self.library_models_canvas.bbox("all")),
+        )
+        self.library_models_canvas.bind("<Configure>", self._on_library_models_canvas_configure)
+
+        self.library_model_stats_text = tk.Text(
+            models_wrap,
+            height=7,
             wrap="word",
             relief="solid",
             borderwidth=1,
@@ -1050,10 +1113,8 @@ class CodexSwitchApp:
             fg=PALETTE["text"],
             state="disabled",
         )
-        self.library_models_text.grid(row=0, column=0, sticky="nsew")
-        library_models_scroll = ttk.Scrollbar(models_wrap, orient="vertical", command=self.library_models_text.yview)
-        library_models_scroll.grid(row=0, column=1, sticky="ns")
-        self.library_models_text.configure(yscrollcommand=library_models_scroll.set)
+        self.library_model_stats_text.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.library_model_stats_text.grid_remove()
 
     def _build_project_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1132,14 +1193,15 @@ class CodexSwitchApp:
         self._create_dual_info_row(detail, 5, "最近备份", self.project_backup_var, "最近生成", self.project_generated_var)
         self._create_info_row(detail, 6, "运行脚本", self.project_script_var, wraplength=440)
         self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
-        self._create_info_row(detail, 8, "项目 MCP", self.project_mcp_var, wraplength=440)
-        self._create_info_row(detail, 9, "项目 Skills", self.project_skills_var, wraplength=440)
+        self._create_info_row(detail, 8, "GitHub 地址", self.project_github_var, wraplength=440)
+        self._create_info_row(detail, 9, "项目 MCP", self.project_mcp_var, wraplength=440)
+        self._create_info_row(detail, 10, "项目 Skills", self.project_skills_var, wraplength=440)
 
         return detail
 
     def _build_project_actions(self, detail: tk.Misc) -> None:
         actions = tk.Frame(detail, bg=PALETTE["card_bg"])
-        actions.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        actions.grid(row=11, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         actions.columnconfigure(0, weight=1)
 
         self._create_project_action_group(
@@ -1171,6 +1233,7 @@ class CodexSwitchApp:
             (
                 ("运行项目", "primary", self.run_project),
                 ("打开项目文件夹", "secondary", self.open_project_folder),
+                ("检查项目更新", "secondary", self.check_selected_project_update),
             ),
         )
 
@@ -1488,6 +1551,126 @@ class CodexSwitchApp:
         preview_x = ttk.Scrollbar(preview_wrap, orient="horizontal", command=self.mcp_preview_text.xview)
         preview_x.grid(row=1, column=0, sticky="ew")
         self.mcp_preview_text.configure(yscrollcommand=preview_y.set, xscrollcommand=preview_x.set)
+
+    def _build_skills_tab(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        card = self._make_card(parent)
+        card.grid(row=0, column=0, sticky="nsew")
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(1, weight=1)
+
+        tk.Label(card, text="Skills 管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        tk.Label(card, textvariable=self.skills_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="e")
+
+        notebook = ttk.Notebook(card)
+        notebook.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        repo_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+        local_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+        project_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+        notebook.add(repo_tab, text="Skills仓库")
+        notebook.add(local_tab, text="本地Skills")
+        notebook.add(project_tab, text="项目Skills")
+
+        self._build_skill_repos_panel(repo_tab)
+        self._build_local_skills_panel(local_tab)
+        self._build_project_skills_panel(project_tab)
+
+    def _build_skill_repos_panel(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+        wrap.grid(row=0, column=0, sticky="nsew")
+        wrap.columnconfigure(0, weight=1)
+        wrap.rowconfigure(0, weight=1)
+        self.skill_repo_tree = ttk.Treeview(wrap, columns=("url", "branch", "commit", "auto"), show="headings")
+        self.skill_repo_tree.heading("url", text="GitHub 仓库", anchor="w")
+        self.skill_repo_tree.heading("branch", text="分支", anchor="center")
+        self.skill_repo_tree.heading("commit", text="最近提交", anchor="center")
+        self.skill_repo_tree.heading("auto", text="自动更新", anchor="center")
+        self.skill_repo_tree.column("url", width=420, anchor="w")
+        self.skill_repo_tree.column("branch", width=90, anchor="center", stretch=False)
+        self.skill_repo_tree.column("commit", width=120, anchor="center", stretch=False)
+        self.skill_repo_tree.column("auto", width=90, anchor="center", stretch=False)
+        self.skill_repo_tree.grid(row=0, column=0, sticky="nsew")
+        self.skill_repo_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_repo_detail())
+        repo_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_repo_tree.yview)
+        repo_scroll.grid(row=0, column=1, sticky="ns")
+        self.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
+
+        actions = tk.Frame(parent, bg=PALETTE["card_bg"])
+        actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for column in range(6):
+            actions.columnconfigure(column, weight=1)
+        make_button(actions, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(actions, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        make_button(actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=4, sticky="ew", padx=(0, 8))
+        tk.Label(actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=5, sticky="w")
+
+    def _build_local_skills_panel(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+        wrap.grid(row=0, column=0, sticky="nsew")
+        wrap.columnconfigure(0, weight=1)
+        wrap.rowconfigure(0, weight=1)
+        self.skill_group_tree = ttk.Treeview(wrap, columns=("name", "count", "description"), show="headings")
+        self.skill_group_tree.heading("name", text="组名", anchor="w")
+        self.skill_group_tree.heading("count", text="Skills", anchor="center")
+        self.skill_group_tree.heading("description", text="描述", anchor="w")
+        self.skill_group_tree.column("name", width=180, anchor="w")
+        self.skill_group_tree.column("count", width=80, anchor="center", stretch=False)
+        self.skill_group_tree.column("description", width=420, anchor="w")
+        self.skill_group_tree.grid(row=0, column=0, sticky="nsew")
+        self.skill_group_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_group_detail())
+        group_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_group_tree.yview)
+        group_scroll.grid(row=0, column=1, sticky="ns")
+        self.skill_group_tree.configure(yscrollcommand=group_scroll.set)
+
+        actions = tk.Frame(parent, bg=PALETTE["card_bg"])
+        actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        for column in range(6):
+            actions.columnconfigure(column, weight=1)
+        make_button(actions, text="新增组", variant="primary", command=self.add_skill_group).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="编辑组", variant="secondary", command=self.edit_skill_group).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="删除组", variant="danger", command=self.delete_skill_group).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(actions, text="导入扫描Skills", variant="secondary", command=self.import_scanned_skills_to_group).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        make_button(actions, text="刷新", variant="secondary", command=self.refresh_skills_tab).grid(row=0, column=4, sticky="ew", padx=(0, 8))
+        tk.Label(actions, textvariable=self.skill_group_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=5, sticky="w")
+        make_button(actions, text="新增Skill", variant="primary", command=self.add_skill_to_group).grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(8, 0))
+        make_button(actions, text="编辑Skill", variant="secondary", command=self.edit_skill_in_group).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
+        make_button(actions, text="删除Skill", variant="danger", command=self.delete_skill_from_group).grid(row=1, column=2, sticky="ew", padx=(0, 8), pady=(8, 0))
+
+    def _build_project_skills_panel(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+        wrap.grid(row=0, column=0, sticky="nsew")
+        wrap.columnconfigure(0, weight=1)
+        wrap.rowconfigure(0, weight=1)
+        self.skill_project_tree = ttk.Treeview(wrap, columns=("name", "groups", "skills"), show="headings")
+        self.skill_project_tree.heading("name", text="项目", anchor="w")
+        self.skill_project_tree.heading("groups", text="关联组", anchor="w")
+        self.skill_project_tree.heading("skills", text="展开 Skills", anchor="w")
+        self.skill_project_tree.column("name", width=180, anchor="w")
+        self.skill_project_tree.column("groups", width=260, anchor="w")
+        self.skill_project_tree.column("skills", width=360, anchor="w")
+        self.skill_project_tree.grid(row=0, column=0, sticky="nsew")
+        self.skill_project_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_project_detail())
+        project_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_project_tree.yview)
+        project_scroll.grid(row=0, column=1, sticky="ns")
+        self.skill_project_tree.configure(yscrollcommand=project_scroll.set)
+
+        actions = tk.Frame(parent, bg=PALETTE["card_bg"])
+        actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=3)
+        make_button(actions, text="编辑项目关联", variant="primary", command=self.edit_project).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="刷新", variant="secondary", command=self.refresh_skills_tab).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        tk.Label(actions, textvariable=self.skill_project_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w")
 
     def _build_docs_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -2085,6 +2268,19 @@ class CodexSwitchApp:
     def _project_skill_selection_summary(self, project: ProjectRecord | None) -> str:
         if not project:
             return "-"
+        if project.skill_group_ids is not None:
+            group_by_id = {group.id: group for group in self.skill_groups}
+            selected_groups = [
+                group_by_id[group_id]
+                for group_id in project.skill_group_ids
+                if group_id in group_by_id
+            ]
+            if not selected_groups:
+                return "未启用"
+            skill_count = sum(len(group.skills) for group in selected_groups)
+            names = ", ".join(group.name for group in selected_groups[:4])
+            suffix = " ..." if len(selected_groups) > 4 else ""
+            return f"{len(selected_groups)} 个组 / {skill_count} 个技能：{names}{suffix}"
         return skill_selection_summary(self._available_skill_sources(), project.skill_names)
 
     def _mcp_contains_project_root(self, value) -> bool:
@@ -2252,9 +2448,10 @@ class CodexSwitchApp:
         self.refresh_proxy_tab()
         self.refresh_account_pool_tab()
         self.refresh_mcp_tab()
+        self.refresh_skills_tab()
         self.refresh_settings_tab()
         self.refresh_test_tab()
-        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、号池、MCP配置、文档配置、设置和模型测试。")
+        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、号池、MCP配置、Skills、文档配置、设置和模型测试。")
 
     def refresh_settings_tab(self) -> None:
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
@@ -2373,6 +2570,7 @@ class CodexSwitchApp:
         if not profile:
             self.library_selected_name_var.set("未选择配置")
             self.library_selected_provider_var.set("-")
+            self.library_selected_category_var.set("-")
             self.library_selected_model_var.set("-")
             self.library_selected_api_var.set("-")
             self.library_selected_key_var.set("-")
@@ -2388,9 +2586,10 @@ class CodexSwitchApp:
 
         self.library_selected_name_var.set(profile.name)
         self.library_selected_provider_var.set(f"{profile.vendor_label} / {profile.provider_name}")
+        self.library_selected_category_var.set(profile.category_label)
         self.library_selected_model_var.set(self._profile_model_summary(profile))
-        self.library_selected_api_var.set(profile.base_url)
-        self.library_selected_key_var.set(self._profile_key_summary(profile))
+        self.library_selected_api_var.set(profile.base_url if profile.api_provided else "未提供 API")
+        self.library_selected_key_var.set(self._profile_key_summary(profile) if profile.api_provided else "未提供 API")
         self.library_selected_wire_var.set(profile.wire_api)
         self.library_selected_sign_in_status_var.set(profile.sign_in_status)
         self.library_selected_sign_in_url_var.set(profile.sign_in_url or "-")
@@ -2449,19 +2648,145 @@ class CodexSwitchApp:
         self.refresh_test_tab()
         self.status_var.set(f"已打开 {profile.name} 的签到地址。")
 
+    def _on_library_models_canvas_configure(self, event: tk.Event) -> None:
+        if hasattr(self, "library_model_tags_window"):
+            self.library_models_canvas.itemconfigure(self.library_model_tags_window, width=event.width)
+        self._layout_library_model_tags(event.width)
+
     def _render_library_model_tags(self, models: list[str], empty_text: str) -> None:
         normalized_models = [str(model).strip() for model in models if str(model).strip()]
+        if hasattr(self, "library_model_tags_frame"):
+            for child in self.library_model_tags_frame.winfo_children():
+                child.destroy()
+        self.library_model_tag_models = []
+        self.library_model_tag_widgets = []
+
         if not normalized_models:
             self.library_models_summary_var.set(empty_text)
-            if hasattr(self, "library_models_text"):
-                self._set_text_content(self.library_models_text, empty_text, disabled=True)
+            self.library_model_stats_button_var.set("展开统计")
+            self.library_model_stats_expanded = False
+            if hasattr(self, "library_model_stats_text"):
+                self._set_text_content(self.library_model_stats_text, empty_text, disabled=True)
+                self.library_model_stats_text.grid_remove()
+            if hasattr(self, "library_model_tags_frame"):
+                tk.Label(
+                    self.library_model_tags_frame,
+                    text=empty_text,
+                    bg="#FBFDFE",
+                    fg=PALETTE["muted"],
+                    font=self.small_font,
+                ).grid(row=0, column=0, sticky="w", padx=10, pady=10)
             return
-        summary_lines = [f"共 {len(normalized_models)} 个模型。"]
-        summary_lines.extend(f"- {model}" for model in normalized_models)
-        content = "\n".join(summary_lines)
-        self.library_models_summary_var.set(content)
-        if hasattr(self, "library_models_text"):
-            self._set_text_content(self.library_models_text, content, disabled=True)
+
+        visible_models = normalized_models[:20]
+        hidden_count = max(0, len(normalized_models) - len(visible_models))
+        stats = model_vendor_stats(normalized_models)
+        stats_summary = "，".join(f"{vendor} {count}" for vendor, count in stats.items())
+        summary = f"共 {len(normalized_models)} 个模型；标签显示前 {len(visible_models)} 个"
+        if hidden_count:
+            summary += f"，隐藏 {hidden_count} 个"
+        if stats_summary:
+            summary += f"。{stats_summary}"
+        self.library_models_summary_var.set(summary)
+        self.library_model_stats_button_var.set("收起统计" if self.library_model_stats_expanded else "展开统计")
+
+        if hasattr(self, "library_model_tags_frame"):
+            for model in visible_models:
+                tag = tk.Canvas(
+                    self.library_model_tags_frame,
+                    width=172,
+                    height=34,
+                    bg="#FBFDFE",
+                    highlightthickness=0,
+                    cursor="hand2",
+                )
+                self.library_model_tag_widgets.append((model, tag))
+                tag.bind("<Button-1>", lambda _event, name=model: self._select_library_model_tag(name))
+
+        self.library_model_tag_models = visible_models
+        width = self.library_models_canvas.winfo_width() if hasattr(self, "library_models_canvas") else 520
+        self._layout_library_model_tags(width)
+        self._refresh_library_model_tag_styles()
+        self._render_library_model_stats(normalized_models)
+
+    def _layout_library_model_tags(self, width: int) -> None:
+        if not getattr(self, "library_model_tag_widgets", None) or not hasattr(self, "library_model_tags_frame"):
+            return
+        tag_width = 172
+        gap = 8
+        available_width = max(tag_width, width - 12)
+        column_count = max(1, available_width // (tag_width + gap))
+        for column in range(column_count):
+            self.library_model_tags_frame.columnconfigure(column, weight=1)
+        for index, (_model, tag) in enumerate(self.library_model_tag_widgets):
+            tag.grid(row=index // column_count, column=index % column_count, sticky="w", padx=6, pady=6)
+
+    def _refresh_library_model_tag_styles(self) -> None:
+        selected_profile = self.get_selected_profile()
+        selected_model = ""
+        if selected_profile:
+            selected_model = (
+                selected_profile.codex_display_model
+                if profile_supports_codex(selected_profile)
+                else selected_profile.claude_display_model
+            )
+        for model, tag in getattr(self, "library_model_tag_widgets", []):
+            tag.delete("all")
+            selected = model == selected_model
+            fill = PALETTE["selection_bg"] if selected else PALETTE["neutral_soft"]
+            outline = PALETTE["accent"] if selected else PALETTE["card_border"]
+            text_color = PALETTE["accent"] if selected else PALETTE["text"]
+            tag.create_rectangle(1, 1, 171, 33, fill=fill, outline=outline)
+            tag.create_text(
+                10,
+                17,
+                text=compact_text(model, 22),
+                fill=text_color,
+                font=self.small_font,
+                anchor="w",
+            )
+
+    def _render_library_model_stats(self, models: list[str]) -> None:
+        if not hasattr(self, "library_model_stats_text"):
+            return
+        grouped = models_by_vendor(models)
+        lines: list[str] = []
+        for vendor, names in grouped.items():
+            lines.append(f"{vendor}（{len(names)}）")
+            lines.extend(f"  - {name}" for name in names)
+        content = "\n".join(lines) if lines else "暂无统计。"
+        self._set_text_content(self.library_model_stats_text, content, disabled=True)
+        if self.library_model_stats_expanded:
+            self.library_model_stats_text.grid()
+        else:
+            self.library_model_stats_text.grid_remove()
+
+    def _toggle_library_model_stats(self) -> None:
+        self.library_model_stats_expanded = not self.library_model_stats_expanded
+        self.library_model_stats_button_var.set("收起统计" if self.library_model_stats_expanded else "展开统计")
+        if hasattr(self, "library_model_stats_text"):
+            if self.library_model_stats_expanded:
+                self.library_model_stats_text.grid()
+            else:
+                self.library_model_stats_text.grid_remove()
+
+    def _select_library_model_tag(self, model: str) -> None:
+        profile = self.get_selected_profile()
+        if not profile:
+            return
+        if profile_supports_codex(profile):
+            updated = replace(profile, model=model, codex_model=model)
+        elif profile_supports_claude(profile):
+            updated = replace(profile, claude_model=model)
+        else:
+            self.status_var.set("当前配置未提供 API，不能回填模型。")
+            return
+        self.profiles = [updated if item.id == updated.id else item for item in self.profiles]
+        self.persist_state()
+        self.refresh_global_tab()
+        self.refresh_library_tab()
+        self.refresh_test_tab()
+        self.status_var.set(f"已选择模型：{model}")
 
     def refresh_project_tab(self) -> None:
         selected_id = self.selected_project_id
@@ -2806,6 +3131,7 @@ class CodexSwitchApp:
             self.project_generated_var.set("-")
             self.project_script_var.set("-")
             self.project_run_var.set("-")
+            self.project_github_var.set("-")
             self.project_mcp_var.set("-")
             self.project_skills_var.set("-")
             self.project_status_badge.configure(text="未生成", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
@@ -2814,6 +3140,7 @@ class CodexSwitchApp:
         self.project_selected_name_var.set(project.name)
         self.project_selected_dir_var.set(project.project_dir)
         self.project_run_var.set(project.run_command or "未配置")
+        self.project_github_var.set(project.github_repo or "未配置")
         self.project_script_var.set(str(self._get_project_script_path(project)))
         self.project_mcp_var.set(self._project_mcp_selection_summary(project))
         self.project_skills_var.set(self._project_skill_selection_summary(project))
@@ -2905,6 +3232,468 @@ class CodexSwitchApp:
         else:
             self.mcp_hint_var.set(f"共 {len(self.mcp_page_servers)} 个 MCP 工具。")
         self._refresh_mcp_detail()
+
+    def refresh_skills_tab(self) -> None:
+        self._sync_projects_from_skill_groups()
+        if hasattr(self, "skill_repo_tree"):
+            selected_repo_id = self.skill_repo_tree.focus()
+            for item in self.skill_repo_tree.get_children():
+                self.skill_repo_tree.delete(item)
+            for repo in self.skill_market_repos:
+                self.skill_repo_tree.insert(
+                    "",
+                    "end",
+                    iid=repo.id,
+                    values=(
+                        repo.url,
+                        repo.branch,
+                        compact_text(repo.last_sync_commit or "-", 12),
+                        "是" if repo.auto_update else "否",
+                    ),
+                )
+            if selected_repo_id and any(repo.id == selected_repo_id for repo in self.skill_market_repos):
+                self.skill_repo_tree.selection_set(selected_repo_id)
+                self.skill_repo_tree.focus(selected_repo_id)
+
+        if hasattr(self, "skill_group_tree"):
+            selected_group_id = self.skill_group_tree.focus()
+            for item in self.skill_group_tree.get_children():
+                self.skill_group_tree.delete(item)
+            for group in self.skill_groups:
+                self.skill_group_tree.insert(
+                    "",
+                    "end",
+                    iid=group.id,
+                    values=(group.name, len(group.skills), compact_text(group.description or "-", 54)),
+                )
+            if selected_group_id and any(group.id == selected_group_id for group in self.skill_groups):
+                self.skill_group_tree.selection_set(selected_group_id)
+                self.skill_group_tree.focus(selected_group_id)
+
+        if hasattr(self, "skill_project_tree"):
+            for item in self.skill_project_tree.get_children():
+                self.skill_project_tree.delete(item)
+            group_by_id = {group.id: group for group in self.skill_groups}
+            for project in self.projects:
+                group_names = [
+                    group_by_id[group_id].name
+                    for group_id in (project.skill_group_ids or [])
+                    if group_id in group_by_id
+                ]
+                skill_names = [skill.name for skill in project.skills] or list(project.skill_names or [])
+                self.skill_project_tree.insert(
+                    "",
+                    "end",
+                    iid=project.id,
+                    values=(
+                        project.name,
+                        compact_text(", ".join(group_names) if group_names else "未启用", 36),
+                        compact_text(", ".join(skill_names) if skill_names else "未启用", 48),
+                    ),
+                )
+
+        self.skills_hint_var.set(f"{len(self.skill_market_repos)} 个仓库，{len(self.skill_groups)} 个本地组，{len(self.projects)} 个项目。")
+        self._refresh_skill_repo_detail()
+        self._refresh_skill_group_detail()
+        self._refresh_skill_project_detail()
+
+    def _expanded_skills_for_group_ids(self, group_ids: list[str] | None) -> tuple[list[SkillDefinition], list[str]]:
+        if group_ids is None:
+            return [], []
+        group_by_id = {group.id: group for group in self.skill_groups}
+        skills: list[SkillDefinition] = []
+        names: list[str] = []
+        for group_id in group_ids:
+            group = group_by_id.get(group_id)
+            if group is None:
+                continue
+            for skill in group.skills:
+                skills.append(skill)
+                if skill.name and skill.name not in names:
+                    names.append(skill.name)
+        return skills, names
+
+    def _sync_projects_from_skill_groups(self) -> None:
+        changed = False
+        updated_projects: list[ProjectRecord] = []
+        for project in self.projects:
+            if project.skill_group_ids is None:
+                updated_projects.append(project)
+                continue
+            skills, names = self._expanded_skills_for_group_ids(project.skill_group_ids)
+            if project.skills != skills or project.skill_names != names:
+                updated_projects.append(replace(project, skills=skills, skill_names=names, updated_at=now_iso()))
+                changed = True
+            else:
+                updated_projects.append(project)
+        if changed:
+            self.projects = updated_projects
+            self.persist_state()
+
+    def _skill_repo_by_id(self, repo_id: str | None) -> SkillMarketRepo | None:
+        return next((repo for repo in self.skill_market_repos if repo.id == repo_id), None)
+
+    def _selected_skill_repo(self) -> SkillMarketRepo | None:
+        if not hasattr(self, "skill_repo_tree"):
+            return None
+        selection = self.skill_repo_tree.selection()
+        return self._skill_repo_by_id(selection[0] if selection else self.skill_repo_tree.focus())
+
+    def _skill_group_by_id(self, group_id: str | None) -> SkillGroup | None:
+        return next((group for group in self.skill_groups if group.id == group_id), None)
+
+    def _selected_skill_group(self) -> SkillGroup | None:
+        if not hasattr(self, "skill_group_tree"):
+            return None
+        selection = self.skill_group_tree.selection()
+        return self._skill_group_by_id(selection[0] if selection else self.skill_group_tree.focus())
+
+    def _refresh_skill_repo_detail(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            self.skill_repo_detail_var.set("未选择仓库")
+            return
+        self.skill_repo_detail_var.set(f"{repo.branch} / {repo.last_sync_commit or '未同步'}")
+
+    def _refresh_skill_group_detail(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            self.skill_group_detail_var.set("未选择 Skills 组")
+            return
+        skill_names = ", ".join(skill.name for skill in group.skills[:5])
+        suffix = " ..." if len(group.skills) > 5 else ""
+        self.skill_group_detail_var.set(f"{group.name}: {skill_names or '暂无 Skill'}{suffix}")
+
+    def _refresh_skill_project_detail(self) -> None:
+        if not hasattr(self, "skill_project_tree"):
+            return
+        selection = self.skill_project_tree.selection()
+        project = self._project_by_id(selection[0]) if selection else None
+        if not project:
+            self.skill_project_detail_var.set("未选择项目")
+            return
+        self.skill_project_detail_var.set(self._project_skill_selection_summary(project))
+
+    def add_skill_market_repo(self) -> None:
+        url = simpledialog.askstring("Skills仓库", "GitHub 仓库地址：", parent=self.root)
+        if not url:
+            return
+        url = url.strip()
+        if not is_http_url(url):
+            messagebox.showerror("校验失败", "仓库地址必须以 http:// 或 https:// 开头。", parent=self.root)
+            return
+        branch = simpledialog.askstring("Skills仓库", "分支：", initialvalue="main", parent=self.root) or "main"
+        auto_update = messagebox.askyesno("自动更新", "是否允许该仓库自动检查更新？", parent=self.root)
+        repo = SkillMarketRepo.create(url, branch=branch, auto_update=auto_update)
+        self.skill_market_repos.append(repo)
+        self.persist_state()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已新增 Skills 仓库：{repo.url}")
+
+    def edit_skill_market_repo(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        url = simpledialog.askstring("Skills仓库", "GitHub 仓库地址：", initialvalue=repo.url, parent=self.root)
+        if not url:
+            return
+        if not is_http_url(url.strip()):
+            messagebox.showerror("校验失败", "仓库地址必须以 http:// 或 https:// 开头。", parent=self.root)
+            return
+        branch = simpledialog.askstring("Skills仓库", "分支：", initialvalue=repo.branch, parent=self.root) or repo.branch
+        auto_update = messagebox.askyesno("自动更新", "是否允许该仓库自动检查更新？", parent=self.root)
+        updated = replace(repo, url=url.strip(), branch=branch.strip() or "main", auto_update=auto_update)
+        self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
+        self.persist_state()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已更新 Skills 仓库：{updated.url}")
+
+    def delete_skill_market_repo(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        if not messagebox.askyesno("确认删除", f"删除仓库配置：{repo.url}？", parent=self.root):
+            return
+        self.skill_market_repos = [item for item in self.skill_market_repos if item.id != repo.id]
+        self.persist_state()
+        self.refresh_skills_tab()
+        self.status_var.set("已删除 Skills 仓库。")
+
+    def check_selected_skill_repo_update(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        try:
+            completed = subprocess.run(
+                ["git", "ls-remote", repo.url, repo.branch],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            messagebox.showerror("检查失败", f"无法检查仓库更新：{exc}", parent=self.root)
+            return
+        if completed.returncode != 0 or not completed.stdout.strip():
+            detail = completed.stderr.strip() or "远端没有返回提交信息。"
+            messagebox.showerror("检查失败", detail, parent=self.root)
+            return
+        latest_commit = completed.stdout.split()[0]
+        if latest_commit == repo.last_sync_commit:
+            messagebox.showinfo("检查完成", "当前已是最新。", parent=self.root)
+        else:
+            messagebox.showinfo("检查完成", f"发现更新：{latest_commit[:12]}", parent=self.root)
+        updated = replace(repo, last_sync_commit=latest_commit)
+        self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
+        self.persist_state()
+        self.refresh_skills_tab()
+
+    def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
+        return self.store.root_dir / "skill-market" / repo.id
+
+    def _sync_skill_repo_cache(self, repo: SkillMarketRepo) -> Path:
+        cache_dir = self._skill_repo_cache_dir(repo)
+        cache_root = cache_dir.parent
+        cache_root.mkdir(parents=True, exist_ok=True)
+        if not (cache_dir / ".git").exists():
+            completed = subprocess.run(
+                ["git", "clone", "--branch", repo.branch, "--depth", "1", repo.url, str(cache_dir)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        else:
+            completed = subprocess.run(
+                ["git", "-C", str(cache_dir), "pull", "--ff-only", "origin", repo.branch],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "git 同步失败。"
+            raise RuntimeError(detail)
+        commit = subprocess.run(
+            ["git", "-C", str(cache_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        if commit.returncode == 0 and commit.stdout.strip():
+            updated = replace(repo, last_sync_commit=commit.stdout.strip())
+            self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
+        return cache_dir
+
+    def install_selected_skill_repo_to_group(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        if not self.skill_groups:
+            messagebox.showinfo("提示", "请先在本地 Skills 中创建一个组。", parent=self.root)
+            return
+        group_name = simpledialog.askstring("安装到组", "目标组名：", parent=self.root)
+        if not group_name:
+            return
+        group = next((item for item in self.skill_groups if item.name == group_name.strip()), None)
+        if group is None:
+            messagebox.showinfo("提示", "没有找到这个本地 Skills 组。", parent=self.root)
+            return
+        try:
+            cache_dir = self._sync_skill_repo_cache(repo)
+        except RuntimeError as exc:
+            messagebox.showerror("安装失败", str(exc), parent=self.root)
+            return
+        sources = discover_skill_sources([cache_dir])
+        existing_names = {skill.name for skill in group.skills}
+        imported: list[SkillDefinition] = []
+        for source in sources:
+            if source.name in existing_names:
+                continue
+            try:
+                content = (source.source_path / "SKILL.md").read_text(encoding="utf-8")
+            except OSError:
+                content = ""
+            imported.append(
+                SkillDefinition.create(
+                    source.name,
+                    content=content,
+                    source_path=str(source.source_path),
+                )
+            )
+        if not imported:
+            messagebox.showinfo("提示", "仓库中没有新的 Skills 可安装。", parent=self.root)
+            self.persist_state()
+            self.refresh_skills_tab()
+            return
+        updated_group = replace(group, skills=[*group.skills, *imported])
+        self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
+        self.persist_state()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已从仓库安装 {len(imported)} 个 Skills 到 {group.name}。")
+
+    def check_selected_project_update(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        if not project.github_repo:
+            messagebox.showinfo("提示", "该项目未配置 GitHub 地址。", parent=self.root)
+            return
+        try:
+            completed = subprocess.run(
+                ["git", "ls-remote", project.github_repo, "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            messagebox.showerror("检查失败", f"无法检查项目更新：{exc}", parent=self.root)
+            return
+        if completed.returncode != 0 or not completed.stdout.strip():
+            detail = completed.stderr.strip() or "远端没有返回提交信息。"
+            messagebox.showerror("检查失败", detail, parent=self.root)
+            return
+        latest_commit = completed.stdout.split()[0]
+        messagebox.showinfo("检查完成", f"远端 HEAD：{latest_commit[:12]}", parent=self.root)
+        self.status_var.set(f"项目远端 HEAD：{latest_commit[:12]}")
+
+    def add_skill_group(self) -> None:
+        name = simpledialog.askstring("Skills组", "组名：", parent=self.root)
+        if not name:
+            return
+        description = simpledialog.askstring("Skills组", "描述：", parent=self.root) or ""
+        group = SkillGroup.create(name, description=description)
+        self.skill_groups.append(group)
+        self.persist_state()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已新增 Skills 组：{group.name}")
+
+    def edit_skill_group(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
+            return
+        name = simpledialog.askstring("Skills组", "组名：", initialvalue=group.name, parent=self.root)
+        if not name:
+            return
+        description = simpledialog.askstring("Skills组", "描述：", initialvalue=group.description, parent=self.root) or ""
+        updated = replace(group, name=name.strip(), description=description.strip())
+        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self.persist_state()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已更新 Skills 组：{updated.name}")
+
+    def delete_skill_group(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
+            return
+        if not messagebox.askyesno("确认删除", f"删除 Skills 组：{group.name}？", parent=self.root):
+            return
+        self.skill_groups = [item for item in self.skill_groups if item.id != group.id]
+        for index, project in enumerate(self.projects):
+            if project.skill_group_ids and group.id in project.skill_group_ids:
+                remaining = [group_id for group_id in project.skill_group_ids if group_id != group.id]
+                self.projects[index] = replace(project, skill_group_ids=remaining, skills=[], skill_names=[])
+        self.persist_state()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        self.status_var.set("已删除 Skills 组并清理项目关联。")
+
+    def add_skill_to_group(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
+            return
+        name = simpledialog.askstring("Skill", "Skill 名称：", parent=self.root)
+        if not name:
+            return
+        version = simpledialog.askstring("Skill", "版本：", initialvalue="1.0.0", parent=self.root) or "1.0.0"
+        content = simpledialog.askstring("Skill", "内容：", parent=self.root) or ""
+        skill = SkillDefinition.create(name, version=version, content=content)
+        updated = replace(group, skills=[*group.skills, skill])
+        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self.persist_state()
+        self.refresh_skills_tab()
+
+    def edit_skill_in_group(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
+            return
+        name = simpledialog.askstring("Skill", "要编辑的 Skill 名称：", parent=self.root)
+        if not name:
+            return
+        existing = next((skill for skill in group.skills if skill.name == name.strip()), None)
+        if existing is None:
+            messagebox.showinfo("提示", "组内没有这个 Skill。", parent=self.root)
+            return
+        new_name = simpledialog.askstring("Skill", "Skill 名称：", initialvalue=existing.name, parent=self.root)
+        if not new_name:
+            return
+        version = simpledialog.askstring("Skill", "版本：", initialvalue=existing.version, parent=self.root) or existing.version
+        content = simpledialog.askstring("Skill", "内容：", initialvalue=existing.content, parent=self.root) or ""
+        updated_skill = replace(existing, name=new_name.strip(), version=version.strip() or "1.0.0", content=content)
+        updated = replace(group, skills=[updated_skill if skill.id == existing.id else skill for skill in group.skills])
+        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self.persist_state()
+        self.refresh_skills_tab()
+
+    def delete_skill_from_group(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
+            return
+        name = simpledialog.askstring("Skill", "要删除的 Skill 名称：", parent=self.root)
+        if not name:
+            return
+        updated = replace(group, skills=[skill for skill in group.skills if skill.name != name.strip()])
+        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self.persist_state()
+        self.refresh_skills_tab()
+
+    def import_scanned_skills_to_group(self) -> None:
+        group = self._selected_skill_group()
+        if not group:
+            messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
+            return
+        sources = self._available_skill_sources()
+        if not sources:
+            messagebox.showinfo("提示", "未扫描到可导入的 Skills。", parent=self.root)
+            return
+        existing_names = {skill.name for skill in group.skills}
+        imported: list[SkillDefinition] = []
+        for source in sources:
+            if source.name in existing_names:
+                continue
+            skill_file = source.source_path / "SKILL.md"
+            try:
+                content = skill_file.read_text(encoding="utf-8")
+            except OSError:
+                content = ""
+            imported.append(
+                SkillDefinition.create(
+                    source.name,
+                    content=content,
+                    source_path=str(source.source_path),
+                )
+            )
+        if not imported:
+            messagebox.showinfo("提示", "没有新的 Skills 可导入。", parent=self.root)
+            return
+        updated = replace(group, skills=[*group.skills, *imported])
+        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self.persist_state()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已导入 {len(imported)} 个 Skills 到 {group.name}。")
 
     def refresh_test_tab(self) -> None:
         selected_id = self.selected_profile_id
@@ -3099,6 +3888,8 @@ class CodexSwitchApp:
             selected_codex_global_profile_id=self.global_codex_profile_id,
             selected_claude_global_profile_id=self.global_claude_profile_id,
             account_pool_settings=self.account_pool_settings,
+            skill_groups=self.skill_groups,
+            skill_market_repos=self.skill_market_repos,
         )
 
     def save_settings(self) -> None:
@@ -3682,6 +4473,8 @@ class CodexSwitchApp:
             claude_model=dialog.result["claude_model"],
             claude_fallback_model=dialog.result["claude_fallback_model"],
             provider_name=dialog.result["provider_name"],
+            category=dialog.result["category"],
+            api_provided=dialog.result["api_provided"],
             wire_api=dialog.result["wire_api"],
             requires_sign_in=dialog.result["requires_sign_in"],
             sign_in_url=dialog.result["sign_in_url"],
@@ -3736,6 +4529,7 @@ class CodexSwitchApp:
             profiles=profiles,
             mcp_server_names=self._available_mcp_server_names(),
             skill_sources=self._available_skill_sources(),
+            skill_groups=self.skill_groups,
         )
         self.root.wait_window(dialog)
         if not dialog.result:
@@ -3750,6 +4544,9 @@ class CodexSwitchApp:
             run_command=dialog.result["run_command"],
             mcp_server_names=dialog.result["mcp_server_names"],
             skill_names=dialog.result["skill_names"],
+            skill_group_ids=dialog.result["skill_group_ids"],
+            skills=dialog.result["skills"],
+            github_repo=dialog.result["github_repo"],
             codex_profile_id=dialog.result["codex_profile_id"],
             claude_profile_id=dialog.result["claude_profile_id"],
         )
@@ -3821,6 +4618,7 @@ class CodexSwitchApp:
             profiles=self._healthy_profiles(),
             mcp_server_names=self._available_mcp_server_names(),
             skill_sources=self._available_skill_sources(),
+            skill_groups=self.skill_groups,
             project=project,
         )
         self.root.wait_window(dialog)
@@ -3840,6 +4638,9 @@ class CodexSwitchApp:
             run_command=dialog.result["run_command"],
             mcp_server_names=dialog.result["mcp_server_names"],
             skill_names=dialog.result["skill_names"],
+            skill_group_ids=dialog.result["skill_group_ids"],
+            skills=dialog.result["skills"],
+            github_repo=dialog.result["github_repo"],
             updated_at=now_iso(),
         )
         api_binding_changed = project_codex_binding_changed(project, updated)
@@ -4250,13 +5051,20 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
             return
+        if not profile.api_provided:
+            messagebox.showinfo("提示", "当前配置未提供 API，无法执行健康检测。", parent=self.root)
+            return
         self._run_health_check([profile.id])
 
     def test_all_profiles(self) -> None:
         if not self.profiles:
             messagebox.showinfo("提示", "请先添加配置项。", parent=self.root)
             return
-        self._run_health_check([profile.id for profile in self.profiles])
+        testable_profiles = [profile for profile in self.profiles if profile.api_provided]
+        if not testable_profiles:
+            messagebox.showinfo("提示", "当前没有提供 API 的配置项。", parent=self.root)
+            return
+        self._run_health_check([profile.id for profile in testable_profiles])
 
     def _run_health_check(self, profile_ids: list[str]) -> None:
         self.status_var.set("正在检测 API 健康状态，请稍候...")

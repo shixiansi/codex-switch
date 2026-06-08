@@ -14,6 +14,36 @@ VENDOR_CLAUDE = "claude"
 VENDOR_GENERIC = "通用"
 VENDOR_OTHER = "其他"
 PROFILE_VENDOR_CHOICES = (VENDOR_CODEX, VENDOR_CLAUDE, VENDOR_GENERIC, VENDOR_OTHER)
+PROFILE_CATEGORY_TEXT = "text"
+PROFILE_CATEGORY_IMAGE_GENERATION = "image_generation"
+PROFILE_CATEGORY_CHOICES = (PROFILE_CATEGORY_TEXT, PROFILE_CATEGORY_IMAGE_GENERATION)
+PROFILE_CATEGORY_LABELS = {
+    PROFILE_CATEGORY_TEXT: "文本",
+    PROFILE_CATEGORY_IMAGE_GENERATION: "生图",
+}
+MODEL_VENDOR_OTHER = "其他"
+MAINSTREAM_MODEL_VENDORS = (
+    "OpenAI",
+    "Anthropic",
+    "Google",
+    "Meta",
+    "Mistral",
+    "Qwen",
+    "DeepSeek",
+    "xAI",
+    "Moonshot",
+)
+MODEL_VENDOR_KEYWORDS = {
+    "OpenAI": ("openai", "gpt-", "o1", "o3", "o4"),
+    "Anthropic": ("anthropic", "claude", "sonnet", "haiku", "opus"),
+    "Google": ("google", "gemini", "palm"),
+    "Meta": ("meta", "llama"),
+    "Mistral": ("mistral", "mixtral", "codestral"),
+    "Qwen": ("qwen", "qwq", "通义"),
+    "DeepSeek": ("deepseek", "deep-seek"),
+    "xAI": ("xai", "grok"),
+    "Moonshot": ("moonshot", "kimi"),
+}
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CLAUDE_FALLBACK_MODEL = "haiku"
@@ -106,6 +136,40 @@ def parse_model_names(value: str | None) -> list[str]:
     return models
 
 
+def detect_model_vendor(model_name: str) -> str:
+    normalized = str(model_name or "").strip().lower()
+    if not normalized:
+        return MODEL_VENDOR_OTHER
+    for vendor, keywords in MODEL_VENDOR_KEYWORDS.items():
+        if any(keyword.lower() in normalized for keyword in keywords):
+            return vendor
+    return MODEL_VENDOR_OTHER
+
+
+def model_vendor_stats(models: list[str]) -> dict[str, int]:
+    stats = {vendor: 0 for vendor in MAINSTREAM_MODEL_VENDORS}
+    stats[MODEL_VENDOR_OTHER] = 0
+    for model in models:
+        model_name = str(model or "").strip()
+        if not model_name:
+            continue
+        vendor = detect_model_vendor(model_name)
+        stats[vendor] = stats.get(vendor, 0) + 1
+    return {vendor: count for vendor, count in stats.items() if count > 0}
+
+
+def models_by_vendor(models: list[str]) -> dict[str, list[str]]:
+    grouped = {vendor: [] for vendor in MAINSTREAM_MODEL_VENDORS}
+    grouped[MODEL_VENDOR_OTHER] = []
+    for model in models:
+        model_name = str(model or "").strip()
+        if not model_name:
+            continue
+        vendor = detect_model_vendor(model_name)
+        grouped.setdefault(vendor, []).append(model_name)
+    return {vendor: names for vendor, names in grouped.items() if names}
+
+
 def normalize_api_keys(values: list[str] | tuple[str, ...] | None, fallback: str = "") -> list[str]:
     api_keys: list[str] = []
     source = values if isinstance(values, (list, tuple)) else []
@@ -142,6 +206,13 @@ def normalize_profile_vendor(value: str | None) -> str:
     return VENDOR_GENERIC
 
 
+def normalize_profile_category(value: object) -> str:
+    category = str(value or "").strip()
+    if category == PROFILE_CATEGORY_IMAGE_GENERATION:
+        return PROFILE_CATEGORY_IMAGE_GENERATION
+    return PROFILE_CATEGORY_TEXT
+
+
 def normalize_route_proxy_client(value: str | None) -> str:
     client = str(value or "").strip().lower()
     if client in ROUTE_PROXY_CLIENT_CHOICES:
@@ -174,11 +245,11 @@ def normalize_route_proxy_port(value: int | str | None) -> int:
 
 
 def profile_supports_codex(profile: "Profile") -> bool:
-    return profile.vendor in (VENDOR_CODEX, VENDOR_GENERIC)
+    return profile.api_provided and profile.vendor in (VENDOR_CODEX, VENDOR_GENERIC)
 
 
 def profile_supports_claude(profile: "Profile") -> bool:
-    return profile.vendor in (VENDOR_CLAUDE, VENDOR_GENERIC)
+    return profile.api_provided and profile.vendor in (VENDOR_CLAUDE, VENDOR_GENERIC)
 
 
 def normalize_account_pool_wire_api(value: str | None) -> str:
@@ -785,6 +856,8 @@ class Profile:
     claude_model: str = DEFAULT_CLAUDE_MODEL
     claude_fallback_model: str = DEFAULT_CLAUDE_FALLBACK_MODEL
     provider_name: str = "OpenAI"
+    category: str = PROFILE_CATEGORY_TEXT
+    api_provided: bool = True
     wire_api: str = "responses"
     requires_openai_auth: bool = True
     requires_sign_in: bool = False
@@ -806,6 +879,8 @@ class Profile:
         claude_model: str | None = None,
         claude_fallback_model: str | None = None,
         provider_name: str = "OpenAI",
+        category: str = PROFILE_CATEGORY_TEXT,
+        api_provided: bool = True,
         wire_api: str = "responses",
         requires_openai_auth: bool = True,
         requires_sign_in: bool = False,
@@ -817,6 +892,10 @@ class Profile:
     ) -> "Profile":
         normalized_keys = normalize_api_keys(api_keys, api_key)
         normalized_vendor = normalize_profile_vendor(vendor)
+        normalized_category = normalize_profile_category(category)
+        provides_api = bool(api_provided) if normalized_category == PROFILE_CATEGORY_IMAGE_GENERATION else True
+        if not provides_api:
+            normalized_keys = []
         legacy_model = model.strip() or DEFAULT_CODEX_MODEL
         if normalized_vendor == VENDOR_CLAUDE:
             effective_codex_model = (codex_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
@@ -839,6 +918,8 @@ class Profile:
             claude_model=effective_claude_model,
             claude_fallback_model=effective_claude_fallback_model,
             provider_name=provider_name.strip() or "OpenAI",
+            category=normalized_category,
+            api_provided=provides_api,
             wire_api=wire_api.strip() or "responses",
             requires_openai_auth=requires_openai_auth,
             requires_sign_in=requires_sign_in,
@@ -851,6 +932,10 @@ class Profile:
     def from_dict(cls, data: dict[str, Any]) -> "Profile":
         api_keys = normalize_api_keys(data.get("api_keys"), str(data.get("api_key", "") or ""))
         vendor = normalize_profile_vendor(data.get("vendor"))
+        category = normalize_profile_category(data.get("category"))
+        api_provided = bool(data.get("api_provided", True)) if category == PROFILE_CATEGORY_IMAGE_GENERATION else True
+        if not api_provided:
+            api_keys = []
         legacy_model = str(data.get("model", "") or "").strip()
         codex_model = str(data.get("codex_model", "") or "").strip() or legacy_model or DEFAULT_CODEX_MODEL
         claude_model = str(data.get("claude_model", "") or "").strip() or (
@@ -872,6 +957,8 @@ class Profile:
             claude_model=claude_model,
             claude_fallback_model=claude_fallback_model,
             provider_name=data.get("provider_name", "OpenAI"),
+            category=category,
+            api_provided=api_provided,
             wire_api=data.get("wire_api", "responses"),
             requires_openai_auth=data.get("requires_openai_auth", True),
             requires_sign_in=data.get("requires_sign_in", False),
@@ -893,6 +980,12 @@ class Profile:
         payload["claude_model"] = self.claude_model
         payload["claude_fallback_model"] = self.claude_fallback_model
         payload["model"] = self.codex_model
+        payload["category"] = normalize_profile_category(self.category)
+        payload["api_provided"] = bool(self.api_provided) if payload["category"] == PROFILE_CATEGORY_IMAGE_GENERATION else True
+        if not payload["api_provided"]:
+            payload["api_keys"] = []
+            payload["active_api_key_index"] = 0
+            payload["api_key"] = ""
         return payload
 
     @property
@@ -901,6 +994,8 @@ class Profile:
 
     @property
     def api_key(self) -> str:
+        if not self.api_provided:
+            return ""
         if not self.api_keys:
             return ""
         return self.api_keys[self.effective_active_api_key_index]
@@ -943,6 +1038,138 @@ class Profile:
             return VENDOR_OTHER
         return VENDOR_GENERIC
 
+    @property
+    def category_label(self) -> str:
+        return PROFILE_CATEGORY_LABELS.get(normalize_profile_category(self.category), "文本")
+
+
+@dataclass
+class SkillDefinition:
+    id: str
+    name: str
+    type: str = "script"
+    content: str = ""
+    version: str = "1.0.0"
+    source_path: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        *,
+        type: str = "script",
+        content: str = "",
+        version: str = "1.0.0",
+        source_path: str = "",
+    ) -> "SkillDefinition":
+        return cls(
+            id=str(uuid.uuid4()),
+            name=name.strip(),
+            type=type.strip() or "script",
+            content=content.strip(),
+            version=version.strip() or "1.0.0",
+            source_path=str(source_path or "").strip(),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SkillDefinition":
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            name=str(data.get("name") or "").strip(),
+            type=str(data.get("type") or "script").strip() or "script",
+            content=str(data.get("content") or ""),
+            version=str(data.get("version") or "1.0.0").strip() or "1.0.0",
+            source_path=str(data.get("source_path") or "").strip(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SkillGroup:
+    id: str
+    name: str
+    description: str = ""
+    skills: list[SkillDefinition] = field(default_factory=list)
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        *,
+        description: str = "",
+        skills: list[SkillDefinition] | None = None,
+    ) -> "SkillGroup":
+        return cls(
+            id=str(uuid.uuid4()),
+            name=name.strip(),
+            description=description.strip(),
+            skills=list(skills or []),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SkillGroup":
+        raw_skills = data.get("skills", [])
+        skills = [
+            SkillDefinition.from_dict(item)
+            for item in raw_skills
+            if isinstance(item, dict)
+        ] if isinstance(raw_skills, list) else []
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            name=str(data.get("name") or "未命名组").strip() or "未命名组",
+            description=str(data.get("description") or "").strip(),
+            skills=skills,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "skills": [skill.to_dict() for skill in self.skills],
+        }
+
+
+@dataclass
+class SkillMarketRepo:
+    id: str
+    url: str
+    branch: str = "main"
+    last_sync_commit: str = ""
+    auto_update: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        url: str,
+        *,
+        branch: str = "main",
+        last_sync_commit: str = "",
+        auto_update: bool = False,
+    ) -> "SkillMarketRepo":
+        return cls(
+            id=str(uuid.uuid4()),
+            url=url.strip(),
+            branch=branch.strip() or "main",
+            last_sync_commit=last_sync_commit.strip(),
+            auto_update=bool(auto_update),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SkillMarketRepo":
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            url=str(data.get("url") or "").strip(),
+            branch=str(data.get("branch") or "main").strip() or "main",
+            last_sync_commit=str(data.get("last_sync_commit") or "").strip(),
+            auto_update=bool(data.get("auto_update", False)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class ProjectRecord:
@@ -958,6 +1185,9 @@ class ProjectRecord:
     run_command: str = ""
     mcp_server_names: list[str] | None = None
     skill_names: list[str] | None = None
+    skill_group_ids: list[str] | None = None
+    skills: list[SkillDefinition] = field(default_factory=list)
+    github_repo: str = ""
 
     @classmethod
     def create(
@@ -968,6 +1198,9 @@ class ProjectRecord:
         run_command: str = "",
         mcp_server_names: list[str] | None = None,
         skill_names: list[str] | None = None,
+        skill_group_ids: list[str] | None = None,
+        skills: list[SkillDefinition] | None = None,
+        github_repo: str = "",
         codex_profile_id: str | None = None,
         claude_profile_id: str | None = None,
     ) -> "ProjectRecord":
@@ -989,6 +1222,9 @@ class ProjectRecord:
             run_command=run_command.strip(),
             mcp_server_names=list(mcp_server_names) if mcp_server_names is not None else None,
             skill_names=list(skill_names) if skill_names is not None else None,
+            skill_group_ids=list(skill_group_ids) if skill_group_ids is not None else None,
+            skills=list(skills or []),
+            github_repo=github_repo.strip(),
         )
 
     @classmethod
@@ -1014,6 +1250,20 @@ class ProjectRecord:
                 for item in raw_skill_names
                 if str(item).strip()
             ]
+        raw_skill_group_ids = data.get("skill_group_ids")
+        skill_group_ids = None
+        if isinstance(raw_skill_group_ids, list):
+            skill_group_ids = [
+                str(item).strip()
+                for item in raw_skill_group_ids
+                if str(item).strip()
+            ]
+        raw_skills = data.get("skills")
+        skills = [
+            SkillDefinition.from_dict(item)
+            for item in raw_skills
+            if isinstance(item, dict)
+        ] if isinstance(raw_skills, list) else []
         return cls(
             id=data["id"],
             name=data.get("name") or "未命名项目",
@@ -1027,10 +1277,15 @@ class ProjectRecord:
             run_command=str(data.get("run_command", "") or "").strip(),
             mcp_server_names=mcp_server_names,
             skill_names=skill_names,
+            skill_group_ids=skill_group_ids,
+            skills=skills,
+            github_repo=str(data.get("github_repo", "") or "").strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["skills"] = [skill.to_dict() for skill in self.skills]
+        return payload
 
 
 @dataclass

@@ -14,6 +14,8 @@ from codex_switch.models import (
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     HealthResult,
+    PROFILE_CATEGORY_IMAGE_GENERATION,
+    PROFILE_CATEGORY_TEXT,
     Profile,
     ProjectRecord,
     RouteProxyRule,
@@ -25,8 +27,14 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    SkillDefinition,
+    SkillGroup,
+    SkillMarketRepo,
     VENDOR_GENERIC,
+    model_vendor_stats,
+    models_by_vendor,
     normalize_profile_vendor,
+    profile_supports_codex,
     today_iso,
 )
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY, ProfileStore, clamp_model_batch_concurrency
@@ -58,6 +66,8 @@ class ProfileStoreTests(unittest.TestCase):
                 selected_codex_global_profile_id,
                 selected_claude_global_profile_id,
                 account_pool_settings,
+                skill_groups,
+                skill_market_repos,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)
@@ -65,6 +75,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(profiles[0].name, "主线路")
             self.assertEqual(profiles[0].api_keys, ["sk-demo"])
             self.assertEqual(profiles[0].api_key, "sk-demo")
+            self.assertEqual(profiles[0].category, PROFILE_CATEGORY_TEXT)
+            self.assertTrue(profiles[0].api_provided)
             self.assertEqual(profiles[0].active_api_key_index, 0)
             self.assertEqual(profiles[0].health.status, "healthy")
             self.assertEqual(profiles[0].manual_health_status, "error")
@@ -85,6 +97,8 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertIsNone(selected_claude_global_profile_id)
             self.assertFalse(account_pool_settings.enabled)
             self.assertEqual(account_pool_settings.channels, [])
+            self.assertEqual(skill_groups, [])
+            self.assertEqual(skill_market_repos, [])
 
     def test_store_persists_agents_doc_text(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -95,8 +109,32 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 11)
+            self.assertEqual(payload["version"], 13)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
+
+    def test_store_persists_image_generation_profile_without_api(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            profile = Profile.create(
+                "image",
+                "https://image.example.com",
+                "sk-image",
+                category=PROFILE_CATEGORY_IMAGE_GENERATION,
+                api_provided=False,
+            )
+
+            store.save([profile], profile.id)
+            loaded_profiles = store.load()[0]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(loaded_profiles[0].category, PROFILE_CATEGORY_IMAGE_GENERATION)
+            self.assertFalse(loaded_profiles[0].api_provided)
+            self.assertEqual(loaded_profiles[0].api_keys, [])
+            self.assertEqual(loaded_profiles[0].api_key, "")
+            self.assertFalse(profile_supports_codex(loaded_profiles[0]))
+            self.assertEqual(payload["profiles"][0]["category"], PROFILE_CATEGORY_IMAGE_GENERATION)
+            self.assertFalse(payload["profiles"][0]["api_provided"])
+            self.assertEqual(payload["profiles"][0]["api_key"], "")
 
     def test_store_persists_account_pool_settings(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -128,7 +166,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 11)
+            self.assertEqual(payload["version"], 13)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -218,12 +256,20 @@ class ProfileStoreTests(unittest.TestCase):
     def test_store_persists_project_mcp_and_skill_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
             store = ProfileStore(temp_dir)
+            skill = SkillDefinition.create(
+                "frontend-dev",
+                content="frontend skill",
+                source_path=str(temp_dir / "frontend-dev"),
+            )
             project = ProjectRecord.create(
                 str(temp_dir),
                 "codex-profile",
                 name="project",
                 mcp_server_names=["filesystem", "serena"],
                 skill_names=["frontend-dev", "fullstack-dev"],
+                skill_group_ids=["group-1"],
+                skills=[skill],
+                github_repo="https://github.com/example/project",
                 codex_profile_id="codex-profile",
                 claude_profile_id="claude-profile",
             )
@@ -234,13 +280,42 @@ class ProfileStoreTests(unittest.TestCase):
 
             self.assertEqual(loaded_projects[0].mcp_server_names, ["filesystem", "serena"])
             self.assertEqual(loaded_projects[0].skill_names, ["frontend-dev", "fullstack-dev"])
+            self.assertEqual(loaded_projects[0].skill_group_ids, ["group-1"])
+            self.assertEqual(loaded_projects[0].skills[0].name, "frontend-dev")
+            self.assertEqual(loaded_projects[0].github_repo, "https://github.com/example/project")
             self.assertEqual(loaded_projects[0].profile_id, "codex-profile")
             self.assertEqual(loaded_projects[0].codex_profile_id, "codex-profile")
             self.assertEqual(loaded_projects[0].claude_profile_id, "claude-profile")
             self.assertEqual(payload["projects"][0]["mcp_server_names"], ["filesystem", "serena"])
             self.assertEqual(payload["projects"][0]["skill_names"], ["frontend-dev", "fullstack-dev"])
+            self.assertEqual(payload["projects"][0]["skill_group_ids"], ["group-1"])
+            self.assertEqual(payload["projects"][0]["skills"][0]["name"], "frontend-dev")
+            self.assertEqual(payload["projects"][0]["github_repo"], "https://github.com/example/project")
             self.assertEqual(payload["projects"][0]["codex_profile_id"], "codex-profile")
             self.assertEqual(payload["projects"][0]["claude_profile_id"], "claude-profile")
+
+    def test_store_persists_skill_groups_and_market_repos(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            skill = SkillDefinition.create("python-helper", content="Use Python carefully.")
+            group = SkillGroup.create("代码组", description="常用编码技能", skills=[skill])
+            repo = SkillMarketRepo.create(
+                "https://github.com/example/skills",
+                branch="main",
+                last_sync_commit="abc123",
+                auto_update=True,
+            )
+
+            store.save([], None, skill_groups=[group], skill_market_repos=[repo])
+            loaded = store.load()
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(loaded[16][0].name, "代码组")
+            self.assertEqual(loaded[16][0].skills[0].content, "Use Python carefully.")
+            self.assertEqual(loaded[17][0].url, "https://github.com/example/skills")
+            self.assertTrue(loaded[17][0].auto_update)
+            self.assertEqual(payload["settings"]["skill_groups"][0]["skills"][0]["name"], "python-helper")
+            self.assertEqual(payload["settings"]["skill_market_repos"][0]["last_sync_commit"], "abc123")
 
     def test_store_loads_legacy_project_without_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -342,9 +417,25 @@ class ProfileStoreTests(unittest.TestCase):
 
         self.assertEqual(profile.vendor, VENDOR_GENERIC)
         self.assertEqual(profile.model, "legacy-model")
+        self.assertEqual(profile.category, PROFILE_CATEGORY_TEXT)
+        self.assertTrue(profile.api_provided)
         self.assertEqual(profile.codex_model, "legacy-model")
         self.assertEqual(profile.claude_model, DEFAULT_CLAUDE_MODEL)
         self.assertEqual(profile.claude_fallback_model, DEFAULT_CLAUDE_FALLBACK_MODEL)
+
+    def test_model_vendor_stats_groups_known_vendors_and_other(self) -> None:
+        models = ["gpt-5.4", "claude-sonnet-4", "gemini-2.5-pro", "custom-local"]
+
+        self.assertEqual(
+            model_vendor_stats(models),
+            {
+                "OpenAI": 1,
+                "Anthropic": 1,
+                "Google": 1,
+                "其他": 1,
+            },
+        )
+        self.assertEqual(models_by_vendor(models)["其他"], ["custom-local"])
 
     def test_project_record_from_dict_migrates_legacy_profile_id_to_dual_bindings(self) -> None:
         project = ProjectRecord.from_dict(
