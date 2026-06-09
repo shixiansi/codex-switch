@@ -18,8 +18,9 @@ from codex_switch.models import (
     SkillMarketRepo,
     VENDOR_CODEX,
 )
+from codex_switch.skills import SkillSource
 from codex_switch.storage import ProfileStore
-from codex_switch.ui.app import CodexSwitchApp
+from codex_switch.ui.app import CodexSwitchApp, SkillMarketEntry
 from codex_switch.ui.dialogs import ProfileDialog, ProjectDialog
 from codex_switch.ui.styles import BOOTSTRAP_THEME, BootstrapWindow, PALETTE
 
@@ -58,6 +59,28 @@ def find_child_widget(widget: tk.Misc, widget_type):
         if found is not None:
             return found
     return None
+
+
+def collect_child_widgets(widget: tk.Misc, widget_type):
+    widgets = []
+    if isinstance(widget, widget_type):
+        widgets.append(widget)
+    for child in widget.winfo_children():
+        widgets.extend(collect_child_widgets(child, widget_type))
+    return widgets
+
+
+def widget_texts(widget: tk.Misc) -> list[str]:
+    texts: list[str] = []
+    try:
+        value = widget.cget("text")
+    except tk.TclError:
+        value = ""
+    if value:
+        texts.append(str(value))
+    for child in widget.winfo_children():
+        texts.extend(widget_texts(child))
+    return texts
 
 
 class TkSmokeTests(unittest.TestCase):
@@ -229,6 +252,131 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertEqual(loaded_project.skill_names, ["python-helper", "review-helper"])
         finally:
             destroy_widget(app_root)
+
+    def test_skill_market_cards_show_skill_author_install_and_wrap(self) -> None:
+        frame = tk.Frame(self.root)
+        canvas = tk.Canvas(self.root, width=560, height=260)
+        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        installed: list[str] = []
+        try:
+            with workspace_tempdir() as temp_dir:
+                entries = [
+                    SkillMarketEntry(
+                        repo_id="repo-1",
+                        repo_url="https://github.com/alpha/skills",
+                        author="alpha",
+                        source=SkillSource("prompt-helper", "Prompt Helper", temp_dir / "prompt-helper"),
+                    ),
+                    SkillMarketEntry(
+                        repo_id="repo-1",
+                        repo_url="https://github.com/alpha/skills",
+                        author="alpha",
+                        source=SkillSource("review-helper", "Review Helper", temp_dir / "review-helper"),
+                    ),
+                    SkillMarketEntry(
+                        repo_id="repo-2",
+                        repo_url="https://github.com/beta/skills",
+                        author="beta",
+                        source=SkillSource("test-helper", "Test Helper", temp_dir / "test-helper"),
+                    ),
+                ]
+                app = CodexSwitchApp.__new__(CodexSwitchApp)
+                app.section_font = ("Segoe UI", 10, "bold")
+                app.small_font = ("Segoe UI", 9)
+                app.body_font = ("Segoe UI", 10)
+                app.skill_market_frame = frame
+                app.skill_market_canvas = canvas
+                app.skill_market_window = window_id
+                app.install_skill_market_entry_to_group = lambda entry: installed.append(entry.source.name)
+
+                app._render_skill_market_cards(entries)
+                app._layout_skill_market_cards(type("Event", (), {"width": 560})())
+                self.root.update_idletasks()
+
+                cards = frame.winfo_children()
+                self.assertEqual(len(cards), 3)
+                self.assertIn("Prompt Helper", widget_texts(cards[0]))
+                self.assertIn("作者：alpha", widget_texts(cards[0]))
+                self.assertIn("https://github.com/alpha/skills", widget_texts(cards[0]))
+
+                positions = [
+                    (int(card.grid_info()["row"]), int(card.grid_info()["column"]))
+                    for card in cards
+                ]
+                self.assertEqual(positions, [(0, 0), (0, 1), (1, 0)])
+
+                install_buttons = [
+                    button
+                    for card in cards
+                    for button in collect_child_widgets(card, ttk.Button)
+                    if button.cget("text") == "安装"
+                ]
+                self.assertEqual(len(install_buttons), 3)
+                install_buttons[1].invoke()
+                self.assertEqual(installed, ["review-helper"])
+        finally:
+            destroy_widget(frame)
+            destroy_widget(canvas)
+
+    def test_skill_group_dialog_cards_target_specific_skill_actions_and_wrap(self) -> None:
+        cards_frame = tk.Frame(self.root)
+        edited: list[str] = []
+        deleted: list[str] = []
+        try:
+            first_skill = SkillDefinition.create("prompt-helper", content="prompt")
+            second_skill = SkillDefinition.create("review-helper", content="review")
+            group = SkillGroup.create("coding", skills=[first_skill, second_skill])
+            app = CodexSwitchApp.__new__(CodexSwitchApp)
+            app.section_font = ("Segoe UI", 10, "bold")
+            app.small_font = ("Segoe UI", 9)
+            app.body_font = ("Segoe UI", 10)
+            app.skill_groups = [group]
+            app._skill_group_by_id = lambda group_id: group if group_id == group.id else None
+            app.edit_skill_in_group = lambda selected_group, skill: edited.append(f"{selected_group.id}:{skill.name}")
+            app.delete_skill_from_group = lambda selected_group, skill: deleted.append(f"{selected_group.id}:{skill.name}")
+
+            app._render_skill_group_dialog_cards(group, cards_frame)
+            self.root.update_idletasks()
+
+            cards = cards_frame.winfo_children()
+            self.assertEqual(len(cards), 2)
+            self.assertIn("prompt-helper", widget_texts(cards[0]))
+            self.assertIn("review-helper", widget_texts(cards[1]))
+
+            class CanvasProbe:
+                def __init__(self) -> None:
+                    self.width = None
+
+                def itemconfigure(self, _window_id, **kwargs) -> None:
+                    self.width = kwargs.get("width")
+
+            canvas_probe = CanvasProbe()
+            app._layout_skill_group_dialog_cards(cards_frame, 520, 1, canvas_probe)
+            self.assertEqual(canvas_probe.width, 520)
+            positions = [
+                (int(card.grid_info()["row"]), int(card.grid_info()["column"]))
+                for card in cards
+            ]
+            self.assertEqual(positions, [(0, 0), (0, 1)])
+
+            first_edit = next(
+                button
+                for button in collect_child_widgets(cards[0], ttk.Button)
+                if button.cget("text") == "编辑"
+            )
+            first_edit.invoke()
+            self.assertEqual(edited, [f"{group.id}:prompt-helper"])
+
+            cards = cards_frame.winfo_children()
+            second_delete = next(
+                button
+                for button in collect_child_widgets(cards[1], ttk.Button)
+                if button.cget("text") == "删除"
+            )
+            second_delete.invoke()
+            self.assertEqual(deleted, [f"{group.id}:review-helper"])
+        finally:
+            destroy_widget(cards_frame)
 
     def test_app_library_model_tags_render_stats_wrap_and_select(self) -> None:
         app_root = tk.Toplevel(self.root)
