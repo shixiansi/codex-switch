@@ -57,6 +57,14 @@ from codex_switch.project_template import (
 )
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
+from codex_switch.software_update import (
+    SoftwareUpdateInfo,
+    github_latest_release_api_url,
+    is_newer_version,
+    preferred_release_download_url,
+    software_update_info_from_github_release,
+    version_key,
+)
 from codex_switch.ui.app import (
     CodexSwitchApp,
     GitRemoteUpdate,
@@ -139,8 +147,13 @@ def _make_minimal_app() -> CodexSwitchApp:
     app.model_vendor_keywords = {}
     app.hot_update_events = []
     app.status_var = _ValueVar("")
+    app.software_update_status_var = _ValueVar("")
+    app.software_update_check_running = False
+    app.software_update_checked_once = False
+    app.skill_market_force_sync = False
     app.skill_repo_preview_var = _ValueVar("")
     app.skill_repo_preview_filter_var = _ValueVar("")
+    app.skill_market_filter_var = _ValueVar("")
     app.skill_repo_preview_sources = []
     app.skill_repo_preview_repo_id = ""
     app.persist_count = 0
@@ -149,6 +162,94 @@ def _make_minimal_app() -> CodexSwitchApp:
     app.refresh_skills_tab = lambda: None
     app.refresh_library_tab = lambda: None
     return app
+
+
+class SoftwareUpdateTests(unittest.TestCase):
+    def test_version_comparison_ignores_prefix_and_prerelease_suffix(self) -> None:
+        self.assertEqual(version_key("v1.2.3-beta.1"), (1, 2, 3))
+        self.assertTrue(is_newer_version("v1.2.4", "1.2.3"))
+        self.assertFalse(is_newer_version("1.2.3", "1.2.3"))
+
+    def test_github_latest_release_url_requires_https_github_repo(self) -> None:
+        self.assertEqual(
+            github_latest_release_api_url("https://github.com/example/codex-switch.git"),
+            "https://api.github.com/repos/example/codex-switch/releases/latest",
+        )
+        with self.assertRaises(ValueError):
+            github_latest_release_api_url("http://github.com/example/codex-switch")
+
+    def test_release_payload_selects_windows_download_asset(self) -> None:
+        payload = {
+            "tag_name": "v0.3.0",
+            "name": "Codex Switch v0.3.0",
+            "html_url": "https://github.com/example/codex-switch/releases/tag/v0.3.0",
+            "assets": [
+                {"name": "CodexSwitch-linux-x64.tar.gz", "browser_download_url": "https://example.test/linux"},
+                {"name": "CodexSwitch-windows-x64.zip", "browser_download_url": "https://example.test/windows"},
+            ],
+        }
+
+        info = software_update_info_from_github_release(payload, "0.2.2")
+
+        self.assertTrue(info.update_available)
+        self.assertEqual(info.latest_version, "v0.3.0")
+        self.assertEqual(info.download_url, "https://example.test/windows")
+        self.assertEqual(preferred_release_download_url(payload["assets"]), "https://example.test/windows")
+
+    def test_software_update_available_prompts_and_opens_download(self) -> None:
+        app = _make_minimal_app()
+        info = SoftwareUpdateInfo(
+            current_version="0.2.2",
+            latest_version="v0.3.0",
+            release_url="https://github.com/example/codex-switch/releases/tag/v0.3.0",
+            download_url="https://example.test/download.zip",
+            release_name="Codex Switch v0.3.0",
+        )
+
+        with (
+            patch("codex_switch.ui.app.messagebox.askyesno", return_value=True) as askyesno,
+            patch("codex_switch.ui.app.webbrowser.open") as web_open,
+        ):
+            app._finish_software_update_check(info, "", automatic=True)
+
+        askyesno.assert_called_once()
+        web_open.assert_called_once_with("https://example.test/download.zip")
+        self.assertIn("发现新版本", app.software_update_status_var.get())
+        self.assertEqual([event.status for event in app.hot_update_events], ["available", "opened"])
+        self.assertEqual(app.persist_count, 2)
+
+    def test_software_update_current_records_without_prompt_on_startup(self) -> None:
+        app = _make_minimal_app()
+        info = SoftwareUpdateInfo(
+            current_version="0.2.2",
+            latest_version="0.2.2",
+            release_url="https://github.com/example/codex-switch/releases/tag/v0.2.2",
+        )
+
+        with patch("codex_switch.ui.app.messagebox.askyesno") as askyesno:
+            app._finish_software_update_check(info, "", automatic=True)
+
+        askyesno.assert_not_called()
+        self.assertIn("当前已是最新版本", app.software_update_status_var.get())
+        self.assertEqual([event.status for event in app.hot_update_events], ["current"])
+
+    def test_startup_software_update_check_runs_once(self) -> None:
+        class FakeRoot:
+            def winfo_exists(self) -> bool:
+                return True
+
+            def after(self, _delay_ms: int, callback) -> None:
+                callback()
+
+        app = _make_minimal_app()
+        app.root = FakeRoot()
+        calls: list[bool] = []
+        app._run_software_update_check = lambda *, automatic: calls.append(automatic)
+
+        app._schedule_startup_software_update_check()
+        app._schedule_startup_software_update_check()
+
+        self.assertEqual(calls, [True])
 
 
 class UiFilterTests(unittest.TestCase):
@@ -1458,9 +1559,9 @@ class UiFilterTests(unittest.TestCase):
                 },
                 [str(selected_dir)],
             )
+            app._choose_skill_group = lambda _title: group
 
             with (
-                patch("codex_switch.ui.app.simpledialog.askstring", return_value=group.name),
                 patch("codex_switch.ui.app.messagebox.showinfo") as showinfo,
             ):
                 app.install_selected_skill_repo_preview_to_group()

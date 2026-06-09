@@ -17,7 +17,7 @@ import tkinter as tk
 import tomllib
 import webbrowser
 import sys
-from tkinter import font as tkfont
+from tkinter import filedialog, font as tkfont
 from tkinter import messagebox, simpledialog
 
 from codex_switch import __version__
@@ -106,6 +106,7 @@ from codex_switch.skills import (
     discover_skill_sources,
     skill_selection_summary,
 )
+from codex_switch.software_update import SoftwareUpdateChecker, SoftwareUpdateInfo
 from codex_switch.storage import (
     DEFAULT_MODEL_BATCH_CONCURRENCY,
     MODEL_BATCH_CONCURRENCY_MAX,
@@ -190,13 +191,16 @@ LIBRARY_PROFILE_VIEW_VALUES = {view for view, _label in LIBRARY_PROFILE_VIEW_TAB
 LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
 HOT_UPDATE_SCOPE_LABELS = {
+    "software": "软件",
     "skill_repo": "Skills仓库",
     "project": "项目",
     "check": "检查",
 }
 HOT_UPDATE_STATUS_LABELS = {
+    "available": "发现新版本",
     "current": "已是最新",
     "updated": "已更新",
+    "opened": "已打开下载页",
     "pending": "待确认",
     "error": "错误",
     "summary": "完成",
@@ -390,6 +394,14 @@ class GitRemoteUpdate:
     @property
     def short_latest(self) -> str:
         return self.latest_commit[:12] if self.latest_commit else "-"
+
+
+@dataclass(frozen=True)
+class SkillMarketEntry:
+    repo_id: str
+    repo_url: str
+    author: str
+    source: SkillSource
 
 
 @dataclass
@@ -791,6 +803,10 @@ class CodexSwitchApp:
         self.suppress_selection_events = False
         self.sign_in_status_day = today_iso()
         self.hot_update_check_running = False
+        self.software_update_checker = SoftwareUpdateChecker()
+        self.software_update_check_running = False
+        self.software_update_checked_once = False
+        self.skill_market_force_sync = False
 
         self._init_variables()
         self._setup_theme()
@@ -798,6 +814,7 @@ class CodexSwitchApp:
         self.refresh_all()
         self.persist_state()
         self._schedule_sign_in_status_refresh()
+        self._schedule_startup_software_update_check()
         self._schedule_hot_update_check()
         if self.route_proxy_settings.enabled:
             self.start_route_proxy(show_errors=False)
@@ -883,6 +900,7 @@ class CodexSwitchApp:
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
         self.mcp_selected_summary_var = tk.StringVar(value="选择左侧工具后查看配置预览。")
         self.skills_hint_var = tk.StringVar(value="管理 Skills 仓库、本地组和项目关联。")
+        self.skill_market_filter_var = tk.StringVar(value="")
         self.skill_repo_filter_var = tk.StringVar(value="")
         self.skill_repo_detail_var = tk.StringVar(value="未选择仓库")
         self.skill_repo_preview_var = tk.StringVar(value="未选择仓库")
@@ -900,7 +918,8 @@ class CodexSwitchApp:
         )
         self.hot_update_enabled_var = tk.BooleanVar(value=self.hot_update_enabled)
         self.hot_update_interval_var = tk.StringVar(value=str(self.hot_update_interval_minutes))
-        self.hot_update_status_var = tk.StringVar(value="热更新未启用。")
+        self.software_update_status_var = tk.StringVar(value=f"当前版本 {__version__}，尚未检查软件更新。")
+        self.hot_update_status_var = tk.StringVar(value="仓库同步轮询未启用。")
         self.settings_version_var = tk.StringVar(value="-")
         self.settings_python_var = tk.StringVar(value="-")
         self.settings_tk_var = tk.StringVar(value="-")
@@ -1797,84 +1816,35 @@ class CodexSwitchApp:
         self._build_project_skills_panel(project_tab)
 
     def _build_skill_repos_panel(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=3)
-        parent.columnconfigure(1, weight=2)
-        parent.rowconfigure(0, weight=1)
-        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(1, weight=1)
-        repo_filter_bar = tk.Frame(wrap, bg=PALETTE["card_bg"])
-        repo_filter_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        repo_filter_bar = tk.Frame(parent, bg=PALETTE["card_bg"])
+        repo_filter_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         repo_filter_bar.columnconfigure(1, weight=1)
-        tk.Label(repo_filter_bar, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.skill_repo_filter_entry = ttk.Entry(repo_filter_bar, textvariable=self.skill_repo_filter_var)
-        self.skill_repo_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(repo_filter_bar, text="清除", variant="secondary", command=self.clear_skill_repo_filter).grid(row=0, column=2, sticky="e")
-        self.skill_repo_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_filter())
-        self.skill_repo_tree = ttk.Treeview(wrap, columns=("url", "branch", "commit", "auto"), show="headings")
-        self.skill_repo_tree.heading("url", text="GitHub 仓库", anchor="w")
-        self.skill_repo_tree.heading("branch", text="Ref", anchor="center")
-        self.skill_repo_tree.heading("commit", text="最近提交", anchor="center")
-        self.skill_repo_tree.heading("auto", text="自动更新", anchor="center")
-        self.skill_repo_tree.column("url", width=420, anchor="w")
-        self.skill_repo_tree.column("branch", width=90, anchor="center", stretch=False)
-        self.skill_repo_tree.column("commit", width=120, anchor="center", stretch=False)
-        self.skill_repo_tree.column("auto", width=90, anchor="center", stretch=False)
-        self.skill_repo_tree.grid(row=1, column=0, sticky="nsew")
-        self.skill_repo_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_repo_detail())
-        repo_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_repo_tree.yview)
-        repo_scroll.grid(row=1, column=1, sticky="ns")
-        self.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
+        tk.Label(repo_filter_bar, text="筛选 Skill", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.skill_market_filter_entry = ttk.Entry(repo_filter_bar, textvariable=self.skill_market_filter_var)
+        self.skill_market_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(repo_filter_bar, text="清除", variant="secondary", command=self.clear_skill_market_filter).grid(row=0, column=2, sticky="e")
+        self.skill_market_filter_var.trace_add("write", lambda *_args: self.apply_skill_market_filter())
+        make_button(repo_filter_bar, text="刷新市场", variant="secondary", command=self.refresh_skill_market_now).grid(row=0, column=3, sticky="e", padx=(8, 0))
+        tk.Label(parent, textvariable=self.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
-        actions = tk.Frame(parent, bg=PALETTE["card_bg"])
-        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        for column in range(7):
-            actions.columnconfigure(column, weight=1)
-        make_button(actions, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        make_button(actions, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        make_button(actions, text="浏览 Skills", variant="secondary", command=self.preview_selected_skill_repo).grid(row=0, column=4, sticky="ew", padx=(0, 8))
-        make_button(actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=5, sticky="ew", padx=(0, 8))
-        tk.Label(actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=6, sticky="w")
-
-        preview = tk.Frame(parent, bg=PALETTE["card_bg"])
-        preview.grid(row=0, column=1, sticky="nsew")
-        preview.columnconfigure(0, weight=1)
-        preview.rowconfigure(3, weight=1)
-        tk.Label(preview, text="仓库 Skills 预览", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
-        tk.Label(preview, textvariable=self.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font, wraplength=360, justify="left").grid(row=1, column=0, sticky="w", pady=(4, 8))
-        filter_bar = tk.Frame(preview, bg=PALETTE["card_bg"])
-        filter_bar.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        filter_bar.columnconfigure(1, weight=1)
-        tk.Label(filter_bar, text="筛选", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.skill_repo_preview_filter_entry = ttk.Entry(filter_bar, textvariable=self.skill_repo_preview_filter_var)
-        self.skill_repo_preview_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(filter_bar, text="清除", variant="secondary", command=self.clear_skill_repo_preview_filter).grid(row=0, column=2, sticky="e")
-        self.skill_repo_preview_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_preview_filter())
-        preview_wrap = tk.Frame(preview, bg=PALETTE["card_bg"])
-        preview_wrap.grid(row=3, column=0, sticky="nsew")
-        preview_wrap.columnconfigure(0, weight=1)
-        preview_wrap.rowconfigure(0, weight=1)
-        self.skill_repo_preview_tree = ttk.Treeview(preview_wrap, columns=("name", "path"), show="headings")
-        self.skill_repo_preview_tree.heading("name", text="Skill", anchor="w")
-        self.skill_repo_preview_tree.heading("path", text="路径", anchor="w")
-        self.skill_repo_preview_tree.column("name", width=150, anchor="w", stretch=False)
-        self.skill_repo_preview_tree.column("path", width=260, anchor="w")
-        self.skill_repo_preview_tree.grid(row=0, column=0, sticky="nsew")
-        preview_scroll = ttk.Scrollbar(preview_wrap, orient="vertical", command=self.skill_repo_preview_tree.yview)
-        preview_scroll.grid(row=0, column=1, sticky="ns")
-        self.skill_repo_preview_tree.configure(yscrollcommand=preview_scroll.set)
-        preview_actions = tk.Frame(preview, bg=PALETTE["card_bg"])
-        preview_actions.grid(row=4, column=0, sticky="ew", pady=(10, 0))
-        preview_actions.columnconfigure(0, weight=1)
-        make_button(
-            preview_actions,
-            text="安装选中 Skill",
-            variant="secondary",
-            command=self.install_selected_skill_repo_preview_to_group,
-        ).grid(row=0, column=0, sticky="ew")
+        market_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+        market_wrap.grid(row=1, column=0, sticky="nsew")
+        market_wrap.columnconfigure(0, weight=1)
+        market_wrap.rowconfigure(0, weight=1)
+        self.skill_market_canvas = tk.Canvas(market_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
+        self.skill_market_canvas.grid(row=0, column=0, sticky="nsew")
+        market_scroll = ttk.Scrollbar(market_wrap, orient="vertical", command=self.skill_market_canvas.yview)
+        market_scroll.grid(row=0, column=1, sticky="ns")
+        self.skill_market_canvas.configure(yscrollcommand=market_scroll.set)
+        self.skill_market_frame = tk.Frame(self.skill_market_canvas, bg=PALETTE["card_bg"])
+        self.skill_market_window = self.skill_market_canvas.create_window((0, 0), window=self.skill_market_frame, anchor="nw")
+        self.skill_market_frame.bind(
+            "<Configure>",
+            lambda _event: self.skill_market_canvas.configure(scrollregion=self.skill_market_canvas.bbox("all")),
+        )
+        self.skill_market_canvas.bind("<Configure>", self._layout_skill_market_cards)
 
     def _build_local_skills_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1903,12 +1873,8 @@ class CodexSwitchApp:
         make_button(actions, text="新增组", variant="primary", command=self.add_skill_group).grid(row=0, column=0, sticky="ew", padx=(0, 8))
         make_button(actions, text="编辑组", variant="secondary", command=self.edit_skill_group).grid(row=0, column=1, sticky="ew", padx=(0, 8))
         make_button(actions, text="删除组", variant="danger", command=self.delete_skill_group).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        make_button(actions, text="导入扫描Skills", variant="secondary", command=self.import_scanned_skills_to_group).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        make_button(actions, text="刷新", variant="secondary", command=self.refresh_skills_tab).grid(row=0, column=4, sticky="ew", padx=(0, 8))
-        tk.Label(actions, textvariable=self.skill_group_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=5, sticky="w")
-        make_button(actions, text="新增Skill", variant="primary", command=self.add_skill_to_group).grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(8, 0))
-        make_button(actions, text="编辑Skill", variant="secondary", command=self.edit_skill_in_group).grid(row=1, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
-        make_button(actions, text="删除Skill", variant="danger", command=self.delete_skill_from_group).grid(row=1, column=2, sticky="ew", padx=(0, 8), pady=(8, 0))
+        make_button(actions, text="刷新", variant="secondary", command=self.refresh_skills_tab).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        tk.Label(actions, textvariable=self.skill_group_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=4, columnspan=2, sticky="w")
 
     def _build_project_skills_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1982,7 +1948,7 @@ class CodexSwitchApp:
 
     def _build_settings_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(3, weight=1)
 
         settings_card = self._make_card(parent)
         settings_card.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -2029,11 +1995,25 @@ class CodexSwitchApp:
             relief="solid",
             borderwidth=1,
         ).grid(row=3, column=1, sticky="w", pady=(10, 0))
+        tk.Label(settings_card, text="软件更新", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+            row=4,
+            column=0,
+            sticky="w",
+            padx=(0, 14),
+            pady=(10, 0),
+        )
+        tk.Label(settings_card, textvariable=self.software_update_status_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
+            row=4,
+            column=1,
+            sticky="w",
+            pady=(10, 0),
+        )
+        make_button(settings_card, text="检查软件更新", variant="secondary", command=self.check_software_update_now).grid(row=4, column=2, sticky="e", pady=(10, 0))
         ttk.Checkbutton(
             settings_card,
-            text="启用 GitHub 热更新轮询",
+            text="启用仓库同步轮询",
             variable=self.hot_update_enabled_var,
-        ).grid(row=4, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=5, column=0, sticky="w", pady=(10, 0))
         tk.Spinbox(
             settings_card,
             from_=5,
@@ -2043,21 +2023,21 @@ class CodexSwitchApp:
             font=self.body_font,
             relief="solid",
             borderwidth=1,
-        ).grid(row=4, column=1, sticky="w", pady=(10, 0))
-        make_button(settings_card, text="立即检查热更新", variant="secondary", command=self.check_hot_updates_now).grid(row=4, column=2, sticky="e", pady=(10, 0))
+        ).grid(row=5, column=1, sticky="w", pady=(10, 0))
+        make_button(settings_card, text="检查仓库同步", variant="secondary", command=self.check_hot_updates_now).grid(row=5, column=2, sticky="e", pady=(10, 0))
         tk.Label(settings_card, textvariable=self.hot_update_status_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
-            row=5,
+            row=6,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
-        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=5, column=2, sticky="e", pady=(8, 0))
+        make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=6, column=2, sticky="e", pady=(8, 0))
 
         hot_update_log_card = self._make_card(parent)
         hot_update_log_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         hot_update_log_card.columnconfigure(0, weight=1)
-        tk.Label(hot_update_log_card, text="最近热更新记录", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+        tk.Label(hot_update_log_card, text="最近更新与同步记录", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
         hot_update_log_wrap = tk.Frame(hot_update_log_card, bg=PALETTE["card_bg"])
         hot_update_log_wrap.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         hot_update_log_wrap.columnconfigure(0, weight=1)
@@ -2078,8 +2058,52 @@ class CodexSwitchApp:
         hot_update_log_scroll.grid(row=0, column=1, sticky="ns")
         self.hot_update_log_text.configure(yscrollcommand=hot_update_log_scroll.set)
 
+        repo_card = self._make_card(parent)
+        repo_card.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        repo_card.columnconfigure(0, weight=1)
+        repo_card.rowconfigure(2, weight=1)
+        tk.Label(repo_card, text="Skills 仓库管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+        settings_repo_filter = tk.Frame(repo_card, bg=PALETTE["card_bg"])
+        settings_repo_filter.grid(row=1, column=0, sticky="ew", pady=(8, 8))
+        settings_repo_filter.columnconfigure(1, weight=1)
+        tk.Label(settings_repo_filter, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.skill_repo_filter_entry = ttk.Entry(settings_repo_filter, textvariable=self.skill_repo_filter_var)
+        self.skill_repo_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(settings_repo_filter, text="清除", variant="secondary", command=self.clear_skill_repo_filter).grid(row=0, column=2, sticky="e")
+        self.skill_repo_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_filter())
+
+        repo_wrap = tk.Frame(repo_card, bg=PALETTE["card_bg"])
+        repo_wrap.grid(row=2, column=0, sticky="nsew")
+        repo_wrap.columnconfigure(0, weight=1)
+        repo_wrap.rowconfigure(0, weight=1)
+        self.skill_repo_tree = ttk.Treeview(repo_wrap, columns=("url", "branch", "commit", "auto"), show="headings")
+        self.skill_repo_tree.heading("url", text="GitHub 仓库", anchor="w")
+        self.skill_repo_tree.heading("branch", text="Ref", anchor="center")
+        self.skill_repo_tree.heading("commit", text="最近提交", anchor="center")
+        self.skill_repo_tree.heading("auto", text="自动更新", anchor="center")
+        self.skill_repo_tree.column("url", width=520, anchor="w")
+        self.skill_repo_tree.column("branch", width=110, anchor="center", stretch=False)
+        self.skill_repo_tree.column("commit", width=130, anchor="center", stretch=False)
+        self.skill_repo_tree.column("auto", width=90, anchor="center", stretch=False)
+        self.skill_repo_tree.grid(row=0, column=0, sticky="nsew")
+        self.skill_repo_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_repo_detail())
+        repo_scroll = ttk.Scrollbar(repo_wrap, orient="vertical", command=self.skill_repo_tree.yview)
+        repo_scroll.grid(row=0, column=1, sticky="ns")
+        self.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
+
+        repo_actions = tk.Frame(repo_card, bg=PALETTE["card_bg"])
+        repo_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        for column in range(6):
+            repo_actions.columnconfigure(column, weight=1)
+        make_button(repo_actions, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(repo_actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(repo_actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(repo_actions, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        make_button(repo_actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=4, sticky="ew", padx=(0, 8))
+        tk.Label(repo_actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=5, sticky="w")
+
         info_card = self._make_card(parent)
-        info_card.grid(row=2, column=0, sticky="nsew")
+        info_card.grid(row=3, column=0, sticky="nsew")
         info_card.columnconfigure(1, weight=1)
         info_card.columnconfigure(3, weight=1)
         tk.Label(info_card, text="版本与环境", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=4, sticky="w")
@@ -2773,8 +2797,10 @@ class CodexSwitchApp:
         self.hot_update_enabled_var.set(self.hot_update_enabled)
         self.hot_update_interval_var.set(str(self.hot_update_interval_minutes))
         self.hot_update_status_var.set(
-            f"热更新轮询：{'已启用' if self.hot_update_enabled else '未启用'}，间隔 {self.hot_update_interval_minutes} 分钟。"
+            f"仓库同步轮询：{'已启用' if self.hot_update_enabled else '未启用'}，间隔 {self.hot_update_interval_minutes} 分钟。"
         )
+        if not self.software_update_check_running and not self.software_update_checked_once:
+            self.software_update_status_var.set(f"当前版本 {__version__}，尚未检查软件更新。")
         self.settings_version_var.set(__version__)
         self.settings_python_var.set(sys.version.split()[0])
         self.settings_tk_var.set(f"Tcl/Tk {self.root.tk.call('info', 'patchlevel')}")
@@ -2800,6 +2826,12 @@ class CodexSwitchApp:
             self.refresh_test_tab()
         self.root.after(60_000, self._schedule_sign_in_status_refresh)
 
+    def _schedule_startup_software_update_check(self) -> None:
+        if not self.root.winfo_exists() or self.software_update_checked_once:
+            return
+        self.software_update_checked_once = True
+        self.root.after(1500, lambda: self._run_software_update_check(automatic=True))
+
     def _schedule_hot_update_check(self) -> None:
         if not self.root.winfo_exists():
             return
@@ -2810,6 +2842,95 @@ class CodexSwitchApp:
 
     def check_hot_updates_now(self) -> None:
         self._run_hot_update_check(automatic=False)
+
+    def check_software_update_now(self) -> None:
+        self._run_software_update_check(automatic=False)
+
+    def _run_software_update_check(self, *, automatic: bool) -> None:
+        if self.software_update_check_running:
+            if not automatic:
+                messagebox.showinfo("提示", "软件更新检查正在进行。", parent=self.root)
+            return
+        self.software_update_check_running = True
+        self.software_update_status_var.set("正在检查软件更新...")
+        self.status_var.set("正在检查软件更新...")
+
+        def worker() -> None:
+            try:
+                info = self.software_update_checker.check(__version__)
+            except Exception as exc:
+                self.root.after(0, lambda: self._finish_software_update_check(None, str(exc), automatic=automatic))
+                return
+            self.root.after(0, lambda: self._finish_software_update_check(info, "", automatic=automatic))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_software_update_check(
+        self,
+        info: SoftwareUpdateInfo | None,
+        error: str,
+        *,
+        automatic: bool,
+    ) -> None:
+        self.software_update_check_running = False
+        if error:
+            summary = f"软件更新检查失败：{error}"
+            self.software_update_status_var.set(summary)
+            if not automatic:
+                messagebox.showerror("软件更新检查失败", error, parent=self.root)
+            self.status_var.set(summary)
+            self._record_hot_update_event(
+                scope="software",
+                target="Codex Switch",
+                status="error",
+                detail=error,
+                automatic=automatic,
+            )
+            self.persist_state()
+            return
+        if info is None:
+            return
+        if not info.update_available:
+            summary = f"当前已是最新版本：{info.current_version}"
+            self.software_update_status_var.set(summary)
+            if not automatic:
+                messagebox.showinfo("软件更新", summary, parent=self.root)
+            self.status_var.set(summary)
+            self._record_hot_update_event(
+                scope="software",
+                target="Codex Switch",
+                status="current",
+                detail=summary,
+                automatic=automatic,
+            )
+            self.persist_state()
+            return
+
+        detail = f"发现新版本 {info.latest_version}，当前版本 {info.current_version}。"
+        self.software_update_status_var.set(detail)
+        self.status_var.set(detail)
+        self._record_hot_update_event(
+            scope="software",
+            target=info.release_name or "Codex Switch",
+            status="available",
+            detail=detail,
+            automatic=automatic,
+        )
+        self.persist_state()
+        target_url = info.download_url or info.release_url
+        if not target_url:
+            messagebox.showinfo("软件更新", f"{detail}\n\n该 Release 没有可打开的下载地址。", parent=self.root)
+            return
+        if messagebox.askyesno("发现软件新版本", f"{detail}\n\n是否打开下载页面？", parent=self.root):
+            webbrowser.open(target_url)
+            self._record_hot_update_event(
+                scope="software",
+                target=info.release_name or "Codex Switch",
+                status="opened",
+                detail=target_url,
+                automatic=automatic,
+            )
+            self.persist_state()
 
     def _record_hot_update_event(
         self,
@@ -2851,22 +2972,22 @@ class CodexSwitchApp:
         ]
         self._set_text_content(
             self.hot_update_log_text,
-            "\n".join(lines) if lines else "暂无热更新记录。",
+            "\n".join(lines) if lines else "暂无更新与同步记录。",
             disabled=True,
         )
 
     def _run_hot_update_check(self, *, automatic: bool) -> None:
         if self.hot_update_check_running:
             if not automatic:
-                messagebox.showinfo("提示", "热更新检查正在进行。", parent=self.root)
+                messagebox.showinfo("提示", "仓库同步检查正在进行。", parent=self.root)
             return
         self.hot_update_check_running = True
-        self.hot_update_status_var.set("正在检查 GitHub 热更新...")
-        summary = "热更新检查失败。"
+        self.hot_update_status_var.set("正在检查仓库同步...")
+        summary = "仓库同步检查失败。"
         try:
             summary = self._check_and_apply_hot_updates(automatic=automatic)
         except Exception as exc:
-            summary = f"热更新检查失败：{exc}"
+            summary = f"仓库同步检查失败：{exc}"
             self._record_hot_update_event(
                 scope="check",
                 target="自动检查" if automatic else "手动检查",
@@ -3079,9 +3200,9 @@ class CodexSwitchApp:
         if pending_repo_updates or pending_project_updates:
             pending_text = f"，待确认仓库 {pending_repo_updates}、项目 {pending_project_updates}"
         if errors:
-            summary = f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {len(errors)} 个。"
+            summary = f"仓库同步检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {len(errors)} 个。"
         else:
-            summary = f"热更新检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
+            summary = f"仓库同步检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
         self._record_hot_update_event(
             scope="check",
             target="自动检查" if automatic else "手动检查",
@@ -3853,6 +3974,12 @@ class CodexSwitchApp:
 
     def refresh_skills_tab(self) -> None:
         self._sync_projects_from_skill_groups()
+        market_entries: list[SkillMarketEntry] = []
+        market_errors: list[str] = []
+        if hasattr(self, "skill_market_frame"):
+            market_entries, market_errors = self._load_skill_market_entries(sync_remote=self.skill_market_force_sync)
+            self.skill_market_force_sync = False
+            self._render_skill_market_cards(market_entries)
         if hasattr(self, "skill_repo_tree"):
             selected_repo_id = self.skill_repo_tree.focus()
             for item in self.skill_repo_tree.get_children():
@@ -3916,9 +4043,128 @@ class CodexSwitchApp:
         if hasattr(self, "skill_repo_filter_var") and self.skill_repo_filter_var.get().strip():
             repo_filter_text = f"，仓库筛选 {visible_repo_count}/{len(self.skill_market_repos)}"
         self.skills_hint_var.set(f"{len(self.skill_market_repos)} 个仓库{repo_filter_text}，{len(self.skill_groups)} 个本地组，{len(self.projects)} 个项目。")
-        self._refresh_skill_repo_detail()
+        if hasattr(self, "skill_market_frame"):
+            error_text = f"，{len(market_errors)} 个仓库读取失败" if market_errors else ""
+            self.skill_repo_preview_var.set(f"市场显示 {len(market_entries)} 个 Skills{error_text}。")
+        if hasattr(self, "skill_repo_tree"):
+            self._refresh_skill_repo_detail()
         self._refresh_skill_group_detail()
         self._refresh_skill_project_detail()
+
+    def _github_repo_author(self, repo_url: str) -> str:
+        normalized = str(repo_url or "").rstrip("/")
+        parts = normalized.split("/")
+        if len(parts) < 2:
+            return "-"
+        return parts[-2] or "-"
+
+    def _skill_market_entry_text(self, entry: SkillMarketEntry) -> str:
+        return " ".join(
+            item
+            for item in (
+                entry.source.name,
+                entry.source.display_name,
+                entry.author,
+                entry.repo_url,
+                str(entry.source.source_path),
+            )
+            if item
+        ).casefold()
+
+    def _filtered_skill_market_entries(self, entries: list[SkillMarketEntry]) -> list[SkillMarketEntry]:
+        query_var = getattr(self, "skill_market_filter_var", None)
+        query = query_var.get().strip().casefold() if query_var is not None else ""
+        if not query:
+            return entries
+        return [entry for entry in entries if query in self._skill_market_entry_text(entry)]
+
+    def _load_skill_market_entries(self, *, sync_remote: bool = False) -> tuple[list[SkillMarketEntry], list[str]]:
+        entries: list[SkillMarketEntry] = []
+        errors: list[str] = []
+        for repo in self.skill_market_repos:
+            try:
+                cache_dir = self._sync_skill_repo_cache(repo) if sync_remote else self._skill_repo_cache_dir(repo)
+                if not any(cache_dir.rglob("SKILL.md")):
+                    if sync_remote:
+                        raise RuntimeError("仓库中未发现 Skills。")
+                    continue
+                sources = discover_skill_sources([cache_dir])
+                self._verify_skill_repo_checksums(cache_dir, sources)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                errors.append(f"{repo.url}: {exc}")
+                continue
+            author = self._github_repo_author(repo.url)
+            entries.extend(
+                SkillMarketEntry(
+                    repo_id=repo.id,
+                    repo_url=repo.url,
+                    author=author,
+                    source=source,
+                )
+                for source in sources
+            )
+        if sync_remote and entries:
+            self.persist_state()
+        return self._filtered_skill_market_entries(entries), errors
+
+    def refresh_skill_market_now(self) -> None:
+        self.skill_market_force_sync = True
+        self.refresh_skills_tab()
+
+    def apply_skill_market_filter(self) -> None:
+        if hasattr(self, "skill_market_frame"):
+            self.refresh_skills_tab()
+
+    def clear_skill_market_filter(self) -> None:
+        if hasattr(self, "skill_market_filter_var"):
+            self.skill_market_filter_var.set("")
+
+    def _layout_skill_market_cards(self, event: tk.Event | None = None) -> None:
+        if not hasattr(self, "skill_market_canvas") or not hasattr(self, "skill_market_frame"):
+            return
+        width = max(int(getattr(event, "width", 0) or self.skill_market_canvas.winfo_width()), 1)
+        self.skill_market_canvas.itemconfigure(self.skill_market_window, width=width)
+        columns = max(1, width // 260)
+        for index, child in enumerate(self.skill_market_frame.winfo_children()):
+            child.grid_configure(row=index // columns, column=index % columns, sticky="ew", padx=6, pady=6)
+        for column in range(columns):
+            self.skill_market_frame.columnconfigure(column, weight=1, uniform="skill_market")
+
+    def _render_skill_market_cards(self, entries: list[SkillMarketEntry]) -> None:
+        if not hasattr(self, "skill_market_frame"):
+            return
+        for child in self.skill_market_frame.winfo_children():
+            child.destroy()
+        if not entries:
+            empty = tk.Label(
+                self.skill_market_frame,
+                text="暂无可显示的 Skills。",
+                bg=PALETTE["card_bg"],
+                fg=PALETTE["muted"],
+                font=self.body_font,
+            )
+            empty.grid(row=0, column=0, sticky="w", padx=6, pady=6)
+            return
+        for entry in entries:
+            card = tk.Frame(
+                self.skill_market_frame,
+                bg="#FBFDFE",
+                highlightbackground=PALETTE["card_border"],
+                highlightthickness=1,
+                padx=10,
+                pady=10,
+            )
+            card.columnconfigure(0, weight=1)
+            tk.Label(card, text=compact_text(entry.source.display_name or entry.source.name, 28), bg="#FBFDFE", fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+            tk.Label(card, text=f"作者：{entry.author}", bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
+            tk.Label(card, text=compact_text(entry.repo_url, 34), bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(2, 8))
+            make_button(
+                card,
+                text="安装",
+                variant="secondary",
+                command=lambda market_entry=entry: self.install_skill_market_entry_to_group(market_entry),
+            ).grid(row=3, column=0, sticky="ew")
+        self._layout_skill_market_cards()
 
     def _skill_repo_filter_text(self, repo: SkillMarketRepo) -> str:
         group = self._skill_group_by_id(repo.installed_group_id)
@@ -4131,14 +4377,56 @@ class CodexSwitchApp:
         selection = self.skill_group_tree.selection()
         return self._skill_group_by_id(selection[0] if selection else self.skill_group_tree.focus())
 
+    def _choose_skill_group(self, title: str) -> SkillGroup | None:
+        if not self.skill_groups:
+            messagebox.showinfo("提示", "请先在本地 Skills 中创建一个组。", parent=self.root)
+            return None
+        labels: list[str] = []
+        group_by_label: dict[str, SkillGroup] = {}
+        for group in self.skill_groups:
+            label = f"{group.name}（{len(group.skills)} 个 Skills）"
+            labels.append(label)
+            group_by_label[label] = group
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=PALETTE["card_bg"])
+        dialog.resizable(False, False)
+        dialog.columnconfigure(0, weight=1)
+        tk.Label(dialog, text="选择目标组", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
+        selected_var = tk.StringVar(value=labels[0])
+        combo = ttk.Combobox(dialog, textvariable=selected_var, values=labels, state="readonly", width=44)
+        combo.grid(row=1, column=0, sticky="ew", padx=16)
+        result: dict[str, SkillGroup | None] = {"group": None}
+
+        def confirm() -> None:
+            result["group"] = group_by_label.get(selected_var.get())
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        actions = tk.Frame(dialog, bg=PALETTE["card_bg"])
+        actions.grid(row=2, column=0, sticky="e", padx=16, pady=16)
+        make_button(actions, text="取消", variant="secondary", command=cancel).grid(row=0, column=0, padx=(0, 8))
+        make_button(actions, text="确定", variant="primary", command=confirm).grid(row=0, column=1)
+        dialog.bind("<Return>", lambda _event: confirm())
+        dialog.bind("<Escape>", lambda _event: cancel())
+        combo.focus_set()
+        self.root.wait_window(dialog)
+        return result["group"]
+
     def _refresh_skill_repo_detail(self) -> None:
         repo = self._selected_skill_repo()
         if not repo:
             self.skill_repo_detail_var.set("未选择仓库")
-            self._clear_skill_repo_preview()
+            if hasattr(self, "skill_repo_preview_tree"):
+                self._clear_skill_repo_preview()
             return
         self.skill_repo_detail_var.set(f"{repo.branch} / {repo.last_sync_commit or '未同步'}")
-        self._clear_skill_repo_preview("尚未浏览仓库内容。")
+        if hasattr(self, "skill_repo_preview_tree"):
+            self._clear_skill_repo_preview("尚未浏览仓库内容。")
 
     def _refresh_skill_group_detail(self) -> None:
         group = self._selected_skill_group()
@@ -4359,15 +4647,8 @@ class CodexSwitchApp:
         if not sources:
             messagebox.showinfo("提示", "请先在预览列表中选择要安装的 Skill。", parent=self.root)
             return
-        if not self.skill_groups:
-            messagebox.showinfo("提示", "请先在本地 Skills 中创建一个组。", parent=self.root)
-            return
-        group_name = simpledialog.askstring("安装选中 Skill", "目标组名：", parent=self.root)
-        if not group_name:
-            return
-        group = next((item for item in self.skill_groups if item.name == group_name.strip()), None)
+        group = self._choose_skill_group("安装选中 Skill")
         if group is None:
-            messagebox.showinfo("提示", "没有找到这个本地 Skills 组。", parent=self.root)
             return
         updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
         if not imported_count:
@@ -4788,42 +5069,25 @@ class CodexSwitchApp:
         if not repo:
             messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
             return
-        if not self.skill_groups:
-            messagebox.showinfo("提示", "请先在本地 Skills 中创建一个组。", parent=self.root)
-            return
-        group_name = simpledialog.askstring("安装到组", "目标组名：", parent=self.root)
-        if not group_name:
-            return
-        group = next((item for item in self.skill_groups if item.name == group_name.strip()), None)
+        group = self._choose_skill_group("安装仓库 Skills")
         if group is None:
-            messagebox.showinfo("提示", "没有找到这个本地 Skills 组。", parent=self.root)
             return
-        try:
-            cache_dir = self._sync_skill_repo_cache(repo)
-            sources = discover_skill_sources([cache_dir])
-            self._verify_skill_repo_checksums(cache_dir, sources)
-        except RuntimeError as exc:
-            messagebox.showerror("安装失败", str(exc), parent=self.root)
+        self._install_skill_repo_sources_to_group(repo, group)
+
+    def install_skill_market_entry_to_group(self, entry: SkillMarketEntry) -> None:
+        group = self._choose_skill_group("安装 Skill")
+        if group is None:
             return
-        metadata_updated = self._load_model_metadata_from_repo(cache_dir)
-        updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
-        synced_repo = self._skill_repo_by_id(repo.id) or repo
-        updated_repo = replace(synced_repo, installed_group_id=group.id)
-        self.skill_market_repos = [updated_repo if item.id == updated_repo.id else item for item in self.skill_market_repos]
+        updated_group, imported_count = self._import_skill_sources_to_group(group, [entry.source])
         if not imported_count:
-            self.persist_state()
-            if metadata_updated:
-                self.refresh_library_tab()
-            self.refresh_skills_tab()
-            messagebox.showinfo("提示", "仓库中没有新的 Skills，已绑定到目标组。", parent=self.root)
+            messagebox.showinfo("提示", "该 Skill 已存在于目标组。", parent=self.root)
             return
         self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
+        self._sync_projects_from_skill_groups()
         self.persist_state()
-        if metadata_updated:
-            self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_skills_tab()
-        self.status_var.set(f"已从仓库安装 {imported_count} 个 Skills 到 {group.name}。")
+        self.status_var.set(f"已安装 {entry.source.name} 到 {group.name}。")
 
     def _set_project_commit(self, project: ProjectRecord, latest_commit: str) -> ProjectRecord:
         if project.github_last_sync_commit == latest_commit:
@@ -5012,15 +5276,136 @@ class CodexSwitchApp:
         if not group:
             messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
             return
-        name = simpledialog.askstring("Skills组", "组名：", initialvalue=group.name, parent=self.root)
-        if not name:
+        self.open_skill_group_dialog(group)
+
+    def open_skill_group_dialog(self, group: SkillGroup) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"编辑 Skills 组 - {group.name}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=PALETTE["card_bg"])
+        dialog.geometry("900x640")
+        dialog.minsize(760, 520)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(2, weight=1)
+
+        name_var = tk.StringVar(value=group.name)
+        description_var = tk.StringVar(value=group.description)
+        form = tk.Frame(dialog, bg=PALETTE["card_bg"])
+        form.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        form.columnconfigure(1, weight=1)
+        tk.Label(form, text="组名", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(form, textvariable=name_var).grid(row=0, column=1, sticky="ew")
+        tk.Label(form, text="描述", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(form, textvariable=description_var).grid(row=1, column=1, sticky="ew", pady=(8, 0))
+
+        canvas_wrap = tk.Frame(dialog, bg=PALETTE["card_bg"])
+        canvas_wrap.grid(row=2, column=0, sticky="nsew", padx=16)
+        canvas_wrap.columnconfigure(0, weight=1)
+        canvas_wrap.rowconfigure(0, weight=1)
+        canvas = tk.Canvas(canvas_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(canvas_wrap, orient="vertical", command=canvas.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scroll.set)
+        cards_frame = tk.Frame(canvas, bg=PALETTE["card_bg"])
+        window_id = canvas.create_window((0, 0), window=cards_frame, anchor="nw")
+        cards_frame.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: self._layout_skill_group_dialog_cards(cards_frame, event.width, window_id, canvas))
+        self._render_skill_group_dialog_cards(group, cards_frame)
+
+        actions = tk.Frame(dialog, bg=PALETTE["card_bg"])
+        actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
+        for column in range(5):
+            actions.columnconfigure(column, weight=1)
+        make_button(actions, text="新增 Skill", variant="primary", command=lambda: (self.add_skill_to_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        make_button(actions, text="安装 GitHub Skills", variant="secondary", command=lambda: (self.install_skill_repo_to_specific_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        make_button(actions, text="导入本地文件", variant="secondary", command=lambda: (self.import_local_skill_file_to_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        make_button(actions, text="导入扫描Skills", variant="secondary", command=lambda: (self.import_scanned_skills_to_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+        make_button(actions, text="刷新", variant="secondary", command=lambda: self._render_skill_group_dialog_cards(group, cards_frame)).grid(row=0, column=4, sticky="ew")
+
+        footer = tk.Frame(dialog, bg=PALETTE["card_bg"])
+        footer.grid(row=3, column=0, sticky="e", padx=16, pady=16)
+
+        def save_group() -> None:
+            current = self._skill_group_by_id(group.id)
+            if current is None:
+                dialog.destroy()
+                return
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showinfo("提示", "组名不能为空。", parent=dialog)
+                return
+            updated = replace(current, name=name, description=description_var.get().strip())
+            self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+            self._sync_projects_from_skill_groups()
+            self.persist_state()
+            self.refresh_project_tab()
+            self.refresh_skills_tab()
+            self.status_var.set(f"已更新 Skills 组：{updated.name}")
+            dialog.destroy()
+
+        make_button(footer, text="取消", variant="secondary", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        make_button(footer, text="保存", variant="primary", command=save_group).grid(row=0, column=1)
+
+    def _layout_skill_group_dialog_cards(
+        self,
+        cards_frame: tk.Frame,
+        width: int,
+        window_id: int,
+        canvas: tk.Canvas,
+    ) -> None:
+        canvas.itemconfigure(window_id, width=max(width, 1))
+        columns = max(1, int(width) // 240)
+        for index, child in enumerate(cards_frame.winfo_children()):
+            child.grid_configure(row=index // columns, column=index % columns, sticky="ew", padx=6, pady=6)
+        for column in range(columns):
+            cards_frame.columnconfigure(column, weight=1, uniform="skill_group_dialog")
+
+    def _render_skill_group_dialog_cards(self, group: SkillGroup, cards_frame: tk.Frame) -> None:
+        current = self._skill_group_by_id(group.id) or group
+        for child in cards_frame.winfo_children():
+            child.destroy()
+        if not current.skills:
+            tk.Label(
+                cards_frame,
+                text="该组暂无 Skills。",
+                bg=PALETTE["card_bg"],
+                fg=PALETTE["muted"],
+                font=self.body_font,
+            ).grid(row=0, column=0, sticky="w", padx=6, pady=6)
             return
-        description = simpledialog.askstring("Skills组", "描述：", initialvalue=group.description, parent=self.root) or ""
-        updated = replace(group, name=name.strip(), description=description.strip())
-        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
-        self.persist_state()
-        self.refresh_skills_tab()
-        self.status_var.set(f"已更新 Skills 组：{updated.name}")
+        for skill in current.skills:
+            card = tk.Frame(
+                cards_frame,
+                bg="#FBFDFE",
+                highlightbackground=PALETTE["card_border"],
+                highlightthickness=1,
+                padx=10,
+                pady=10,
+            )
+            card.columnconfigure(0, weight=1)
+            tk.Label(card, text=compact_text(skill.name, 26), bg="#FBFDFE", fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+            type_label = SKILL_TYPE_LABELS.get(normalize_skill_type(skill.type), skill.type)
+            tk.Label(card, text=f"{type_label} / {skill.version}", bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
+            source_text = compact_text(skill.source_path or "本地内容", 32)
+            tk.Label(card, text=source_text, bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(2, 8))
+            buttons = tk.Frame(card, bg="#FBFDFE")
+            buttons.grid(row=3, column=0, sticky="ew")
+            buttons.columnconfigure(0, weight=1)
+            buttons.columnconfigure(1, weight=1)
+            make_button(
+                buttons,
+                text="编辑",
+                variant="secondary",
+                command=lambda item=skill: (self.edit_skill_in_group(current, item), self._render_skill_group_dialog_cards(current, cards_frame)),
+            ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+            make_button(
+                buttons,
+                text="删除",
+                variant="danger",
+                command=lambda item=skill: (self.delete_skill_from_group(current, item), self._render_skill_group_dialog_cards(current, cards_frame)),
+            ).grid(row=0, column=1, sticky="ew")
 
     def delete_skill_group(self) -> None:
         group = self._selected_skill_group()
@@ -5039,8 +5424,8 @@ class CodexSwitchApp:
         self.refresh_skills_tab()
         self.status_var.set("已删除 Skills 组并清理项目关联。")
 
-    def add_skill_to_group(self) -> None:
-        group = self._selected_skill_group()
+    def add_skill_to_group(self, group: SkillGroup | None = None) -> None:
+        group = self._skill_group_by_id(group.id) if group is not None else self._selected_skill_group()
         if not group:
             messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
             return
@@ -5059,15 +5444,18 @@ class CodexSwitchApp:
         self.refresh_skills_tab()
         self.status_var.set(f"已新增 Skill：{skill.name}")
 
-    def edit_skill_in_group(self) -> None:
-        group = self._selected_skill_group()
+    def edit_skill_in_group(self, group: SkillGroup | None = None, existing: SkillDefinition | None = None) -> None:
+        group = self._skill_group_by_id(group.id) if group is not None else self._selected_skill_group()
         if not group:
             messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
             return
-        name = simpledialog.askstring("Skill", "要编辑的 Skill 名称：", parent=self.root)
-        if not name:
-            return
-        existing = next((skill for skill in group.skills if skill.name == name.strip()), None)
+        if existing is None:
+            name = simpledialog.askstring("Skill", "要编辑的 Skill 名称：", parent=self.root)
+            if not name:
+                return
+            existing = next((skill for skill in group.skills if skill.name == name.strip()), None)
+        else:
+            existing = next((skill for skill in group.skills if skill.id == existing.id), existing)
         if existing is None:
             messagebox.showinfo("提示", "组内没有这个 Skill。", parent=self.root)
             return
@@ -5092,21 +5480,32 @@ class CodexSwitchApp:
         self.refresh_skills_tab()
         self.status_var.set(f"已更新 Skill：{updated_skill.name}")
 
-    def delete_skill_from_group(self) -> None:
-        group = self._selected_skill_group()
+    def delete_skill_from_group(self, group: SkillGroup | None = None, skill: SkillDefinition | None = None) -> None:
+        group = self._skill_group_by_id(group.id) if group is not None else self._selected_skill_group()
         if not group:
             messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
             return
-        name = simpledialog.askstring("Skill", "要删除的 Skill 名称：", parent=self.root)
-        if not name:
+        if skill is None:
+            name = simpledialog.askstring("Skill", "要删除的 Skill 名称：", parent=self.root)
+            if not name:
+                return
+            skill = next((item for item in group.skills if item.name == name.strip()), None)
+        else:
+            skill = next((item for item in group.skills if item.id == skill.id), skill)
+        if skill is None:
+            messagebox.showinfo("提示", "组内没有这个 Skill。", parent=self.root)
             return
-        updated = replace(group, skills=[skill for skill in group.skills if skill.name != name.strip()])
+        if not messagebox.askyesno("确认删除", f"删除 Skill：{skill.name}？", parent=self.root):
+            return
+        updated = replace(group, skills=[item for item in group.skills if item.id != skill.id])
         self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self._sync_projects_from_skill_groups()
         self.persist_state()
+        self.refresh_project_tab()
         self.refresh_skills_tab()
 
-    def import_scanned_skills_to_group(self) -> None:
-        group = self._selected_skill_group()
+    def import_scanned_skills_to_group(self, group: SkillGroup | None = None) -> None:
+        group = self._skill_group_by_id(group.id) if group is not None else self._selected_skill_group()
         if not group:
             messagebox.showinfo("提示", "请先选择一个 Skills 组。", parent=self.root)
             return
@@ -5136,9 +5535,128 @@ class CodexSwitchApp:
             return
         updated = replace(group, skills=[*group.skills, *imported])
         self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self._sync_projects_from_skill_groups()
         self.persist_state()
+        self.refresh_project_tab()
         self.refresh_skills_tab()
         self.status_var.set(f"已导入 {len(imported)} 个 Skills 到 {group.name}。")
+
+    def _choose_skill_market_repo(self, title: str) -> SkillMarketRepo | None:
+        if not self.skill_market_repos:
+            messagebox.showinfo("提示", "请先在设置页添加一个 Skills 仓库。", parent=self.root)
+            return None
+        labels: list[str] = []
+        repo_by_label: dict[str, SkillMarketRepo] = {}
+        for repo in self.skill_market_repos:
+            label = f"{repo.url} @ {repo.branch}"
+            labels.append(label)
+            repo_by_label[label] = repo
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=PALETTE["card_bg"])
+        dialog.resizable(False, False)
+        dialog.columnconfigure(0, weight=1)
+        tk.Label(dialog, text="选择 GitHub Skills 仓库", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
+        selected_var = tk.StringVar(value=labels[0])
+        combo = ttk.Combobox(dialog, textvariable=selected_var, values=labels, state="readonly", width=64)
+        combo.grid(row=1, column=0, sticky="ew", padx=16)
+        result: dict[str, SkillMarketRepo | None] = {"repo": None}
+
+        def confirm() -> None:
+            result["repo"] = repo_by_label.get(selected_var.get())
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        actions = tk.Frame(dialog, bg=PALETTE["card_bg"])
+        actions.grid(row=2, column=0, sticky="e", padx=16, pady=16)
+        make_button(actions, text="取消", variant="secondary", command=cancel).grid(row=0, column=0, padx=(0, 8))
+        make_button(actions, text="确定", variant="primary", command=confirm).grid(row=0, column=1)
+        dialog.bind("<Return>", lambda _event: confirm())
+        dialog.bind("<Escape>", lambda _event: cancel())
+        combo.focus_set()
+        self.root.wait_window(dialog)
+        return result["repo"]
+
+    def install_skill_repo_to_specific_group(self, group: SkillGroup) -> None:
+        current_group = self._skill_group_by_id(group.id)
+        if current_group is None:
+            messagebox.showinfo("提示", "目标 Skills 组已不存在。", parent=self.root)
+            return
+        repo = self._choose_skill_market_repo("安装 GitHub Skills")
+        if repo is None:
+            return
+        self._install_skill_repo_sources_to_group(repo, current_group)
+
+    def _install_skill_repo_sources_to_group(self, repo: SkillMarketRepo, group: SkillGroup) -> bool:
+        try:
+            cache_dir = self._sync_skill_repo_cache(repo)
+            sources = discover_skill_sources([cache_dir])
+            self._verify_skill_repo_checksums(cache_dir, sources)
+        except RuntimeError as exc:
+            messagebox.showerror("安装失败", str(exc), parent=self.root)
+            return False
+        metadata_updated = self._load_model_metadata_from_repo(cache_dir)
+        updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
+        synced_repo = self._skill_repo_by_id(repo.id) or repo
+        updated_repo = replace(synced_repo, installed_group_id=group.id)
+        self.skill_market_repos = [updated_repo if item.id == updated_repo.id else item for item in self.skill_market_repos]
+        if imported_count:
+            self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
+            self._sync_projects_from_skill_groups()
+        self.persist_state()
+        if metadata_updated:
+            self.refresh_library_tab()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        if imported_count:
+            self.status_var.set(f"已从仓库安装 {imported_count} 个 Skills 到 {group.name}。")
+        else:
+            messagebox.showinfo("提示", "仓库中没有新的 Skills，已绑定到目标组。", parent=self.root)
+        return True
+
+    def import_local_skill_file_to_group(self, group: SkillGroup) -> None:
+        current_group = self._skill_group_by_id(group.id)
+        if current_group is None:
+            messagebox.showinfo("提示", "目标 Skills 组已不存在。", parent=self.root)
+            return
+        selected_files = filedialog.askopenfilenames(
+            parent=self.root,
+            title="导入本地 Skill 文件",
+            filetypes=(("Text files", "*.md *.txt *.py *.json *.toml *.yaml *.yml"), ("All files", "*.*")),
+        )
+        if not selected_files:
+            return
+        existing_names = {skill.name for skill in current_group.skills}
+        imported: list[SkillDefinition] = []
+        errors: list[str] = []
+        for selected in selected_files:
+            path = Path(selected)
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            name = path.parent.name if path.name.casefold() == "skill.md" else path.stem
+            if not name or name in existing_names:
+                continue
+            existing_names.add(name)
+            imported.append(SkillDefinition.create(name, content=content, source_path=str(path)))
+        if errors:
+            messagebox.showerror("导入失败", "\n".join(errors[:6]), parent=self.root)
+        if not imported:
+            messagebox.showinfo("提示", "没有新的本地文件可导入。", parent=self.root)
+            return
+        updated = replace(current_group, skills=[*current_group.skills, *imported])
+        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        self._sync_projects_from_skill_groups()
+        self.persist_state()
+        self.refresh_project_tab()
+        self.refresh_skills_tab()
+        self.status_var.set(f"已导入 {len(imported)} 个本地文件到 {current_group.name}。")
 
     def refresh_test_tab(self) -> None:
         selected_id = self.selected_profile_id
@@ -5355,10 +5873,10 @@ class CodexSwitchApp:
         self.settings_hint_var.set(
             f"已保存设置：模型批量测试最多 {self.model_batch_concurrency} 个并发请求，"
             f"号池检测间隔 {self.account_pool_settings.recovery_interval_minutes} 分钟，"
-            f"热更新轮询 {'开启' if self.hot_update_enabled else '关闭'}。"
+            f"仓库同步轮询 {'开启' if self.hot_update_enabled else '关闭'}。"
         )
         self.hot_update_status_var.set(
-            f"热更新轮询：{'已启用' if self.hot_update_enabled else '未启用'}，间隔 {self.hot_update_interval_minutes} 分钟。"
+            f"仓库同步轮询：{'已启用' if self.hot_update_enabled else '未启用'}，间隔 {self.hot_update_interval_minutes} 分钟。"
         )
         self.status_var.set("已保存设置。")
 
