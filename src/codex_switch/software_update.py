@@ -40,6 +40,11 @@ def is_newer_version(candidate: str, current: str) -> bool:
 
 
 def github_latest_release_api_url(repo_url: str) -> str:
+    owner, repo = github_repo_parts(repo_url)
+    return f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/latest"
+
+
+def github_repo_parts(repo_url: str) -> tuple[str, str]:
     parsed = parse.urlparse(str(repo_url or "").strip())
     host = (parsed.hostname or "").casefold()
     if host == "www.github.com":
@@ -49,7 +54,12 @@ def github_latest_release_api_url(repo_url: str) -> str:
         raise ValueError("Software update repository must be a GitHub HTTPS repository URL.")
     owner, repo = parts
     repo = repo[:-4] if repo.endswith(".git") else repo
-    return f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/latest"
+    return owner, repo
+
+
+def github_latest_release_page_url(repo_url: str) -> str:
+    owner, repo = github_repo_parts(repo_url)
+    return f"https://github.com/{owner}/{repo}/releases/latest"
 
 
 def _asset_score(asset_name: str) -> tuple[int, int, int]:
@@ -94,6 +104,21 @@ def software_update_info_from_github_release(payload: object, current_version: s
     )
 
 
+def software_update_info_from_release_url(release_url: str, current_version: str) -> SoftwareUpdateInfo:
+    normalized_url = str(release_url or "").strip()
+    parsed = parse.urlparse(normalized_url)
+    path_parts = [parse.unquote(part) for part in parsed.path.strip("/").split("/") if part]
+    latest_version = path_parts[-1] if len(path_parts) >= 4 and path_parts[-2] == "tag" and path_parts[-3] == "releases" else ""
+    if not latest_version:
+        raise RuntimeError("GitHub latest release page did not resolve to a release tag.")
+    return SoftwareUpdateInfo(
+        current_version=str(current_version or "").strip(),
+        latest_version=latest_version,
+        release_url=normalized_url,
+        release_name=latest_version,
+    )
+
+
 class SoftwareUpdateChecker:
     def __init__(self, repo_url: str = DEFAULT_SOFTWARE_UPDATE_REPO, *, timeout: int = 10) -> None:
         self.repo_url = repo_url
@@ -115,6 +140,8 @@ class SoftwareUpdateChecker:
         except error.HTTPError as exc:
             if exc.code == 404:
                 raise RuntimeError("GitHub Releases has no published latest version.") from exc
+            if exc.code == 403:
+                return self._check_latest_release_page(current_version)
             raise RuntimeError(f"GitHub update check failed: HTTP {exc.code}") from exc
         except error.URLError as exc:
             reason = str(exc.reason or "").strip() or "unknown network error"
@@ -124,3 +151,23 @@ class SoftwareUpdateChecker:
         except json.JSONDecodeError as exc:
             raise RuntimeError("GitHub latest release response is not valid JSON.") from exc
         return software_update_info_from_github_release(payload, current_version)
+
+    def _check_latest_release_page(self, current_version: str) -> SoftwareUpdateInfo:
+        latest_url = github_latest_release_page_url(self.repo_url)
+        req = request.Request(
+            latest_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": f"CodexSwitch/{current_version or 'unknown'}",
+            },
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=self.timeout) as response:
+                resolved_url = str(response.geturl() or latest_url).strip()
+        except error.HTTPError as exc:
+            raise RuntimeError(f"GitHub update check failed: HTTP {exc.code}") from exc
+        except error.URLError as exc:
+            reason = str(exc.reason or "").strip() or "unknown network error"
+            raise RuntimeError(f"GitHub update check failed: {reason}") from exc
+        return software_update_info_from_release_url(resolved_url, current_version)

@@ -60,12 +60,15 @@ from codex_switch.project_template import (
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
 from codex_switch.software_update import (
+    DEFAULT_SOFTWARE_UPDATE_REPO,
     SoftwareUpdateChecker,
     SoftwareUpdateInfo,
     github_latest_release_api_url,
+    github_latest_release_page_url,
     is_newer_version,
     preferred_release_download_url,
     software_update_info_from_github_release,
+    software_update_info_from_release_url,
     version_key,
 )
 from codex_switch.ui.app import (
@@ -176,20 +179,30 @@ class SoftwareUpdateTests(unittest.TestCase):
 
     def test_github_latest_release_url_requires_https_github_repo(self) -> None:
         self.assertEqual(
-            github_latest_release_api_url("https://github.com/example/codex-switch.git"),
-            "https://api.github.com/repos/example/codex-switch/releases/latest",
+            github_latest_release_api_url(f"{DEFAULT_SOFTWARE_UPDATE_REPO}.git"),
+            "https://api.github.com/repos/shixiansi/codex-switch/releases/latest",
+        )
+        self.assertEqual(
+            github_latest_release_page_url(f"{DEFAULT_SOFTWARE_UPDATE_REPO}.git"),
+            "https://github.com/shixiansi/codex-switch/releases/latest",
         )
         with self.assertRaises(ValueError):
-            github_latest_release_api_url("http://github.com/example/codex-switch")
+            github_latest_release_api_url("http://github.com/shixiansi/codex-switch")
 
     def test_release_payload_selects_windows_download_asset(self) -> None:
         payload = {
             "tag_name": "v0.3.0",
             "name": "Codex Switch v0.3.0",
-            "html_url": "https://github.com/example/codex-switch/releases/tag/v0.3.0",
+            "html_url": "https://github.com/shixiansi/codex-switch/releases/tag/v0.3.0",
             "assets": [
-                {"name": "CodexSwitch-linux-x64.tar.gz", "browser_download_url": "https://example.test/linux"},
-                {"name": "CodexSwitch-windows-x64.zip", "browser_download_url": "https://example.test/windows"},
+                {
+                    "name": "CodexSwitch-linux-x64.tar.gz",
+                    "browser_download_url": "https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-linux-x64.tar.gz",
+                },
+                {
+                    "name": "CodexSwitch-windows-x64.zip",
+                    "browser_download_url": "https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip",
+                },
             ],
         }
 
@@ -197,16 +210,32 @@ class SoftwareUpdateTests(unittest.TestCase):
 
         self.assertTrue(info.update_available)
         self.assertEqual(info.latest_version, "v0.3.0")
-        self.assertEqual(info.download_url, "https://example.test/windows")
-        self.assertEqual(preferred_release_download_url(payload["assets"]), "https://example.test/windows")
+        self.assertEqual(
+            info.download_url,
+            "https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip",
+        )
+        self.assertEqual(
+            preferred_release_download_url(payload["assets"]),
+            "https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip",
+        )
+
+    def test_release_page_url_extracts_latest_tag(self) -> None:
+        info = software_update_info_from_release_url(
+            "https://github.com/shixiansi/codex-switch/releases/tag/v0.3.0",
+            "0.2.2",
+        )
+
+        self.assertTrue(info.update_available)
+        self.assertEqual(info.latest_version, "v0.3.0")
+        self.assertEqual(info.release_name, "v0.3.0")
 
     def test_software_update_available_prompts_and_opens_download(self) -> None:
         app = _make_minimal_app()
         info = SoftwareUpdateInfo(
             current_version="0.2.2",
             latest_version="v0.3.0",
-            release_url="https://github.com/example/codex-switch/releases/tag/v0.3.0",
-            download_url="https://example.test/download.zip",
+            release_url="https://github.com/shixiansi/codex-switch/releases/tag/v0.3.0",
+            download_url="https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip",
             release_name="Codex Switch v0.3.0",
         )
 
@@ -217,7 +246,7 @@ class SoftwareUpdateTests(unittest.TestCase):
             app._finish_software_update_check(info, "", automatic=True)
 
         askyesno.assert_called_once()
-        web_open.assert_called_once_with("https://example.test/download.zip")
+        web_open.assert_called_once_with("https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip")
         self.assertIn("发现新版本", app.software_update_status_var.get())
         self.assertEqual([event.status for event in app.hot_update_events], ["available", "opened"])
         self.assertEqual(app.persist_count, 2)
@@ -227,7 +256,7 @@ class SoftwareUpdateTests(unittest.TestCase):
         info = SoftwareUpdateInfo(
             current_version="0.2.2",
             latest_version="0.2.2",
-            release_url="https://github.com/example/codex-switch/releases/tag/v0.2.2",
+            release_url="https://github.com/shixiansi/codex-switch/releases/tag/v0.2.2",
         )
 
         with patch("codex_switch.ui.app.messagebox.askyesno") as askyesno:
@@ -263,7 +292,7 @@ class SoftwareUpdateTests(unittest.TestCase):
         self.assertNotIn(" - None", line)
 
     def test_software_update_checker_handles_empty_url_error_reason(self) -> None:
-        checker = SoftwareUpdateChecker("https://github.com/example/codex-switch")
+        checker = SoftwareUpdateChecker(DEFAULT_SOFTWARE_UPDATE_REPO)
 
         with (
             patch("codex_switch.software_update.request.urlopen", side_effect=url_error.URLError(None)),
@@ -279,6 +308,47 @@ class SoftwareUpdateTests(unittest.TestCase):
             software_update_error_detail("GitHub update check failed: None"),
             "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。",
         )
+
+    def test_software_update_checker_falls_back_to_release_page_on_api_403(self) -> None:
+        class FakeResponse:
+            def __init__(self, url: str, body: bytes = b"") -> None:
+                self.url = url
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return self.body
+
+            def geturl(self) -> str:
+                return self.url
+
+        calls: list[str] = []
+
+        def fake_urlopen(req, timeout):
+            calls.append(req.full_url)
+            if "api.github.com" in req.full_url:
+                raise url_error.HTTPError(req.full_url, 403, "rate limited", hdrs=None, fp=None)
+            return FakeResponse("https://github.com/shixiansi/codex-switch/releases/tag/v0.3.0")
+
+        checker = SoftwareUpdateChecker(DEFAULT_SOFTWARE_UPDATE_REPO)
+
+        with patch("codex_switch.software_update.request.urlopen", side_effect=fake_urlopen):
+            info = checker.check("0.2.2")
+
+        self.assertEqual(
+            calls,
+            [
+                "https://api.github.com/repos/shixiansi/codex-switch/releases/latest",
+                "https://github.com/shixiansi/codex-switch/releases/latest",
+            ],
+        )
+        self.assertEqual(info.latest_version, "v0.3.0")
+        self.assertTrue(info.update_available)
 
     def test_startup_software_update_check_runs_once(self) -> None:
         class FakeRoot:
