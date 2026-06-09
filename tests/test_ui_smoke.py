@@ -83,6 +83,10 @@ def widget_texts(widget: tk.Misc) -> list[str]:
     return texts
 
 
+def notebook_tab_texts(notebook: ttk.Notebook) -> list[str]:
+    return [notebook.tab(tab_id, "text") for tab_id in notebook.tabs()]
+
+
 class TkSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -206,7 +210,9 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertTrue(app.skill_group_tree.winfo_exists())
                     self.assertTrue(app.skill_project_tree.winfo_exists())
                     self.assertTrue(app.hot_update_log_text.winfo_exists())
-                    self.assertIn("Skills 仓库源管理", widget_texts(app.skills_tab))
+                    skills_notebook = find_child_widget(app.skills_tab, ttk.Notebook)
+                    self.assertIsNotNone(skills_notebook)
+                    self.assertEqual(notebook_tab_texts(skills_notebook), ["技能市场", "仓库源管理", "本地Skills", "项目Skills"])
                     self.assertIn("仓库同步", app.hot_update_status_var.get())
                     settings_texts = widget_texts(app.settings_tab)
                     self.assertIn("版本信息 / 系统信息", settings_texts)
@@ -567,12 +573,14 @@ class TkSmokeTests(unittest.TestCase):
                     skills_notebook.select(0)
                     app_root.update()
                     assert_widget_area_visible(self, app.skill_market_canvas)
-                    assert_widget_area_visible(self, app.skill_repo_tree)
-                    self.assertEqual(len(app.skill_repo_tree.get_children()), 1)
                     skills_notebook.select(1)
                     app_root.update()
-                    assert_widget_area_visible(self, app.skill_group_tree)
+                    assert_widget_area_visible(self, app.skill_repo_tree)
+                    self.assertEqual(len(app.skill_repo_tree.get_children()), 1)
                     skills_notebook.select(2)
+                    app_root.update()
+                    assert_widget_area_visible(self, app.skill_group_tree)
+                    skills_notebook.select(3)
                     app_root.update()
                     assert_widget_area_visible(self, app.skill_project_tree)
                     self.assertEqual(len(app.skill_group_tree.get_children()), 1)

@@ -1812,23 +1812,25 @@ class CodexSwitchApp:
 
         notebook = ttk.Notebook(card)
         notebook.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        market_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
         repo_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
         local_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
         project_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
-        notebook.add(repo_tab, text="Skills 仓库源管理")
+        notebook.add(market_tab, text="技能市场")
+        notebook.add(repo_tab, text="仓库源管理")
         notebook.add(local_tab, text="本地Skills")
         notebook.add(project_tab, text="项目Skills")
 
-        self._build_skill_repos_panel(repo_tab)
+        self._build_skill_repos_panel(market_tab)
+        self._build_skill_repo_source_panel(repo_tab)
         self._build_local_skills_panel(local_tab)
         self._build_project_skills_panel(project_tab)
 
     def _build_skill_repos_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=1)
         parent.rowconfigure(1, weight=1)
         repo_filter_bar = tk.Frame(parent, bg=PALETTE["card_bg"])
-        repo_filter_bar.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 8))
+        repo_filter_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         repo_filter_bar.columnconfigure(1, weight=1)
         tk.Label(repo_filter_bar, text="筛选 Skill", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.skill_market_filter_entry = ttk.Entry(repo_filter_bar, textvariable=self.skill_market_filter_var)
@@ -1839,7 +1841,7 @@ class CodexSwitchApp:
         tk.Label(parent, textvariable=self.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
         market_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        market_wrap.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        market_wrap.grid(row=1, column=0, sticky="nsew")
         market_wrap.columnconfigure(0, weight=1)
         market_wrap.rowconfigure(0, weight=1)
         self.skill_market_canvas = tk.Canvas(market_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
@@ -1855,22 +1857,20 @@ class CodexSwitchApp:
         )
         self.skill_market_canvas.bind("<Configure>", self._layout_skill_market_cards)
 
-        source_panel = tk.Frame(parent, bg=PALETTE["card_bg"])
-        source_panel.grid(row=0, column=1, rowspan=3, sticky="nsew")
-        self._build_skill_repo_source_panel(source_panel)
-
     def _build_skill_repo_source_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(2, weight=1)
-        tk.Label(parent, text="Skills 仓库源管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+        tk.Label(parent, text="仓库源管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
 
-        settings_repo_filter = tk.Frame(parent, bg=PALETTE["card_bg"])
-        settings_repo_filter.grid(row=1, column=0, sticky="ew", pady=(8, 8))
-        settings_repo_filter.columnconfigure(1, weight=1)
-        tk.Label(settings_repo_filter, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.skill_repo_filter_entry = ttk.Entry(settings_repo_filter, textvariable=self.skill_repo_filter_var)
+        toolbar = tk.Frame(parent, bg=PALETTE["card_bg"])
+        toolbar.grid(row=1, column=0, sticky="ew", pady=(8, 8))
+        toolbar.columnconfigure(1, weight=1)
+        tk.Label(toolbar, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.skill_repo_filter_entry = ttk.Entry(toolbar, textvariable=self.skill_repo_filter_var)
         self.skill_repo_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(settings_repo_filter, text="清除", variant="secondary", command=self.clear_skill_repo_filter).grid(row=0, column=2, sticky="e")
+        make_button(toolbar, text="清除", variant="secondary", command=self.clear_skill_repo_filter).grid(row=0, column=2, sticky="e", padx=(0, 8))
+        make_button(toolbar, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=3, sticky="e", padx=(0, 8))
+        make_button(toolbar, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=4, sticky="e")
         self.skill_repo_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_filter())
 
         repo_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
@@ -1894,14 +1894,11 @@ class CodexSwitchApp:
 
         repo_actions = tk.Frame(parent, bg=PALETTE["card_bg"])
         repo_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        for column in range(5):
-            repo_actions.columnconfigure(column, weight=1)
-        make_button(repo_actions, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(repo_actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(repo_actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(repo_actions, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(repo_actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=4, sticky="ew", pady=(0, 8))
-        tk.Label(repo_actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, columnspan=5, sticky="w")
+        repo_actions.columnconfigure(0, weight=1)
+        tk.Label(repo_actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        make_button(repo_actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="e", padx=(0, 8))
+        make_button(repo_actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="e", padx=(0, 8))
+        make_button(repo_actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=3, sticky="e")
 
     def _build_local_skills_panel(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
