@@ -411,6 +411,14 @@ class GlobalApplyResult:
     claude_settings_path: Path | None = None
 
 
+def software_update_error_detail(error: object) -> str:
+    message = str(error or "").strip()
+    normalized = message.casefold()
+    if not message or normalized == "none" or normalized.endswith(": none") or normalized.endswith("- none"):
+        return "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。"
+    return message
+
+
 def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
     if not hide_error_profiles:
         return list(profiles)
@@ -1948,10 +1956,11 @@ class CodexSwitchApp:
 
     def _build_settings_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(3, weight=1)
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(2, weight=1)
 
         settings_card = self._make_card(parent)
-        settings_card.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        settings_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
         settings_card.columnconfigure(1, weight=1)
 
         tk.Label(settings_card, text="设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=3, sticky="w")
@@ -2034,8 +2043,21 @@ class CodexSwitchApp:
         )
         make_button(settings_card, text="保存设置", variant="primary", command=self.save_settings).grid(row=6, column=2, sticky="e", pady=(8, 0))
 
+        info_card = self._make_card(parent)
+        info_card.grid(row=0, column=1, sticky="nsew", pady=(0, 10))
+        info_card.columnconfigure(1, weight=1)
+        info_card.columnconfigure(3, weight=1)
+        tk.Label(info_card, text="版本信息 / 系统信息", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=4, sticky="w")
+        self._create_dual_info_row(info_card, 1, "应用版本", self.settings_version_var, "Python", self.settings_python_var)
+        self._create_dual_info_row(info_card, 2, "Tk/Tcl", self.settings_tk_var, "ttkbootstrap", self.settings_ttkbootstrap_var)
+        self._create_info_row(info_card, 3, "配置库", self.settings_storage_path_var, wraplength=560)
+        self._create_info_row(info_card, 4, "Codex config", self.settings_codex_config_path_var, wraplength=560)
+        self._create_info_row(info_card, 5, "Codex auth", self.settings_codex_auth_path_var, wraplength=560)
+        self._create_info_row(info_card, 6, "当前工作目录", self.settings_project_root_var, wraplength=560)
+        self._create_info_row(info_card, 7, "平台", self.settings_platform_var, wraplength=560)
+
         hot_update_log_card = self._make_card(parent)
-        hot_update_log_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        hot_update_log_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         hot_update_log_card.columnconfigure(0, weight=1)
         tk.Label(hot_update_log_card, text="最近更新与同步记录", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
         hot_update_log_wrap = tk.Frame(hot_update_log_card, bg=PALETTE["card_bg"])
@@ -2059,7 +2081,7 @@ class CodexSwitchApp:
         self.hot_update_log_text.configure(yscrollcommand=hot_update_log_scroll.set)
 
         repo_card = self._make_card(parent)
-        repo_card.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        repo_card.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
         repo_card.columnconfigure(0, weight=1)
         repo_card.rowconfigure(2, weight=1)
         tk.Label(repo_card, text="Skills 仓库管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
@@ -2101,19 +2123,6 @@ class CodexSwitchApp:
         make_button(repo_actions, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=3, sticky="ew", padx=(0, 8))
         make_button(repo_actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=4, sticky="ew", padx=(0, 8))
         tk.Label(repo_actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=5, sticky="w")
-
-        info_card = self._make_card(parent)
-        info_card.grid(row=3, column=0, sticky="nsew")
-        info_card.columnconfigure(1, weight=1)
-        info_card.columnconfigure(3, weight=1)
-        tk.Label(info_card, text="版本与环境", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=4, sticky="w")
-        self._create_dual_info_row(info_card, 1, "应用版本", self.settings_version_var, "Python", self.settings_python_var)
-        self._create_dual_info_row(info_card, 2, "Tk/Tcl", self.settings_tk_var, "ttkbootstrap", self.settings_ttkbootstrap_var)
-        self._create_info_row(info_card, 3, "配置库", self.settings_storage_path_var, wraplength=900)
-        self._create_info_row(info_card, 4, "Codex config", self.settings_codex_config_path_var, wraplength=900)
-        self._create_info_row(info_card, 5, "Codex auth", self.settings_codex_auth_path_var, wraplength=900)
-        self._create_info_row(info_card, 6, "当前工作目录", self.settings_project_root_var, wraplength=900)
-        self._create_info_row(info_card, 7, "平台", self.settings_platform_var, wraplength=900)
 
     def _build_test_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -2859,7 +2868,8 @@ class CodexSwitchApp:
             try:
                 info = self.software_update_checker.check(__version__)
             except Exception as exc:
-                self.root.after(0, lambda: self._finish_software_update_check(None, str(exc), automatic=automatic))
+                error_message = software_update_error_detail(exc)
+                self.root.after(0, lambda: self._finish_software_update_check(None, error_message, automatic=automatic))
                 return
             self.root.after(0, lambda: self._finish_software_update_check(info, "", automatic=automatic))
 
@@ -2873,6 +2883,7 @@ class CodexSwitchApp:
         automatic: bool,
     ) -> None:
         self.software_update_check_running = False
+        error = software_update_error_detail(error) if error else ""
         if error:
             summary = f"软件更新检查失败：{error}"
             self.software_update_status_var.set(summary)
@@ -2960,7 +2971,10 @@ class CodexSwitchApp:
         status = HOT_UPDATE_STATUS_LABELS.get(event.status, event.status or "-")
         mode = "自动" if event.automatic else "手动"
         commit = f" @{event.commit[:12]}" if event.commit else ""
-        detail = f" - {event.detail}" if event.detail else ""
+        detail_text = event.detail
+        if event.scope == "software" and event.status == "error":
+            detail_text = software_update_error_detail(detail_text)
+        detail = f" - {detail_text}" if detail_text else ""
         return f"{event.timestamp} [{mode}][{scope}][{status}] {event.target}{commit}{detail}"
 
     def _render_hot_update_log(self) -> None:

@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import unittest
+from urllib import error as url_error
 from unittest.mock import patch
 
 from helpers import start_test_server, workspace_tempdir
@@ -20,6 +21,7 @@ from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import (
     AccountPoolSettings,
     HealthResult,
+    HotUpdateEvent,
     Profile,
     ProjectRecord,
     RouteProxyRule,
@@ -58,6 +60,7 @@ from codex_switch.project_template import (
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
 from codex_switch.software_update import (
+    SoftwareUpdateChecker,
     SoftwareUpdateInfo,
     github_latest_release_api_url,
     is_newer_version,
@@ -83,6 +86,7 @@ from codex_switch.ui.app import (
     profile_library_sort_key,
     profiles_for_library_view,
     run_model_batch_requests,
+    software_update_error_detail,
     successful_model_batch_models,
     visible_profiles_for_filter,
 )
@@ -232,6 +236,49 @@ class SoftwareUpdateTests(unittest.TestCase):
         askyesno.assert_not_called()
         self.assertIn("当前已是最新版本", app.software_update_status_var.get())
         self.assertEqual([event.status for event in app.hot_update_events], ["current"])
+
+    def test_software_update_error_detail_does_not_record_none(self) -> None:
+        app = _make_minimal_app()
+
+        app._finish_software_update_check(None, "None", automatic=True)
+
+        self.assertIn("未能获取 GitHub 最新版本信息", app.software_update_status_var.get())
+        self.assertEqual(app.hot_update_events[0].status, "error")
+        self.assertNotIn("None", app._hot_update_event_line(app.hot_update_events[0]))
+
+    def test_existing_software_update_none_error_renders_readable_detail(self) -> None:
+        app = _make_minimal_app()
+        event = HotUpdateEvent.create(
+            scope="software",
+            target="Codex Switch",
+            status="error",
+            detail="None",
+            automatic=True,
+        )
+
+        line = app._hot_update_event_line(event)
+
+        self.assertIn("[自动][软件][错误] Codex Switch", line)
+        self.assertIn("未能获取 GitHub 最新版本信息", line)
+        self.assertNotIn(" - None", line)
+
+    def test_software_update_checker_handles_empty_url_error_reason(self) -> None:
+        checker = SoftwareUpdateChecker("https://github.com/example/codex-switch")
+
+        with (
+            patch("codex_switch.software_update.request.urlopen", side_effect=url_error.URLError(None)),
+            self.assertRaisesRegex(RuntimeError, "unknown network error"),
+        ):
+            checker.check("0.2.2")
+
+        self.assertEqual(
+            software_update_error_detail(None),
+            "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。",
+        )
+        self.assertEqual(
+            software_update_error_detail("GitHub update check failed: None"),
+            "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。",
+        )
 
     def test_startup_software_update_check_runs_once(self) -> None:
         class FakeRoot:

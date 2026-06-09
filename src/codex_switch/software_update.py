@@ -117,7 +117,8 @@ class SoftwareUpdateChecker:
                 raise RuntimeError("GitHub Releases has no published latest version.") from exc
             raise RuntimeError(f"GitHub update check failed: HTTP {exc.code}") from exc
         except error.URLError as exc:
-            raise RuntimeError(f"GitHub update check failed: {exc.reason}") from exc
+            reason = str(exc.reason or "").strip() or "unknown network error"
+            raise RuntimeError(f"GitHub update check failed: {reason}") from exc
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:

@@ -207,6 +207,12 @@ class TkSmokeTests(unittest.TestCase):
                     self.assertTrue(app.skill_project_tree.winfo_exists())
                     self.assertTrue(app.hot_update_log_text.winfo_exists())
                     self.assertIn("仓库同步", app.hot_update_status_var.get())
+                    settings_texts = widget_texts(app.settings_tab)
+                    self.assertIn("版本信息 / 系统信息", settings_texts)
+                    self.assertIn("应用版本", settings_texts)
+                    self.assertIn("Python", settings_texts)
+                    self.assertIn("配置库", settings_texts)
+                    self.assertIn("平台", settings_texts)
                     self.assertTrue(app.store.storage_path.is_file())
         finally:
             destroy_widget(app_root)
