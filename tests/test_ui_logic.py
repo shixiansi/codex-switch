@@ -140,6 +140,20 @@ class _ValueVar:
         self.value = value
 
 
+class _FakeTree:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, tuple[str, ...]]] = []
+
+    def delete(self, *items: object) -> None:
+        self.rows = []
+
+    def get_children(self) -> list[str]:
+        return [item_id for item_id, _values in self.rows]
+
+    def insert(self, _parent: str, _index: str, iid: str | None = None, values: tuple[str, ...] = ()) -> None:
+        self.rows.append((iid or str(len(self.rows)), values))
+
+
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -1070,6 +1084,37 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(claude_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(claude_rule.upstream_model, "sonnet-real")
         self.assertTrue(claude_rule.manual_upstream_protocol)
+
+    def test_refresh_stats_tab_renders_token_usage_summary(self) -> None:
+        app = _make_minimal_app()
+        app.route_proxy_settings = RouteProxySettings()
+        app.stats_total_tokens_var = _ValueVar("")
+        app.stats_today_tokens_var = _ValueVar("")
+        app.stats_project_count_var = _ValueVar("")
+        app.stats_api_count_var = _ValueVar("")
+        app.stats_day_tree = _FakeTree()
+        app.stats_project_tree = _FakeTree()
+        app.stats_api_tree = _FakeTree()
+        app.route_proxy_settings.token_usage.record(
+            project_id="project-1",
+            project_name="Demo Project",
+            api_id="profile:api-1",
+            api_name="代理: Main API",
+            input_tokens=1200,
+            output_tokens=34,
+            total_tokens=1234,
+            timestamp=f"{today_iso()}T09:30:00",
+        )
+
+        app.refresh_stats_tab()
+
+        self.assertEqual(app.stats_total_tokens_var.get(), "1,234")
+        self.assertEqual(app.stats_today_tokens_var.get(), "1,234")
+        self.assertEqual(app.stats_project_count_var.get(), "1")
+        self.assertEqual(app.stats_api_count_var.get(), "1")
+        self.assertEqual(app.stats_day_tree.rows[0][1][0], today_iso())
+        self.assertEqual(app.stats_project_tree.rows[0][1][0], "Demo Project")
+        self.assertEqual(app.stats_api_tree.rows[0][1][0], "代理: Main API")
 
     def test_project_skill_groups_sync_to_flat_project_skills(self) -> None:
         skill = SkillDefinition.create("python-helper", content="old")

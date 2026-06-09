@@ -827,6 +827,169 @@ class RouteProxyEvent:
         return asdict(self)
 
 
+def _normalize_route_proxy_token_count(value: Any) -> int:
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, count)
+
+
+@dataclass
+class RouteProxyTokenUsageBucket:
+    key: str
+    label: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    requests: int = 0
+    updated_at: str = ""
+
+    @classmethod
+    def create(cls, key: str, label: str) -> "RouteProxyTokenUsageBucket":
+        normalized_key = str(key or "-").strip() or "-"
+        normalized_label = str(label or normalized_key).strip() or normalized_key
+        return cls(key=normalized_key, label=normalized_label)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any] | None,
+        *,
+        default_key: str = "-",
+        default_label: str = "-",
+    ) -> "RouteProxyTokenUsageBucket":
+        if not isinstance(data, dict):
+            return cls.create(default_key, default_label)
+        bucket = cls.create(
+            str(data.get("key") or default_key),
+            str(data.get("label") or default_label),
+        )
+        bucket.input_tokens = _normalize_route_proxy_token_count(data.get("input_tokens"))
+        bucket.output_tokens = _normalize_route_proxy_token_count(data.get("output_tokens"))
+        bucket.total_tokens = _normalize_route_proxy_token_count(data.get("total_tokens"))
+        bucket.requests = _normalize_route_proxy_token_count(data.get("requests"))
+        bucket.updated_at = str(data.get("updated_at") or "")
+        return bucket
+
+    def add(self, *, input_tokens: int, output_tokens: int, total_tokens: int, timestamp: str) -> None:
+        normalized_input = _normalize_route_proxy_token_count(input_tokens)
+        normalized_output = _normalize_route_proxy_token_count(output_tokens)
+        normalized_total = _normalize_route_proxy_token_count(total_tokens) or normalized_input + normalized_output
+        normalized_total = max(normalized_total, normalized_input + normalized_output)
+        self.input_tokens += normalized_input
+        self.output_tokens += normalized_output
+        self.total_tokens += normalized_total
+        self.requests += 1
+        self.updated_at = timestamp
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RouteProxyTokenUsageStats:
+    total: RouteProxyTokenUsageBucket = field(
+        default_factory=lambda: RouteProxyTokenUsageBucket.create("total", "总消耗")
+    )
+    by_day: dict[str, RouteProxyTokenUsageBucket] = field(default_factory=dict)
+    by_project: dict[str, RouteProxyTokenUsageBucket] = field(default_factory=dict)
+    by_api: dict[str, RouteProxyTokenUsageBucket] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "RouteProxyTokenUsageStats":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            total=RouteProxyTokenUsageBucket.from_dict(
+                data.get("total"),
+                default_key="total",
+                default_label="总消耗",
+            ),
+            by_day=cls._load_bucket_map(data.get("by_day")),
+            by_project=cls._load_bucket_map(data.get("by_project")),
+            by_api=cls._load_bucket_map(data.get("by_api")),
+        )
+
+    @staticmethod
+    def _load_bucket_map(data: Any) -> dict[str, RouteProxyTokenUsageBucket]:
+        if not isinstance(data, dict):
+            return {}
+        buckets: dict[str, RouteProxyTokenUsageBucket] = {}
+        for key, raw_bucket in data.items():
+            normalized_key = str(key or "-").strip() or "-"
+            bucket = RouteProxyTokenUsageBucket.from_dict(
+                raw_bucket if isinstance(raw_bucket, dict) else {},
+                default_key=normalized_key,
+                default_label=normalized_key,
+            )
+            bucket.key = normalized_key
+            buckets[normalized_key] = bucket
+        return buckets
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total.to_dict(),
+            "by_day": {key: bucket.to_dict() for key, bucket in sorted(self.by_day.items())},
+            "by_project": {key: bucket.to_dict() for key, bucket in sorted(self.by_project.items())},
+            "by_api": {key: bucket.to_dict() for key, bucket in sorted(self.by_api.items())},
+        }
+
+    def record(
+        self,
+        *,
+        project_id: str,
+        project_name: str,
+        api_id: str,
+        api_name: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        timestamp: str | None = None,
+    ) -> bool:
+        normalized_input = _normalize_route_proxy_token_count(input_tokens)
+        normalized_output = _normalize_route_proxy_token_count(output_tokens)
+        normalized_total = _normalize_route_proxy_token_count(total_tokens) or normalized_input + normalized_output
+        normalized_total = max(normalized_total, normalized_input + normalized_output)
+        if normalized_total <= 0:
+            return False
+        occurred_at = timestamp or now_iso()
+        day = occurred_at[:10] if len(occurred_at) >= 10 else today_iso()
+        project_key = str(project_id or "-").strip() or "-"
+        api_key = str(api_id or "-").strip() or "-"
+        project_label = str(project_name or project_key).strip() or project_key
+        api_label = str(api_name or api_key).strip() or api_key
+        self.total.label = "总消耗"
+        for bucket in (
+            self.total,
+            self._bucket(self.by_day, day, day),
+            self._bucket(self.by_project, project_key, project_label),
+            self._bucket(self.by_api, api_key, api_label),
+        ):
+            bucket.add(
+                input_tokens=normalized_input,
+                output_tokens=normalized_output,
+                total_tokens=normalized_total,
+                timestamp=occurred_at,
+            )
+        return True
+
+    @staticmethod
+    def _bucket(
+        buckets: dict[str, RouteProxyTokenUsageBucket],
+        key: str,
+        label: str,
+    ) -> RouteProxyTokenUsageBucket:
+        normalized_key = str(key or "-").strip() or "-"
+        bucket = buckets.get(normalized_key)
+        if bucket is None:
+            bucket = RouteProxyTokenUsageBucket.create(normalized_key, label)
+            buckets[normalized_key] = bucket
+        else:
+            bucket.label = str(label or bucket.label or normalized_key).strip() or normalized_key
+        return bucket
+
+
 @dataclass
 class RouteProxySettings:
     enabled: bool = False
@@ -834,6 +997,7 @@ class RouteProxySettings:
     port: int = ROUTE_PROXY_DEFAULT_PORT
     rules: list[RouteProxyRule] = field(default_factory=list)
     events: list[RouteProxyEvent] = field(default_factory=list)
+    token_usage: RouteProxyTokenUsageStats = field(default_factory=RouteProxyTokenUsageStats)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "RouteProxySettings":
@@ -849,6 +1013,7 @@ class RouteProxySettings:
             port=normalize_route_proxy_port(data.get("port")),
             rules=rules,
             events=events[-50:],
+            token_usage=RouteProxyTokenUsageStats.from_dict(data.get("token_usage")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -858,6 +1023,7 @@ class RouteProxySettings:
             "port": self.port,
             "rules": [rule.to_dict() for rule in self.rules],
             "events": [event.to_dict() for event in self.events[-50:]],
+            "token_usage": self.token_usage.to_dict(),
         }
 
     @property
@@ -880,6 +1046,7 @@ class RouteProxySettings:
             port=self.port,
             rules=[rule for rule in self.rules if rule.project_id != project_id],
             events=list(self.events),
+            token_usage=self.token_usage,
         )
 
     def append_event(self, event: RouteProxyEvent) -> None:

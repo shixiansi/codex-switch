@@ -65,6 +65,101 @@ ACCOUNT_POOL_RECOVERY_INTERVAL_SECONDS = 5 * 60
 ACCOUNT_POOL_UNAVAILABLE_STATUSES = {401, 403, 407, 429, 500, 502, 503, 504}
 
 
+def _token_count(value: Any) -> int:
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, count)
+
+
+def _token_count_for_keys(usage: dict[str, Any], keys: tuple[str, ...]) -> int:
+    return max((_token_count(usage.get(key)) for key in keys), default=0)
+
+
+def _usage_counts(usage: dict[str, Any]) -> tuple[int, int, int]:
+    input_tokens = _token_count_for_keys(usage, ("input_tokens", "prompt_tokens"))
+    input_tokens += _token_count(usage.get("cache_creation_input_tokens"))
+    input_tokens += _token_count(usage.get("cache_read_input_tokens"))
+    output_tokens = _token_count_for_keys(usage, ("output_tokens", "completion_tokens"))
+    total_tokens = _token_count(usage.get("total_tokens")) or input_tokens + output_tokens
+    total_tokens = max(total_tokens, input_tokens + output_tokens)
+    return input_tokens, output_tokens, total_tokens
+
+
+def _usage_dicts_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    usage_dicts: list[dict[str, Any]] = []
+    direct_usage = payload.get("usage")
+    if isinstance(direct_usage, dict):
+        usage_dicts.append(direct_usage)
+    for nested_key in ("response", "message"):
+        nested_payload = payload.get(nested_key)
+        if isinstance(nested_payload, dict) and isinstance(nested_payload.get("usage"), dict):
+            usage_dicts.append(nested_payload["usage"])
+    return usage_dicts
+
+
+class _RouteProxyUsageAccumulator:
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.total_tokens = 0
+        self._buffer = b""
+
+    def observe_body(self, body: bytes) -> None:
+        if not body:
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        self.observe_payload(payload)
+
+    def observe_chunk(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self._buffer += chunk
+        while b"\n\n" in self._buffer:
+            event, self._buffer = self._buffer.split(b"\n\n", 1)
+            self._observe_sse_event(event)
+
+    def finish(self) -> tuple[int, int, int] | None:
+        if self._buffer.strip():
+            self._observe_sse_event(self._buffer)
+            self._buffer = b""
+        if self.total_tokens <= 0:
+            return None
+        return self.input_tokens, self.output_tokens, self.total_tokens
+
+    def observe_payload(self, payload: Any) -> None:
+        for usage in _usage_dicts_from_payload(payload):
+            input_tokens, output_tokens, total_tokens = _usage_counts(usage)
+            if total_tokens <= 0:
+                continue
+            self.input_tokens = max(self.input_tokens, input_tokens)
+            self.output_tokens = max(self.output_tokens, output_tokens)
+            self.total_tokens = max(self.total_tokens, total_tokens)
+
+    def _observe_sse_event(self, event: bytes) -> None:
+        data_lines: list[bytes] = []
+        for raw_line in event.splitlines():
+            line = raw_line.strip()
+            if line.startswith(b"data:"):
+                data_lines.append(line[5:].strip())
+        if not data_lines:
+            return
+        data = b"\n".join(data_lines).decode("utf-8", errors="replace").strip()
+        if not data or data == "[DONE]":
+            return
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            return
+        self.observe_payload(payload)
+
+
 class RouteProxyServer:
     def __init__(
         self,
@@ -75,6 +170,7 @@ class RouteProxyServer:
         account_pool_update_callback: Callable[[AccountPoolSettings], None] | None = None,
         project_provider: Callable[[], list[ProjectRecord]] | None = None,
         recovery_checker: AccountPoolSessionValidator | None = None,
+        token_usage_callback: Callable[[RouteProxySettings], None] | None = None,
     ) -> None:
         self.settings_provider = settings_provider
         self.profiles_provider = profiles_provider
@@ -83,6 +179,7 @@ class RouteProxyServer:
         self.account_pool_update_callback = account_pool_update_callback
         self.project_provider = project_provider
         self.recovery_checker = recovery_checker or AccountPoolSessionValidator()
+        self.token_usage_callback = token_usage_callback
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -339,10 +436,18 @@ class RouteProxyServer:
                 response_headers["content-type"] = "text/event-stream"
                 response_headers.pop("content-length", None)
                 close_connection = False
-                response_chunks = stream_transform(upstream_response) if stream_transform is not None else upstream_response
+                usage_observer = _RouteProxyUsageAccumulator()
+                observed_upstream = self._observed_stream(upstream_response, usage_observer)
+                response_chunks = stream_transform(observed_upstream) if stream_transform is not None else upstream_response
                 return upstream_response.status, response_headers, None, self._closing_stream(
                     connection,
                     response_chunks,
+                    usage_observer=usage_observer,
+                    route=route,
+                    profile=profile,
+                    project_id=project_id,
+                    status=upstream_response.status,
+                    observe_chunks=stream_transform is None,
                 )
             response_body = upstream_response.read()
             response_body = self._decode_response_body(response_body, response_headers)
@@ -351,6 +456,13 @@ class RouteProxyServer:
                 response_body = json.dumps(response_transform(payload), ensure_ascii=False).encode("utf-8")
                 response_headers["content-type"] = "application/json"
                 response_headers["content-length"] = str(len(response_body))
+            self._record_token_usage_from_body(
+                response_body,
+                route=route,
+                profile=profile,
+                project_id=project_id,
+                status=upstream_response.status,
+            )
             return upstream_response.status, response_headers, response_body, None
         except OSError as exc:
             raise OSError(f"{exc} (upstream: {upstream_url})") from exc
@@ -362,11 +474,38 @@ class RouteProxyServer:
         self,
         connection: http.client.HTTPConnection,
         chunks: Iterable[bytes],
+        *,
+        usage_observer: _RouteProxyUsageAccumulator | None = None,
+        route: RouteProxyRule | None = None,
+        profile: Profile | None = None,
+        project_id: str = "",
+        status: int = 0,
+        observe_chunks: bool = True,
     ) -> Iterable[bytes]:
         try:
-            yield from chunks
+            for chunk in chunks:
+                if observe_chunks and usage_observer is not None:
+                    usage_observer.observe_chunk(chunk)
+                yield chunk
         finally:
+            if usage_observer is not None and route is not None and profile is not None:
+                self._record_token_usage_from_observer(
+                    usage_observer,
+                    route=route,
+                    profile=profile,
+                    project_id=project_id,
+                    status=status,
+                )
             connection.close()
+
+    def _observed_stream(
+        self,
+        chunks: Iterable[bytes],
+        usage_observer: _RouteProxyUsageAccumulator,
+    ) -> Iterable[bytes]:
+        for chunk in chunks:
+            usage_observer.observe_chunk(chunk)
+            yield chunk
 
     def _split_project_path(self, raw_path: str) -> tuple[str | None, str]:
         parsed = parse.urlparse(raw_path)
@@ -378,6 +517,58 @@ class RouteProxyServer:
                 rest = f"{rest}?{parsed.query}"
             return project_id, rest
         return None, parsed.path
+
+    def _record_token_usage_from_body(
+        self,
+        body: bytes | None,
+        *,
+        route: RouteProxyRule,
+        profile: Profile,
+        project_id: str,
+        status: int,
+    ) -> None:
+        if not body:
+            return
+        usage_observer = _RouteProxyUsageAccumulator()
+        usage_observer.observe_body(body)
+        self._record_token_usage_from_observer(
+            usage_observer,
+            route=route,
+            profile=profile,
+            project_id=project_id,
+            status=status,
+        )
+
+    def _record_token_usage_from_observer(
+        self,
+        usage_observer: _RouteProxyUsageAccumulator,
+        *,
+        route: RouteProxyRule,
+        profile: Profile,
+        project_id: str,
+        status: int,
+    ) -> None:
+        if status < 200 or status >= 400:
+            return
+        counts = usage_observer.finish()
+        if counts is None:
+            return
+        input_tokens, output_tokens, total_tokens = counts
+        settings = self.settings_provider()
+        api_id = f"{route.upstream_source}:{profile.id or '-'}"
+        api_mode = "号池" if route.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL else "代理"
+        api_name = f"{api_mode}: {profile.name or profile.id or '-'}"
+        recorded = settings.token_usage.record(
+            project_id=project_id,
+            project_name=self._project_name(project_id) or project_id,
+            api_id=api_id,
+            api_name=api_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
+        if recorded and self.token_usage_callback is not None:
+            self.token_usage_callback(settings)
 
     def _detect_client_type(self, path: str) -> str | None:
         parsed_path = parse.urlparse(path).path

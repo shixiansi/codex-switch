@@ -128,7 +128,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 17)
+            self.assertEqual(payload["version"], 18)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -185,7 +185,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 17)
+            self.assertEqual(payload["version"], 18)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -250,6 +250,29 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.rules[0].project_id, "project-1")
             self.assertEqual(loaded.rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
             self.assertEqual(payload["settings"]["route_proxy"]["rules"][0]["primary_profile_id"], "profile-1")
+
+    def test_store_persists_route_proxy_token_usage(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            store = ProfileStore(temp_dir)
+            settings = RouteProxySettings()
+            settings.token_usage.record(
+                project_id="project-1",
+                project_name="Demo",
+                api_id="profile:api-1",
+                api_name="代理: Main API",
+                input_tokens=11,
+                output_tokens=7,
+                total_tokens=18,
+                timestamp="2026-06-09T10:00:00",
+            )
+
+            store.save([], None, route_proxy_settings=settings)
+            loaded = store.load()[11]
+
+            self.assertEqual(loaded.token_usage.total.total_tokens, 18)
+            self.assertEqual(loaded.token_usage.by_day["2026-06-09"].input_tokens, 11)
+            self.assertEqual(loaded.token_usage.by_project["project-1"].label, "Demo")
+            self.assertEqual(loaded.token_usage.by_api["profile:api-1"].output_tokens, 7)
 
     def test_store_persists_global_profile_and_mcp_selection(self) -> None:
         with workspace_tempdir() as temp_dir:

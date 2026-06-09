@@ -55,6 +55,7 @@ from codex_switch.models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
+    RouteProxyTokenUsageBucket,
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
@@ -796,6 +797,7 @@ class CodexSwitchApp:
             account_pool_update_callback=self._record_account_pool_update,
             project_provider=lambda: self.projects,
             recovery_checker=self.account_pool_validator,
+            token_usage_callback=self._record_route_proxy_token_usage,
         )
 
         self.current_config: CurrentCodexConfig | None = None
@@ -894,6 +896,10 @@ class CodexSwitchApp:
         self.proxy_codex_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_OPENAI)
         self.proxy_claude_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_ANTHROPIC)
         self.proxy_codex_compact_model_var = tk.StringVar(value="")
+        self.stats_total_tokens_var = tk.StringVar(value="0")
+        self.stats_today_tokens_var = tk.StringVar(value="0")
+        self.stats_project_count_var = tk.StringVar(value="0")
+        self.stats_api_count_var = tk.StringVar(value="0")
 
         self.account_pool_summary_var = tk.StringVar(value="号池未启用。")
         self.account_pool_enabled_var = tk.BooleanVar(value=self.account_pool_settings.enabled)
@@ -1006,6 +1012,7 @@ class CodexSwitchApp:
             ("library", "配置库"),
             ("project", "项目配置"),
             ("proxy", "路由代理"),
+            ("stats", "统计"),
             ("account_pool", "号池"),
             ("test", "模型测试"),
             ("mcp", "MCP配置"),
@@ -1025,6 +1032,7 @@ class CodexSwitchApp:
         self.library_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.project_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.proxy_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
+        self.stats_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.account_pool_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.mcp_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
         self.skills_tab = tk.Frame(content, bg=PALETTE["panel_bg"], padx=8, pady=2)
@@ -1036,6 +1044,7 @@ class CodexSwitchApp:
             "library": self.library_tab,
             "project": self.project_tab,
             "proxy": self.proxy_tab,
+            "stats": self.stats_tab,
             "account_pool": self.account_pool_tab,
             "mcp": self.mcp_tab,
             "skills": self.skills_tab,
@@ -1050,6 +1059,7 @@ class CodexSwitchApp:
         self._build_library_tab(self.library_tab)
         self._build_project_tab(self.project_tab)
         self._build_proxy_tab(self.proxy_tab)
+        self._build_stats_tab(self.stats_tab)
         self._build_account_pool_tab(self.account_pool_tab)
         self._build_mcp_tab(self.mcp_tab)
         self._build_skills_tab(self.skills_tab)
@@ -1602,6 +1612,103 @@ class CodexSwitchApp:
         proxy_log_scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=self.proxy_log_text.yview)
         proxy_log_scroll.grid(row=0, column=1, sticky="ns")
         self.proxy_log_text.configure(yscrollcommand=proxy_log_scroll.set)
+
+    def _build_stats_tab(self, parent: tk.Misc) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=5)
+        content.columnconfigure(1, weight=6)
+        content.rowconfigure(1, weight=1)
+
+        metrics = tk.Frame(content, bg=PALETTE["panel_bg"])
+        metrics.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1)
+        self._make_metric_card(metrics, "总 Token", self.stats_total_tokens_var, PALETTE["accent"], PALETTE["selection_bg"]).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        self._make_metric_card(metrics, "今日 Token", self.stats_today_tokens_var, PALETTE["success"], PALETTE["success_soft"], value_foreground="#16A34A").grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        self._make_metric_card(metrics, "项目数", self.stats_project_count_var, PALETTE["warning"], PALETTE["warning_soft"], value_foreground="#CA8A04").grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=(0, 8),
+        )
+        self._make_metric_card(metrics, "API 数", self.stats_api_count_var, PALETTE["danger"], PALETTE["danger_soft"], value_foreground="#DC2626").grid(
+            row=0,
+            column=3,
+            sticky="ew",
+        )
+
+        left = self._make_card(content)
+        left.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(1, weight=1)
+        header = tk.Frame(left, bg=PALETTE["card_bg"])
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        tk.Label(header, text="日消耗", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        make_button(header, text="刷新", variant="secondary", command=self.refresh_stats_tab).grid(row=0, column=1, sticky="e")
+        day_tree_wrap, self.stats_day_tree = self._build_usage_tree(left)
+        day_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+        right = tk.Frame(content, bg=PALETTE["panel_bg"])
+        right.grid(row=1, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        project_card = self._make_card(right)
+        project_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        project_card.columnconfigure(0, weight=1)
+        project_card.rowconfigure(1, weight=1)
+        tk.Label(project_card, text="项目消耗", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        project_tree_wrap, self.stats_project_tree = self._build_usage_tree(project_card)
+        project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+        api_card = self._make_card(right)
+        api_card.grid(row=1, column=0, sticky="nsew")
+        api_card.columnconfigure(0, weight=1)
+        api_card.rowconfigure(1, weight=1)
+        tk.Label(api_card, text="API 消耗", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        api_tree_wrap, self.stats_api_tree = self._build_usage_tree(api_card)
+        api_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+    def _build_usage_tree(self, parent: tk.Misc) -> tuple[tk.Frame, ttk.Treeview]:
+        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+        wrap.columnconfigure(0, weight=1)
+        wrap.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(
+            wrap,
+            columns=("label", "input", "output", "total", "requests", "updated"),
+            show="headings",
+        )
+        for column, title, width in (
+            ("label", "名称", 180),
+            ("input", "输入", 90),
+            ("output", "输出", 90),
+            ("total", "总计", 90),
+            ("requests", "请求", 70),
+            ("updated", "最近更新", 140),
+        ):
+            tree.heading(column, text=title)
+            tree.column(column, width=width, anchor="center")
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scroll.set)
+        return wrap, tree
 
     def _build_account_pool_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -2795,12 +2902,61 @@ class CodexSwitchApp:
         self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_proxy_tab()
+        self.refresh_stats_tab()
         self.refresh_account_pool_tab()
         self.refresh_mcp_tab()
         self.refresh_skills_tab()
         self.refresh_settings_tab()
         self.refresh_test_tab()
-        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、号池、MCP配置、Skills、文档配置、设置和模型测试。")
+        self.status_var.set("已刷新全局配置、配置库、项目配置、路由代理、统计、号池、MCP配置、Skills、文档配置、设置和模型测试。")
+
+    def refresh_stats_tab(self) -> None:
+        if not hasattr(self, "stats_day_tree"):
+            return
+        stats = self.route_proxy_settings.token_usage
+        today_bucket = stats.by_day.get(today_iso())
+        self.stats_total_tokens_var.set(self._format_usage_count(stats.total.total_tokens))
+        self.stats_today_tokens_var.set(self._format_usage_count(today_bucket.total_tokens if today_bucket else 0))
+        self.stats_project_count_var.set(self._format_usage_count(len(stats.by_project)))
+        self.stats_api_count_var.set(self._format_usage_count(len(stats.by_api)))
+        self._render_usage_tree(
+            self.stats_day_tree,
+            sorted(stats.by_day.values(), key=lambda bucket: bucket.key, reverse=True),
+        )
+        self._render_usage_tree(
+            self.stats_project_tree,
+            sorted(stats.by_project.values(), key=lambda bucket: (-bucket.total_tokens, bucket.label.casefold())),
+        )
+        self._render_usage_tree(
+            self.stats_api_tree,
+            sorted(stats.by_api.values(), key=lambda bucket: (-bucket.total_tokens, bucket.label.casefold())),
+        )
+
+    def _render_usage_tree(self, tree: ttk.Treeview, buckets: list[RouteProxyTokenUsageBucket]) -> None:
+        tree.delete(*tree.get_children())
+        if not buckets:
+            tree.insert("", "end", values=("暂无统计", "0", "0", "0", "0", "-"))
+            return
+        for bucket in buckets:
+            tree.insert(
+                "",
+                "end",
+                iid=bucket.key,
+                values=(
+                    bucket.label,
+                    self._format_usage_count(bucket.input_tokens),
+                    self._format_usage_count(bucket.output_tokens),
+                    self._format_usage_count(bucket.total_tokens),
+                    self._format_usage_count(bucket.requests),
+                    bucket.updated_at.replace("T", " ") if bucket.updated_at else "-",
+                ),
+            )
+
+    def _format_usage_count(self, value: int) -> str:
+        try:
+            return f"{int(value):,}"
+        except (TypeError, ValueError):
+            return "0"
 
     def refresh_settings_tab(self) -> None:
         self.model_batch_concurrency_var.set(str(self.model_batch_concurrency))
@@ -5898,6 +6054,7 @@ class CodexSwitchApp:
 
     def on_close(self) -> None:
         self.route_proxy_server.stop()
+        self.persist_state()
         _release_single_instance()
         self.root.destroy()
 
@@ -5950,6 +6107,15 @@ class CodexSwitchApp:
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
         self.root.after(0, self._render_proxy_log)
+
+    def _record_route_proxy_token_usage(self, settings: RouteProxySettings) -> None:
+        self.route_proxy_settings = settings
+        if hasattr(self, "root") and self.root.winfo_exists():
+            self.root.after(0, self._apply_route_proxy_token_usage_update)
+
+    def _apply_route_proxy_token_usage_update(self) -> None:
+        self.persist_state()
+        self.refresh_stats_tab()
 
     def save_route_proxy_settings(self, *, save_project_rules: bool = True) -> bool:
         self.route_proxy_settings.host = self.proxy_host_var.get().strip() or self.route_proxy_settings.host

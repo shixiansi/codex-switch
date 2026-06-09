@@ -664,6 +664,167 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIsNone(chunks)
         self.assertEqual(captured["project_name"], "%E5%86%B0")
 
+    def test_route_proxy_records_token_usage_by_project_api_day_and_total(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps(
+                    {
+                        "id": "resp_1",
+                        "output_text": "ok",
+                        "usage": {"input_tokens": 4, "output_tokens": 6, "total_tokens": 10},
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("Main API", f"http://127.0.0.1:{upstream.server_port}", "sk-main")
+        project = ProjectRecord.create("/tmp/demo", profile.id, name="Demo")
+        project.id = "project-1"
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                )
+            ]
+        )
+        updates: list[RouteProxySettings] = []
+        proxy = RouteProxyServer(
+            lambda: settings,
+            lambda: [profile],
+            project_provider=lambda: [project],
+            token_usage_callback=updates.append,
+        )
+        request_body = json.dumps({"model": "gpt-5", "input": "hello"}).encode("utf-8")
+
+        status, _headers, _body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(settings.token_usage.total.total_tokens, 10)
+        self.assertEqual(settings.token_usage.total.requests, 1)
+        self.assertEqual(settings.token_usage.by_project["project-1"].label, "Demo")
+        self.assertEqual(settings.token_usage.by_project["project-1"].input_tokens, 4)
+        self.assertEqual(settings.token_usage.by_api[f"profile:{profile.id}"].label, "代理: Main API")
+        self.assertEqual(settings.token_usage.by_api[f"profile:{profile.id}"].output_tokens, 6)
+        self.assertTrue(settings.token_usage.by_day)
+        self.assertEqual(updates[-1], settings)
+
+    def test_account_pool_route_records_token_usage_by_channel(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps(
+                    {
+                        "id": "resp_1",
+                        "output_text": "ok",
+                        "usage": {"input_tokens": 3, "output_tokens": 5},
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        pool = AccountPoolSettings(enabled=True)
+        group = pool.ensure_default_group()
+        channel = AccountPoolChannel.create(
+            name="pool-main",
+            base_url=f"http://127.0.0.1:{upstream.server_port}",
+            api_key="sk-pool",
+            group_id=group.id,
+        )
+        pool.channels = [channel]
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id=group.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+
+        status, _headers, _body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={},
+            body=json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8"),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(settings.token_usage.total.total_tokens, 8)
+        self.assertEqual(settings.token_usage.by_api[f"account_pool:{channel.id}"].label, "号池: pool-main")
+
+    def test_route_proxy_records_streaming_token_usage(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = (
+                    b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+                    b'data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":8,"total_tokens":15}}}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        profile = Profile.create("stream-api", f"http://127.0.0.1:{upstream.server_port}", "sk-stream")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-stream",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+
+        status, headers, _body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-stream/responses?stream=true",
+            headers={},
+            body=json.dumps({"model": "gpt-5", "input": "hi", "stream": True}).encode("utf-8"),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "text/event-stream")
+        self.assertIsNotNone(chunks)
+        rendered = b"".join(chunks or []).decode("utf-8")
+        self.assertIn("response.completed", rendered)
+        self.assertEqual(settings.token_usage.total.total_tokens, 15)
+        self.assertEqual(settings.token_usage.by_day[next(iter(settings.token_usage.by_day))].input_tokens, 7)
+
     def test_openai_chat_to_responses_converts_request_and_response(self) -> None:
         converted = openai_chat_to_responses_request(
             {
