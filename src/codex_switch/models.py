@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 import fnmatch
 import os
+import re
 import uuid
 
 
@@ -99,6 +100,25 @@ DEFAULT_HOT_UPDATE_INTERVAL_MINUTES = 30
 HOT_UPDATE_INTERVAL_MINUTES_MIN = 5
 HOT_UPDATE_INTERVAL_MINUTES_MAX = 1440
 HOT_UPDATE_EVENT_LIMIT = 50
+CUSTOM_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+CUSTOM_HEADER_BLOCKLIST = {
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "anthropic-api-key",
+    "proxy-authorization",
+    "host",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "x-codex-switch-project-id",
+    "x-codex-switch-project-name",
+}
 
 
 def now_iso() -> str:
@@ -242,6 +262,72 @@ def normalize_api_key_index(api_keys: list[str], value: int | str | None) -> int
     if not api_keys:
         return 0
     return max(0, min(index, len(api_keys) - 1))
+
+
+def _normalize_custom_header_pair(raw_name: object, raw_value: object) -> tuple[str, str, str]:
+    name = str(raw_name or "").strip()
+    value = str(raw_value or "").strip()
+    if not name:
+        return "", "", "请求头名称不能为空。"
+    if not CUSTOM_HEADER_NAME_RE.fullmatch(name):
+        return "", "", f"请求头名称无效：{name}"
+    if name.casefold() in CUSTOM_HEADER_BLOCKLIST:
+        return "", "", f"请求头不允许自定义：{name}"
+    if "\r" in value or "\n" in value:
+        return "", "", f"请求头值不能包含换行：{name}"
+    if not value:
+        return "", "", ""
+    return name, value, ""
+
+
+def normalize_custom_headers(value: object | None) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    headers: dict[str, str] = {}
+    by_lower: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        name, header_value, error_message = _normalize_custom_header_pair(raw_name, raw_value)
+        if error_message or not name:
+            continue
+        lowered = name.casefold()
+        previous_name = by_lower.get(lowered)
+        if previous_name:
+            headers.pop(previous_name, None)
+        headers[name] = header_value
+        by_lower[lowered] = name
+    return headers
+
+
+def custom_headers_to_text(headers: dict[str, str] | None) -> str:
+    normalized = normalize_custom_headers(headers)
+    return "\n".join(f"{name}: {value}" for name, value in normalized.items())
+
+
+def parse_custom_headers_text(text: str) -> tuple[dict[str, str], list[str]]:
+    headers: dict[str, str] = {}
+    by_lower: dict[str, str] = {}
+    errors: list[str] = []
+    for line_number, raw_line in enumerate(str(text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            errors.append(f"第 {line_number} 行缺少冒号。")
+            continue
+        raw_name, raw_value = line.split(":", 1)
+        name, value, error_message = _normalize_custom_header_pair(raw_name, raw_value)
+        if error_message:
+            errors.append(f"第 {line_number} 行：{error_message}")
+            continue
+        if not name:
+            continue
+        lowered = name.casefold()
+        previous_name = by_lower.get(lowered)
+        if previous_name:
+            headers.pop(previous_name, None)
+        headers[name] = value
+        by_lower[lowered] = name
+    return headers, errors
 
 
 def normalize_profile_vendor(value: str | None) -> str:
@@ -405,6 +491,7 @@ class AccountPoolChannel:
     source_api_key_index: int = 0
     wire_api: str = "responses"
     default_model: str = DEFAULT_CODEX_MODEL
+    custom_headers: dict[str, str] = field(default_factory=dict)
     status: str = ACCOUNT_POOL_CHANNEL_STATUS_NORMAL
     failure_reason: str = ""
     failed_at: str | None = None
@@ -425,6 +512,7 @@ class AccountPoolChannel:
         source_api_key_index: int = 0,
         wire_api: str = "responses",
         default_model: str = DEFAULT_CODEX_MODEL,
+        custom_headers: dict[str, str] | None = None,
     ) -> "AccountPoolChannel":
         return cls(
             id=str(uuid.uuid4()),
@@ -438,6 +526,7 @@ class AccountPoolChannel:
             source_api_key_index=normalize_non_negative_int(source_api_key_index),
             wire_api=normalize_account_pool_wire_api(wire_api),
             default_model=default_model.strip() or DEFAULT_CODEX_MODEL,
+            custom_headers=normalize_custom_headers(custom_headers),
         )
 
     @classmethod
@@ -455,6 +544,7 @@ class AccountPoolChannel:
             source_api_key_index=normalize_non_negative_int(data.get("source_api_key_index", 0)),
             wire_api=normalize_account_pool_wire_api(data.get("wire_api")),
             default_model=str(data.get("default_model") or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL,
+            custom_headers=normalize_custom_headers(data.get("custom_headers")),
             status=normalize_account_pool_status(data.get("status")),
             failure_reason=str(data.get("failure_reason") or "").strip(),
             failed_at=data.get("failed_at"),
@@ -1157,6 +1247,7 @@ class Profile:
     category: str = PROFILE_CATEGORY_TEXT
     api_provided: bool = True
     wire_api: str = "responses"
+    custom_headers: dict[str, str] = field(default_factory=dict)
     requires_openai_auth: bool = True
     requires_sign_in: bool = False
     sign_in_url: str = ""
@@ -1180,6 +1271,7 @@ class Profile:
         category: str = PROFILE_CATEGORY_TEXT,
         api_provided: bool = True,
         wire_api: str = "responses",
+        custom_headers: dict[str, str] | None = None,
         requires_openai_auth: bool = True,
         requires_sign_in: bool = False,
         sign_in_url: str = "",
@@ -1219,6 +1311,7 @@ class Profile:
             category=normalized_category,
             api_provided=provides_api,
             wire_api=wire_api.strip() or "responses",
+            custom_headers=normalize_custom_headers(custom_headers),
             requires_openai_auth=requires_openai_auth,
             requires_sign_in=requires_sign_in,
             sign_in_url=sign_in_url.strip(),
@@ -1258,6 +1351,7 @@ class Profile:
             category=category,
             api_provided=api_provided,
             wire_api=data.get("wire_api", "responses"),
+            custom_headers=normalize_custom_headers(data.get("custom_headers")),
             requires_openai_auth=data.get("requires_openai_auth", True),
             requires_sign_in=data.get("requires_sign_in", False),
             sign_in_url=data.get("sign_in_url", ""),
@@ -1279,6 +1373,7 @@ class Profile:
         payload["claude_fallback_model"] = self.claude_fallback_model
         payload["model"] = self.codex_model
         payload["category"] = normalize_profile_category(self.category)
+        payload["custom_headers"] = normalize_custom_headers(self.custom_headers)
         payload["api_provided"] = bool(self.api_provided) if payload["category"] == PROFILE_CATEGORY_IMAGE_GENERATION else True
         if not payload["api_provided"]:
             payload["api_keys"] = []

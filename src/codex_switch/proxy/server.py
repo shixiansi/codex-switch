@@ -28,6 +28,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    normalize_custom_headers,
 )
 from codex_switch.chat import AccountPoolSessionValidator
 from codex_switch.proxy.protocol_matrix import translation_for_protocol
@@ -52,6 +53,10 @@ AUTH_HEADERS = {
     "x-api-key",
     "api-key",
     "anthropic-api-key",
+}
+INTERNAL_PROXY_HEADERS = {
+    "x-codex-switch-project-id",
+    "x-codex-switch-project-name",
 }
 OPENAI_PATH_ALIASES = {
     "/responses": "/v1/responses",
@@ -421,7 +426,7 @@ class RouteProxyServer:
         upstream_target = self._join_upstream_path(parsed_base.path, parsed_rendered_path.path)
         if parsed_rendered_path.query:
             upstream_target = f"{upstream_target}?{parsed_rendered_path.query}"
-        rendered_headers = self._render_headers(headers, profile, protocol, project_id=project_id)
+        rendered_headers = self._render_headers(headers, profile, protocol)
         upstream_url = self._format_upstream_url(parsed_base, upstream_target)
 
         connection_cls = http.client.HTTPSConnection if parsed_base.scheme == "https" else http.client.HTTPConnection
@@ -589,12 +594,14 @@ class RouteProxyServer:
         profiles = {profile.id: profile for profile in self.profiles_provider()}
         return [profiles[profile_id] for profile_id in route.profile_ids if profile_id in profiles]
 
-    def _render_headers(self, headers: dict[str, str], profile: Profile, protocol: str, *, project_id: str) -> dict[str, str]:
+    def _render_headers(self, headers: dict[str, str], profile: Profile, protocol: str) -> dict[str, str]:
         rendered: dict[str, str] = {}
         for name, value in headers.items():
             lowered = name.casefold()
-            if lowered in HOP_BY_HOP_HEADERS or lowered in AUTH_HEADERS:
+            if lowered in HOP_BY_HOP_HEADERS or lowered in AUTH_HEADERS or lowered in INTERNAL_PROXY_HEADERS:
                 continue
+            rendered[name] = self._safe_header_value(value)
+        for name, value in normalize_custom_headers(profile.custom_headers).items():
             rendered[name] = self._safe_header_value(value)
         rendered["Content-Type"] = "application/json"
         rendered["Accept-Encoding"] = "identity"
@@ -603,10 +610,6 @@ class RouteProxyServer:
             rendered.setdefault("anthropic-version", headers.get("anthropic-version", "2023-06-01"))
         else:
             rendered["Authorization"] = f"Bearer {profile.api_key}"
-        rendered["X-Codex-Switch-Project-Id"] = project_id
-        project_name = self._project_name(project_id)
-        if project_name:
-            rendered["X-Codex-Switch-Project-Name"] = self._safe_header_value(project_name)
         return rendered
 
     def _safe_header_value(self, value: str) -> str:
@@ -631,6 +634,7 @@ class RouteProxyServer:
             model=channel.default_model or DEFAULT_CODEX_MODEL,
             codex_model=channel.default_model or DEFAULT_CODEX_MODEL,
             wire_api=channel.wire_api,
+            custom_headers=channel.custom_headers,
         )
         profile.id = channel.id
         return profile

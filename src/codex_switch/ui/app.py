@@ -4013,6 +4013,7 @@ class CodexSwitchApp:
             f"来源：{self._account_pool_source_label(channel)}（{source_detail}）\n"
             f"Wire API：{channel.wire_api}\n"
             f"默认模型：{channel.default_model}\n"
+            f"自定义请求头：{len(channel.custom_headers)} 个\n"
             f"Key：{channel.api_key_masked}\n"
             f"状态：{'正常' if channel.is_normal else '异常'}\n"
             f"最后检测：{channel.last_checked_at or '-'}\n"
@@ -6282,6 +6283,7 @@ class CodexSwitchApp:
             source_api_key_index=result.get("source_api_key_index", existing.source_api_key_index if existing else 0),
             wire_api=result["wire_api"],
             default_model=result["default_model"],
+            custom_headers=result.get("custom_headers", existing.custom_headers if existing else None),
         )
         if existing is not None:
             channel.id = existing.id
@@ -6295,6 +6297,7 @@ class CodexSwitchApp:
             model=channel.default_model,
             codex_model=channel.default_model,
             wire_api=channel.wire_api,
+            custom_headers=channel.custom_headers,
         )
         validator = getattr(self, "account_pool_validator", None)
         if validator is not None:
@@ -6632,6 +6635,7 @@ class CodexSwitchApp:
             category=dialog.result["category"],
             api_provided=dialog.result["api_provided"],
             wire_api=dialog.result["wire_api"],
+            custom_headers=dialog.result["custom_headers"],
             requires_sign_in=dialog.result["requires_sign_in"],
             sign_in_url=dialog.result["sign_in_url"],
             last_signed_date=dialog.result["last_signed_date"],

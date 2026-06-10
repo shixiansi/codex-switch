@@ -2548,12 +2548,17 @@ class HealthCheckerTests(unittest.TestCase):
         self.assertEqual(models[-1], "model-34")
 
     def test_health_check_success(self) -> None:
+        captured: dict[str, str | None] = {}
+
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
                 if self.path != "/v1/models":
                     self.send_response(404)
                     self.end_headers()
                     return
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["beta"] = self.headers.get("OpenAI-Beta")
+                captured["user_agent"] = self.headers.get("User-Agent")
                 if self.headers.get("Authorization") != "Bearer sk-ok":
                     self.send_response(401)
                     self.end_headers()
@@ -2581,6 +2586,7 @@ class HealthCheckerTests(unittest.TestCase):
             "sk-bad",
             api_keys=["sk-bad", "sk-ok"],
             active_api_key_index=1,
+            custom_headers={"OpenAI-Beta": "codex=v1", "User-Agent": "codex-cli-test"},
         )
         checker = HealthChecker(timeout=5)
 
@@ -2590,6 +2596,9 @@ class HealthCheckerTests(unittest.TestCase):
         self.assertEqual(result.http_status, 200)
         self.assertIn("已返回", result.detail)
         self.assertEqual(result.models, ["gpt-5.4"])
+        self.assertEqual(captured["authorization"], "Bearer sk-ok")
+        self.assertEqual(captured["beta"], "codex=v1")
+        self.assertEqual(captured["user_agent"], "codex-cli-test")
 
     def test_health_check_invalid_key(self) -> None:
         class Handler(BaseHTTPRequestHandler):

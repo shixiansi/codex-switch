@@ -6,7 +6,7 @@ import json
 import socket
 import ssl
 
-from codex_switch.models import HealthResult, Profile, now_iso
+from codex_switch.models import HealthResult, Profile, normalize_custom_headers, now_iso
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -44,7 +44,7 @@ class HealthChecker:
         for url in urls:
             started = perf_counter()
             try:
-                response = self._send_request(url, profile.api_key)
+                response = self._send_request(url, profile)
                 body = response.read().decode("utf-8", errors="replace")
                 latency_ms = int((perf_counter() - started) * 1000)
                 detail, models = self._build_success_payload(body)
@@ -94,14 +94,17 @@ class HealthChecker:
             detail = f"接口返回 {last_not_found.code}，未找到兼容的 models 探测端点"
         return HealthResult(status="error", detail=detail, checked_at=now_iso())
 
-    def _send_request(self, url: str, api_key: str):
+    def _send_request(self, url: str, profile: Profile):
+        headers = {
+            "Authorization": f"Bearer {profile.api_key}",
+            "Accept": "application/json",
+            "User-Agent": "CodexSwitch/1.0",
+        }
+        headers.update(normalize_custom_headers(profile.custom_headers))
+        headers["Authorization"] = f"Bearer {profile.api_key}"
         req = request.Request(
             url=url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Accept": "application/json",
-                "User-Agent": "CodexSwitch/1.0",
-            },
+            headers=headers,
             method="GET",
         )
         return request.urlopen(req, timeout=self.timeout)

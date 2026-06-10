@@ -41,10 +41,12 @@ from codex_switch.models import (
     default_model_vendor_keywords,
     model_vendor_stats,
     models_by_vendor,
+    normalize_custom_headers,
     normalize_hot_update_interval_minutes,
     normalize_model_vendor_keywords,
     normalize_profile_vendor,
     normalize_skill_type,
+    parse_custom_headers_text,
     profile_supports_codex,
     today_iso,
 )
@@ -52,10 +54,33 @@ from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY, ProfileStore, 
 
 
 class ProfileStoreTests(unittest.TestCase):
+    def test_custom_headers_parse_and_filter_reserved_names(self) -> None:
+        headers, errors = parse_custom_headers_text(
+            "OpenAI-Beta: codex=v1\n"
+            "# ignored\n"
+            "User-Agent: codex-cli-test\n"
+            "Authorization: Bearer leaked\n"
+            "Broken Line\n"
+        )
+
+        self.assertEqual(headers, {"OpenAI-Beta": "codex=v1", "User-Agent": "codex-cli-test"})
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(
+            normalize_custom_headers(
+                {
+                    "X-Codex-Switch-Project-Id": "project-1",
+                    "X-Client-Version": "codex-cli-test",
+                    "Authorization": "Bearer leaked",
+                }
+            ),
+            {"X-Client-Version": "codex-cli-test"},
+        )
+
     def test_store_roundtrip(self) -> None:
         with workspace_tempdir() as temp_dir:
             store = ProfileStore(temp_dir)
             profile = Profile.create("主线路", "https://example.com", "sk-demo")
+            profile.custom_headers = {"OpenAI-Beta": "codex=v1"}
             profile.health = HealthResult(status="healthy", detail="ok")
             profile.manual_health_status = "error"
             store.save([profile], profile.id)
@@ -93,9 +118,12 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(profiles[0].category, PROFILE_CATEGORY_TEXT)
             self.assertTrue(profiles[0].api_provided)
             self.assertEqual(profiles[0].active_api_key_index, 0)
+            self.assertEqual(profiles[0].custom_headers, {"OpenAI-Beta": "codex=v1"})
             self.assertEqual(profiles[0].health.status, "healthy")
             self.assertEqual(profiles[0].manual_health_status, "error")
             self.assertEqual(profiles[0].effective_health_status, "error")
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["profiles"][0]["custom_headers"], {"OpenAI-Beta": "codex=v1"})
             self.assertEqual(projects, [])
             self.assertIsNone(selected_project_id)
             self.assertFalse(hide_error_profiles)
@@ -128,7 +156,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 18)
+            self.assertEqual(payload["version"], 19)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -164,6 +192,7 @@ class ProfileStoreTests(unittest.TestCase):
                 api_key="sk-pool",
                 wire_api="chat_completions",
                 default_model="gpt-pool",
+                custom_headers={"X-Client-Version": "codex-cli-test"},
             )
             channel.status = "error"
             channel.failure_reason = "HTTP 503"
@@ -184,12 +213,14 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].name, "pool-a")
             self.assertEqual(loaded.channels[0].wire_api, "chat_completions")
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
+            self.assertEqual(loaded.channels[0].custom_headers, {"X-Client-Version": "codex-cli-test"})
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 18)
+            self.assertEqual(payload["version"], 19)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
             self.assertEqual(payload["settings"]["account_pool"]["channels"][0]["api_key"], "sk-pool")
+            self.assertEqual(payload["settings"]["account_pool"]["channels"][0]["custom_headers"], {"X-Client-Version": "codex-cli-test"})
 
     def test_store_persists_account_pool_groups_and_profile_source(self) -> None:
         with workspace_tempdir() as temp_dir:

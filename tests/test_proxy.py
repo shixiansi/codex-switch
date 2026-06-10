@@ -396,6 +396,58 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8"))["label"], "b")
 
+    def test_account_pool_route_sends_channel_custom_headers(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["beta"] = self.headers.get("OpenAI-Beta")
+                captured["user_agent"] = self.headers.get("User-Agent")
+                captured["authorization"] = self.headers.get("Authorization")
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b'{"id":"resp_1"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        channel = AccountPoolChannel.create(
+            name="pool",
+            base_url=f"http://127.0.0.1:{upstream.server_port}",
+            api_key="sk-pool",
+            custom_headers={"OpenAI-Beta": "codex=v1", "User-Agent": "codex-cli-test"},
+        )
+        pool = AccountPoolSettings(enabled=True, channels=[channel])
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        status, _headers, _body, _chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={"Authorization": "Bearer placeholder"},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(captured["authorization"], "Bearer sk-pool")
+        self.assertEqual(captured["beta"], "codex=v1")
+        self.assertEqual(captured["user_agent"], "codex-cli-test")
+
     def test_account_pool_marks_unavailable_channel_and_skips_it_later(self) -> None:
         counts = {"bad": 0, "good": 0}
 
@@ -579,13 +631,16 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIn("真实会话响应未包含", failed_channel.failure_reason)
         self.assertNotEqual(pool.last_recovery_checked_at, "2000-01-01T00:00:00")
 
-    def test_route_proxy_injects_project_headers(self) -> None:
+    def test_route_proxy_keeps_project_context_local_and_sends_custom_headers(self) -> None:
         captured: dict[str, str | None] = {}
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
                 captured["project_id"] = self.headers.get("X-Codex-Switch-Project-Id")
                 captured["project_name"] = self.headers.get("X-Codex-Switch-Project-Name")
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["beta"] = self.headers.get("OpenAI-Beta")
+                captured["user_agent"] = self.headers.get("User-Agent")
                 self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 body = b'{"id":"resp_1"}'
                 self.send_response(200)
@@ -600,7 +655,12 @@ class RouteProxyTests(unittest.TestCase):
         upstream = self._serve(Handler)
         project = ProjectRecord.create("project-root", "profile-id", name="Header Project")
         project.id = "project-1"
-        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}", "sk-upstream")
+        profile = Profile.create(
+            "upstream",
+            f"http://127.0.0.1:{upstream.server_port}",
+            "sk-upstream",
+            custom_headers={"OpenAI-Beta": "codex=v1", "User-Agent": "codex-cli-test"},
+        )
         settings = RouteProxySettings(
             rules=[
                 RouteProxyRule.create(
@@ -614,55 +674,25 @@ class RouteProxyTests(unittest.TestCase):
         proxy = RouteProxyServer(lambda: settings, lambda: [profile], events.append, project_provider=lambda: [project])
         request_body = json.dumps({"model": "gpt-5"}).encode("utf-8")
 
-        proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
-
-        self.assertEqual(captured["project_id"], "project-1")
-        self.assertEqual(captured["project_name"], "Header Project")
-        self.assertIn("[Header Project][代理][upstream]", events[-1].message)
-
-    def test_route_proxy_percent_encodes_non_latin_project_header(self) -> None:
-        captured: dict[str, str | None] = {}
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802
-                captured["project_name"] = self.headers.get("X-Codex-Switch-Project-Name")
-                self.rfile.read(int(self.headers.get("Content-Length", "0")))
-                body = b'{"id":"resp_1"}'
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, format: str, *args) -> None:  # noqa: A003
-                return
-
-        upstream = self._serve(Handler)
-        project = ProjectRecord.create("project-root", "profile-id", name="冰")
-        project.id = "project-cn"
-        profile = Profile.create("upstream", f"http://127.0.0.1:{upstream.server_port}", "sk-upstream")
-        settings = RouteProxySettings(
-            rules=[
-                RouteProxyRule.create(
-                    project_id=project.id,
-                    client_type=ROUTE_PROXY_CLIENT_CODEX,
-                    primary_profile_id=profile.id,
-                )
-            ]
-        )
-        proxy = RouteProxyServer(lambda: settings, lambda: [profile], project_provider=lambda: [project])
-        request_body = json.dumps({"model": "gpt-5"}).encode("utf-8")
-
-        status, _headers, _body, chunks = proxy.handle(
+        proxy.handle(
             method="POST",
-            raw_path="/project/project-cn/responses",
-            headers={},
+            raw_path="/project/project-1/responses",
+            headers={
+                "Authorization": "Bearer placeholder",
+                "X-Codex-Switch-Project-Id": "leaked",
+                "X-Codex-Switch-Project-Name": "leaked",
+                "User-Agent": "codex-client",
+            },
             body=request_body,
         )
 
-        self.assertEqual(status, 200)
-        self.assertIsNone(chunks)
-        self.assertEqual(captured["project_name"], "%E5%86%B0")
+        self.assertIsNone(captured["project_id"])
+        self.assertIsNone(captured["project_name"])
+        self.assertEqual(captured["authorization"], "Bearer sk-upstream")
+        self.assertEqual(captured["beta"], "codex=v1")
+        self.assertEqual(captured["user_agent"], "codex-cli-test")
+        self.assertIn("[Header Project]", events[-1].message)
+        self.assertIn("[upstream]", events[-1].message)
 
     def test_route_proxy_records_token_usage_by_project_api_day_and_total(self) -> None:
         class Handler(BaseHTTPRequestHandler):

@@ -266,7 +266,7 @@ class ProfileStore:
         if account_pool_settings is None:
             account_pool_settings = AccountPoolSettings()
         payload = {
-            "version": 18,
+            "version": 19,
             "selected_profile_id": selected_profile_id,
             "profiles": [profile.to_dict() for profile in profiles],
             "selected_project_id": selected_project_id,

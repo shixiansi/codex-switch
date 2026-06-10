@@ -27,7 +27,9 @@ from codex_switch.models import (
     VENDOR_CLAUDE,
     VENDOR_CODEX,
     VENDOR_GENERIC,
+    custom_headers_to_text,
     normalize_profile_category,
+    parse_custom_headers_text,
     profile_supports_claude,
     profile_supports_codex,
 )
@@ -558,7 +560,7 @@ class AccountPoolChannelDialog(tk.Toplevel):
         card.grid(padx=18, pady=18, sticky="nsew")
         card.columnconfigure(1, weight=1)
         tk.Label(card, text="号池渠道", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
-        tk.Label(card, text="仅用于 Codex 路由代理号池，保存前会用 /models 做连通性测试。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 14))
+        tk.Label(card, text="仅用于 Codex 路由代理号池，保存前会做真实会话验证。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 14))
 
         fields = (
             ("名称", self.name_var),
@@ -583,8 +585,23 @@ class AccountPoolChannelDialog(tk.Toplevel):
         self.api_key_entry.grid(row=6, column=1, sticky="ew", pady=6)
         ttk.Checkbutton(card, text="显示 Key", variable=self.show_key_var, command=self._toggle_key_visibility).grid(row=6, column=2, sticky="w", padx=(8, 0))
 
+        tk.Label(card, text="自定义请求头", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=7, column=0, sticky="nw", pady=6)
+        self.custom_headers_text = tk.Text(
+            card,
+            width=48,
+            height=3,
+            wrap="none",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            font=("Consolas", 10),
+            fg=PALETTE["text"],
+        )
+        self.custom_headers_text.grid(row=7, column=1, columnspan=2, sticky="ew", pady=6)
+        self.custom_headers_text.insert("1.0", custom_headers_to_text(defaults.custom_headers))
+
         buttons = ttk.Frame(card)
-        buttons.grid(row=7, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存渠道", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
@@ -601,6 +618,7 @@ class AccountPoolChannelDialog(tk.Toplevel):
         api_key = self.api_key_var.get().strip()
         default_model = self.default_model_var.get().strip() or DEFAULT_CODEX_MODEL
         wire_api = self.wire_api_var.get().strip() or "responses"
+        custom_headers, header_errors = parse_custom_headers_text(self.custom_headers_text.get("1.0", "end"))
         if not name:
             messagebox.showerror("校验失败", "请输入渠道名称。", parent=self)
             return
@@ -610,6 +628,9 @@ class AccountPoolChannelDialog(tk.Toplevel):
         if not api_key:
             messagebox.showerror("校验失败", "请输入 API Key。", parent=self)
             return
+        if header_errors:
+            messagebox.showerror("校验失败", "自定义请求头无效：\n" + "\n".join(header_errors), parent=self)
+            return
         self.result = {
             "name": name,
             "base_url": base_url,
@@ -617,6 +638,7 @@ class AccountPoolChannelDialog(tk.Toplevel):
             "source_type": ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
             "wire_api": wire_api,
             "default_model": default_model,
+            "custom_headers": custom_headers,
         }
         self.destroy()
 
@@ -729,6 +751,7 @@ class AccountPoolProfileChannelDialog(tk.Toplevel):
             "source_api_key_index": key_index,
             "wire_api": profile.wire_api,
             "default_model": profile.codex_display_model,
+            "custom_headers": profile.custom_headers,
         }
         self.destroy()
 
@@ -900,8 +923,33 @@ class ProfileDialog(tk.Toplevel):
             self._add_api_key_row(key)
         if not self.api_key_vars:
             self._add_api_key_row()
+
+        custom_headers_label = tk.Label(
+            card,
+            text="自定义请求头",
+            bg=PALETTE["card_bg"],
+            fg=PALETTE["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        custom_headers_label.grid(row=11, column=0, sticky="nw", pady=6)
+        self.api_key_widgets.append(custom_headers_label)
+        self.custom_headers_text = tk.Text(
+            card,
+            width=48,
+            height=3,
+            wrap="none",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=0,
+            font=("Consolas", 10),
+            fg=PALETTE["text"],
+        )
+        self.custom_headers_text.grid(row=11, column=1, columnspan=2, sticky="ew", pady=6)
+        self.custom_headers_text.insert("1.0", custom_headers_to_text(defaults.custom_headers))
+        self.api_key_widgets.append(self.custom_headers_text)
+
         ttk.Checkbutton(card, text="需要签到", variable=self.requires_sign_in_var, command=self._toggle_sign_in_fields).grid(
-            row=11,
+            row=12,
             column=0,
             sticky="w",
             pady=(6, 0),
@@ -912,9 +960,9 @@ class ProfileDialog(tk.Toplevel):
             bg=PALETTE["card_bg"],
             fg=PALETTE["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=12, column=0, sticky="w", pady=6)
+        ).grid(row=13, column=0, sticky="w", pady=6)
         self.sign_in_url_entry = ttk.Entry(card, textvariable=self.sign_in_url_var, width=48)
-        self.sign_in_url_entry.grid(row=12, column=1, columnspan=2, sticky="ew", pady=6)
+        self.sign_in_url_entry.grid(row=13, column=1, columnspan=2, sticky="ew", pady=6)
 
         tk.Label(
             card,
@@ -922,7 +970,7 @@ class ProfileDialog(tk.Toplevel):
             bg=PALETTE["card_bg"],
             fg=PALETTE["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
-        ).grid(row=13, column=0, sticky="nw", pady=6)
+        ).grid(row=14, column=0, sticky="nw", pady=6)
         self.notes_text = tk.Text(
             card,
             width=48,
@@ -934,12 +982,12 @@ class ProfileDialog(tk.Toplevel):
             font=("Microsoft YaHei UI", 10),
             fg=PALETTE["text"],
         )
-        self.notes_text.grid(row=13, column=1, columnspan=2, sticky="ew", pady=6)
+        self.notes_text.grid(row=14, column=1, columnspan=2, sticky="ew", pady=6)
         if defaults.notes:
             self.notes_text.insert("1.0", defaults.notes)
 
         buttons = ttk.Frame(card)
-        buttons.grid(row=14, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        buttons.grid(row=15, column=0, columnspan=3, sticky="e", pady=(14, 0))
         make_button(buttons, text="取消", variant="secondary", command=self.destroy).grid(row=0, column=0, padx=(0, 8))
         make_button(buttons, text="保存配置", variant="primary", command=self._on_submit).grid(row=0, column=1)
 
@@ -1060,6 +1108,7 @@ class ProfileDialog(tk.Toplevel):
             api_keys.append(key)
         requires_sign_in = self.requires_sign_in_var.get()
         sign_in_url = self.sign_in_url_var.get().strip()
+        custom_headers, header_errors = parse_custom_headers_text(self.custom_headers_text.get("1.0", "end"))
 
         if not name:
             messagebox.showerror("校验失败", "请输入配置名称。", parent=self)
@@ -1085,6 +1134,9 @@ class ProfileDialog(tk.Toplevel):
         if requires_sign_in and sign_in_url and not is_http_url(sign_in_url):
             messagebox.showerror("校验失败", "签到地址必须以 http:// 或 https:// 开头。", parent=self)
             return
+        if api_provided and header_errors:
+            messagebox.showerror("校验失败", "自定义请求头无效：\n" + "\n".join(header_errors), parent=self)
+            return
 
         self.result = {
             "name": name,
@@ -1101,6 +1153,7 @@ class ProfileDialog(tk.Toplevel):
             "category": category,
             "api_provided": api_provided,
             "wire_api": self.wire_api_var.get().strip() or "responses",
+            "custom_headers": custom_headers if api_provided else {},
             "requires_sign_in": requires_sign_in,
             "sign_in_url": sign_in_url if requires_sign_in else "",
             "last_signed_date": self.last_signed_date if requires_sign_in else None,

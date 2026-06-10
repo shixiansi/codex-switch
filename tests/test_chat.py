@@ -92,6 +92,47 @@ class ChatTesterTests(unittest.TestCase):
         self.assertEqual(result.text, "hello from api")
         self.assertEqual(result.endpoint, f"http://127.0.0.1:{server.server_port}/v1/responses")
 
+    def test_send_message_applies_custom_headers_without_overriding_auth(self) -> None:
+        captured: dict[str, str | None] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["beta"] = self.headers.get("OpenAI-Beta")
+                captured["user_agent"] = self.headers.get("User-Agent")
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps({"output_text": "custom headers ok"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        server = start_test_server(Handler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        profile = Profile.create(
+            "headers",
+            f"http://127.0.0.1:{server.server_port}",
+            "sk-chat",
+            custom_headers={
+                "OpenAI-Beta": "codex=v1",
+                "User-Agent": "codex-cli-test",
+                "Authorization": "Bearer leaked",
+            },
+        )
+
+        result = ChatTester(timeout=5).send_message(profile, "ping")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(captured["authorization"], "Bearer sk-chat")
+        self.assertEqual(captured["beta"], "codex=v1")
+        self.assertEqual(captured["user_agent"], "codex-cli-test")
+
     def test_send_message_with_chat_completions(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
 
-from codex_switch.models import HealthResult, Profile, VENDOR_CLAUDE, now_iso, parse_model_names
+from codex_switch.models import HealthResult, Profile, VENDOR_CLAUDE, normalize_custom_headers, now_iso, parse_model_names
 
 
 WIRE_API_RESPONSES = "responses"
@@ -193,9 +193,10 @@ class ChatTester:
             "Accept": "application/json",
             "User-Agent": "CodexSwitch/1.0",
         }
+        headers.update(normalize_custom_headers(profile.custom_headers))
         if _normalize_wire_api(wire_api) == WIRE_API_ANTHROPIC_MESSAGES:
             headers["x-api-key"] = profile.api_key
-            headers["anthropic-version"] = "2023-06-01"
+            headers.setdefault("anthropic-version", "2023-06-01")
         else:
             headers["Authorization"] = f"Bearer {profile.api_key}"
         return headers
