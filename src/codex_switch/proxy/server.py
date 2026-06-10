@@ -30,7 +30,7 @@ from codex_switch.models import (
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     normalize_custom_headers,
 )
-from codex_switch.chat import AccountPoolSessionValidator
+from codex_switch.chat import AccountPoolSessionValidator, is_codex_client_restricted_error
 from codex_switch.proxy.protocol_matrix import translation_for_protocol
 from codex_switch.proxy.sanitize import sanitize_text
 from codex_switch.proxy.translator import TranslationError
@@ -357,9 +357,19 @@ class RouteProxyServer:
 
             status, _response_headers, response_body, response_chunks = response
             if self._is_account_pool_unavailable_status(status):
+                last_error = self._account_pool_status_error(status, response_body)
+                if self._is_codex_client_restricted_response(status, response_body):
+                    self._record(
+                        "warn",
+                        f"{log_context} {client_type} {upstream_path} requires Codex client: {last_error}",
+                        project_id=project_id,
+                        client_type=client_type,
+                        profile_id=channel.id,
+                        path=upstream_path,
+                    )
+                    return response
                 if response_chunks is not None and hasattr(response_chunks, "close"):
                     response_chunks.close()
-                last_error = self._account_pool_status_error(status, response_body)
                 pool.mark_failed(channel.id, last_error)
                 self._notify_account_pool_updated(pool)
                 self._record(
@@ -673,6 +683,11 @@ class RouteProxyServer:
             if detail:
                 return sanitize_text(f"HTTP {status}: {detail[:200]}")
         return f"HTTP {status}"
+
+    def _is_codex_client_restricted_response(self, status: int, response_body: bytes | None) -> bool:
+        if status != HTTPStatus.FORBIDDEN or not response_body:
+            return False
+        return is_codex_client_restricted_error(response_body.decode("utf-8", errors="replace"))
 
     def _maybe_recover_account_pool(self, pool: AccountPoolSettings) -> None:
         interval_seconds = pool.recovery_interval_minutes * 60

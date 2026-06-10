@@ -448,6 +448,55 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(captured["beta"], "codex=v1")
         self.assertEqual(captured["user_agent"], "codex-cli-test")
 
+    def test_account_pool_codex_client_restricted_response_is_not_marked_unavailable(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = json.dumps({"error": {"code": "codex_access_restricted"}}).encode("utf-8")
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        channel = AccountPoolChannel.create(
+            name="pool",
+            base_url=f"http://127.0.0.1:{upstream.server_port}",
+            api_key="sk-pool",
+        )
+        pool = AccountPoolSettings(enabled=True, channels=[channel])
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                )
+            ]
+        )
+        events = []
+        proxy = RouteProxyServer(lambda: settings, lambda: [], events.append, account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/responses",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 403)
+        self.assertIsNone(chunks)
+        self.assertEqual(json.loads(body.decode("utf-8"))["error"]["code"], "codex_access_restricted")
+        self.assertTrue(channel.is_normal)
+        self.assertEqual(channel.failure_reason, "")
+        self.assertIn("requires Codex client", events[-1].message)
+
     def test_account_pool_marks_unavailable_channel_and_skips_it_later(self) -> None:
         counts = {"bad": 0, "good": 0}
 

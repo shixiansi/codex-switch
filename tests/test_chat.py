@@ -30,6 +30,27 @@ class ChatTesterTests(unittest.TestCase):
         self.assertEqual(result.models, ["gpt-pool"])
         self.assertIn("codex-switch-", captured["marker"])
 
+    def test_account_pool_session_validator_allows_codex_client_restricted_probe(self) -> None:
+        class FakeChatTester:
+            def send_message(self, profile, prompt, model_override=None, wire_api_override=None):  # noqa: ANN001
+                detail = json.dumps({"error": {"code": "codex_access_restricted", "message": "use Codex CLI"}})
+                return ChatResult(
+                    ok=False,
+                    text="请求失败：HTTP 403",
+                    detail=detail,
+                    endpoint="https://api.example.com/v1/responses",
+                    model=model_override,
+                    http_status=403,
+                )
+
+        profile = Profile.create("pool", "https://api.example.com", "sk-pool", codex_model="gpt-pool")
+        result = AccountPoolSessionValidator(FakeChatTester()).check(profile)
+
+        self.assertEqual(result.status, "healthy")
+        self.assertEqual(result.http_status, 403)
+        self.assertEqual(result.models, ["gpt-pool"])
+        self.assertIn("真实 Codex", result.detail)
+
     def test_account_pool_session_validator_rejects_missing_marker(self) -> None:
         class FakeChatTester:
             def send_message(self, profile, prompt, model_override=None, wire_api_override=None):  # noqa: ANN001

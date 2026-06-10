@@ -13,6 +13,11 @@ WIRE_API_RESPONSES = "responses"
 WIRE_API_CHAT_COMPLETIONS = "chat_completions"
 WIRE_API_ANTHROPIC_MESSAGES = "anthropic_messages"
 SUPPORTED_WIRE_APIS = (WIRE_API_RESPONSES, WIRE_API_CHAT_COMPLETIONS, WIRE_API_ANTHROPIC_MESSAGES)
+CODEX_ACCESS_RESTRICTED_ERROR_CODE = "codex_access_restricted"
+CODEX_ACCESS_RESTRICTED_VALIDATION_DETAIL = (
+    "上游限制应用内验证：该接口要求使用最新版 Codex 客户端或 Codex CLI 调用；"
+    "已保留渠道，请用真实 Codex 代理请求验证。"
+)
 
 
 @dataclass
@@ -22,7 +27,17 @@ class ChatResult:
     endpoint: str | None = None
     model: str | None = None
     detail: str | None = None
+    http_status: int | None = None
     extracted: bool = True
+
+
+def is_codex_client_restricted_error(text: str | None) -> bool:
+    if not text:
+        return False
+    lowered = text.casefold()
+    if CODEX_ACCESS_RESTRICTED_ERROR_CODE in lowered:
+        return True
+    return "请使用最新版" in text and "codex" in lowered and ("客户端" in text or "cli" in lowered)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -137,6 +152,7 @@ class ChatTester:
                 endpoint=endpoint,
                 model=model,
                 detail=detail[:400] if detail else None,
+                http_status=exc.code,
             )
         except error.URLError as exc:
             return ChatResult(
@@ -334,10 +350,20 @@ class AccountPoolSessionValidator:
             detail = result.text
             if result.detail:
                 detail = f"{detail}  {result.detail}"
+            if is_codex_client_restricted_error(detail):
+                return HealthResult(
+                    status="healthy",
+                    detail=CODEX_ACCESS_RESTRICTED_VALIDATION_DETAIL,
+                    checked_at=now_iso(),
+                    http_status=result.http_status,
+                    endpoint=result.endpoint,
+                    models=[result.model] if result.model else [],
+                )
             return HealthResult(
                 status="error",
                 detail=detail,
                 checked_at=now_iso(),
+                http_status=result.http_status,
                 endpoint=result.endpoint,
             )
         if not result.extracted:
