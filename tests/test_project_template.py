@@ -608,6 +608,11 @@ command = "tool"
                 CLAUDE_API_KEY_ENV_KEY: "sk-active",
                 CLAUDE_MODEL_ENV_KEY: "sonnet-env",
                 CLAUDE_FALLBACK_MODEL_ENV_KEY: "haiku-env",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "sonnet-env",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "sonnet-env",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "sonnet-env",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-env",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "sonnet-env",
             },
         )
         applied_env = apply_claude_profile_env(
