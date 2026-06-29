@@ -337,20 +337,29 @@ class AccountPoolSessionValidator:
     def __init__(self, chat_tester: ChatTester | None = None) -> None:
         self.chat_tester = chat_tester or ChatTester(timeout=30)
 
-    def check(self, profile: Profile) -> HealthResult:
+    def check(
+        self,
+        profile: Profile,
+        *,
+        model: str | None = None,
+        wire_api: str | None = None,
+        allow_codex_client_restricted: bool = True,
+    ) -> HealthResult:
         marker = f"codex-switch-{uuid.uuid4().hex[:12]}"
         prompt = f"Return exactly this verification marker and no extra text: {marker}"
+        selected_wire_api = wire_api or default_wire_api_for_profile(profile)
+        selected_model = model or _pick_model(profile, wire_api=selected_wire_api)
         result = self.chat_tester.send_message(
             profile,
             prompt,
-            model_override=profile.codex_display_model,
-            wire_api_override=default_wire_api_for_profile(profile),
+            model_override=selected_model,
+            wire_api_override=selected_wire_api,
         )
         if not result.ok:
             detail = result.text
             if result.detail:
                 detail = f"{detail}  {result.detail}"
-            if is_codex_client_restricted_error(detail):
+            if allow_codex_client_restricted and is_codex_client_restricted_error(detail):
                 return HealthResult(
                     status="healthy",
                     detail=CODEX_ACCESS_RESTRICTED_VALIDATION_DETAIL,

@@ -156,7 +156,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 19)
+            self.assertEqual(payload["version"], 20)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -215,7 +215,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].custom_headers, {"X-Client-Version": "codex-cli-test"})
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 19)
+            self.assertEqual(payload["version"], 20)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -248,13 +248,19 @@ class ProfileStoreTests(unittest.TestCase):
 
             store.save([], None, account_pool_settings=account_pool)
             loaded = store.load()[15]
+            payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
 
             self.assertEqual(loaded.selected_group_id, group.id)
             self.assertEqual(loaded.recovery_interval_minutes, 8)
             self.assertEqual(loaded.groups[0].name, "项目组")
+            self.assertEqual(loaded.groups[0].pool_type, "codex")
+            self.assertEqual(loaded.groups[0].default_model, "gpt-profile")
+            self.assertEqual(loaded.groups[0].claude_model, DEFAULT_CLAUDE_MODEL)
+            self.assertEqual(loaded.groups[0].claude_fallback_model, DEFAULT_CLAUDE_FALLBACK_MODEL)
             self.assertEqual(loaded.channels[0].source_type, ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE)
             self.assertEqual(loaded.channels[0].source_profile_id, "profile-1")
             self.assertEqual(loaded.channels[0].source_api_key_index, 1)
+            self.assertEqual(payload["settings"]["account_pool"]["groups"][0]["pool_type"], "codex")
 
     def test_store_persists_route_proxy_settings(self) -> None:
         with workspace_tempdir() as temp_dir:

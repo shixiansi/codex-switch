@@ -34,6 +34,7 @@ from codex_switch.project_template import (
     ProjectTemplateService,
     apply_claude_profile_env,
     claude_env_from_profile,
+    claude_runtime_env_from_profile,
 )
 from codex_switch.skills import PROJECT_SKILLS_RELATIVE_DIR, SKILL_MANAGED_MARKER, SkillSource
 
@@ -441,6 +442,40 @@ args = ["-y", "server", "/tmp"]
             self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], "http://127.0.0.1:15721/project/p1")
             self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
 
+    def test_generate_with_model_overrides_writes_pool_models(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", codex_model="profile-codex")
+            claude_profile = Profile.create(
+                "claude",
+                "https://claude.example.com",
+                "sk-claude",
+                vendor=VENDOR_CLAUDE,
+                claude_model="profile-sonnet",
+                claude_fallback_model="profile-haiku",
+            )
+
+            service.generate(
+                temp_dir,
+                codex_profile,
+                claude_profile=claude_profile,
+                codex_model_override="pool-codex",
+                claude_model_override="pool-sonnet",
+                claude_fallback_model_override="pool-haiku",
+            )
+
+            repo_config_data = tomllib.loads((temp_dir / ".codex" / "config.toml").read_text(encoding="utf-8"))
+            runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
+            claude_settings = json.loads((temp_dir / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(repo_config_data["model"], "pool-codex")
+            self.assertEqual(repo_config_data["review_model"], "pool-codex")
+            self.assertEqual(runtime_config_data["model"], "pool-codex")
+            self.assertEqual(runtime_config_data["review_model"], "pool-codex")
+            self.assertEqual(claude_settings["env"][CLAUDE_MODEL_ENV_KEY], "pool-sonnet")
+            self.assertEqual(claude_settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "pool-haiku")
+            self.assertEqual(claude_settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"], "pool-sonnet")
+
     def test_generate_claude_template_does_not_write_codex_config(self) -> None:
         with workspace_tempdir() as temp_dir:
             service = ProjectTemplateService()
@@ -496,7 +531,7 @@ command = "tool"
                 active_api_key_index=1,
             )
 
-            updated_paths = service.sync_api_binding(temp_dir, updated_profile)
+            updated_paths = service.sync_api_binding(temp_dir, updated_profile, model_override="pool-model")
 
             self.assertEqual(
                 {path.relative_to(temp_dir).as_posix() for path in updated_paths},
@@ -505,10 +540,10 @@ command = "tool"
             repo_config_data = tomllib.loads((temp_dir / ".codex" / "config.toml").read_text(encoding="utf-8"))
             runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
             provider = runtime_config_data["model_providers"][PROJECT_PROVIDER_ID]
-            self.assertEqual(repo_config_data["model"], "new-model")
-            self.assertEqual(repo_config_data["review_model"], "new-model")
-            self.assertEqual(runtime_config_data["model"], "new-model")
-            self.assertEqual(runtime_config_data["review_model"], "new-model")
+            self.assertEqual(repo_config_data["model"], "pool-model")
+            self.assertEqual(repo_config_data["review_model"], "pool-model")
+            self.assertEqual(runtime_config_data["model"], "pool-model")
+            self.assertEqual(runtime_config_data["review_model"], "pool-model")
             self.assertEqual(provider["base_url"], "https://new.example.com/v1")
             self.assertNotIn("wire_api", provider)
             self.assertEqual(provider["env_key"], PROJECT_ENV_KEY)
@@ -529,8 +564,19 @@ command = "tool"
             service.generate(temp_dir, codex_profile, claude_profile=claude_profile)
             route_proxy_base_url = "http://127.0.0.1:15721/project/project-1"
 
-            service.sync_api_binding(temp_dir, codex_profile, route_proxy_base_url=route_proxy_base_url)
-            service.sync_claude_binding(temp_dir, claude_profile, route_proxy_base_url=route_proxy_base_url)
+            service.sync_api_binding(
+                temp_dir,
+                codex_profile,
+                route_proxy_base_url=route_proxy_base_url,
+                model_override="pool-codex",
+            )
+            service.sync_claude_binding(
+                temp_dir,
+                claude_profile,
+                route_proxy_base_url=route_proxy_base_url,
+                model_override="pool-sonnet",
+                fallback_model_override="pool-haiku",
+            )
 
             runtime_config_data = tomllib.loads((temp_dir / ".codex" / "home" / "config.toml").read_text(encoding="utf-8"))
             provider = runtime_config_data["model_providers"][PROJECT_PROVIDER_ID]
@@ -541,6 +587,9 @@ command = "tool"
             self.assertEqual((temp_dir / ".codex" / "local.env").read_text(encoding="utf-8"), f"{PROJECT_ENV_KEY}={ROUTE_PROXY_PLACEHOLDER_KEY}\n")
             self.assertEqual(claude_settings["env"][CLAUDE_BASE_URL_ENV_KEY], route_proxy_base_url)
             self.assertEqual(claude_settings["env"][CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
+            self.assertEqual(runtime_config_data["model"], "pool-codex")
+            self.assertEqual(claude_settings["env"][CLAUDE_MODEL_ENV_KEY], "pool-sonnet")
+            self.assertEqual(claude_settings["env"][CLAUDE_FALLBACK_MODEL_ENV_KEY], "pool-haiku")
 
     def test_sync_claude_binding_updates_settings_env_and_preserves_existing_fields(self) -> None:
         with workspace_tempdir() as temp_dir:
@@ -626,3 +675,14 @@ command = "tool"
         self.assertEqual(applied_env["EXTRA"], "value")
         self.assertFalse(any(key.casefold() == CLAUDE_LEGACY_API_KEY_ENV_KEY.casefold() for key in applied_env))
         self.assertEqual(applied_env[CLAUDE_API_KEY_ENV_KEY], "sk-active")
+
+        runtime_env = claude_runtime_env_from_profile(
+            profile,
+            route_proxy_base_url="http://127.0.0.1:15721/project/p1",
+            model_override="pool-sonnet",
+            fallback_model_override="pool-haiku",
+        )
+        self.assertEqual(runtime_env[CLAUDE_BASE_URL_ENV_KEY], "http://127.0.0.1:15721/project/p1")
+        self.assertEqual(runtime_env[CLAUDE_API_KEY_ENV_KEY], ROUTE_PROXY_PLACEHOLDER_KEY)
+        self.assertEqual(runtime_env[CLAUDE_MODEL_ENV_KEY], "pool-sonnet")
+        self.assertEqual(runtime_env[CLAUDE_FALLBACK_MODEL_ENV_KEY], "pool-haiku")

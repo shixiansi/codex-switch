@@ -399,7 +399,39 @@ def profile_supports_claude(profile: "Profile") -> bool:
 
 def normalize_account_pool_wire_api(value: str | None) -> str:
     wire_api = str(value or "").strip().lower()
+    if wire_api == "anthropic_messages":
+        return "anthropic_messages"
     if wire_api == "chat_completions":
+        return "chat_completions"
+    return "responses"
+
+
+ACCOUNT_POOL_GROUP_TYPE_CODEX = "codex"
+ACCOUNT_POOL_GROUP_TYPE_CLAUDE = "claude"
+ACCOUNT_POOL_GROUP_TYPE_CHOICES = (
+    ACCOUNT_POOL_GROUP_TYPE_CODEX,
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+)
+ACCOUNT_POOL_GROUP_TYPE_LABELS = {
+    ACCOUNT_POOL_GROUP_TYPE_CODEX: "Codex",
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE: "Claude",
+}
+
+def normalize_account_pool_group_type(value: str | None) -> str:
+    group_type = str(value or "").strip().lower()
+    if group_type in ACCOUNT_POOL_GROUP_TYPE_CHOICES:
+        return group_type
+    return ACCOUNT_POOL_GROUP_TYPE_CODEX
+
+
+def effective_account_pool_wire_api(group_type: str | None, wire_api: str | None) -> str:
+    normalized_group_type = normalize_account_pool_group_type(group_type)
+    normalized_wire_api = normalize_account_pool_wire_api(wire_api)
+    if normalized_group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
+        if normalized_wire_api == "chat_completions":
+            return "chat_completions"
+        return "anthropic_messages"
+    if normalized_wire_api == "chat_completions":
         return "chat_completions"
     return "responses"
 
@@ -450,15 +482,35 @@ def normalize_non_negative_int(value: int | str | None) -> int:
 
 
 @dataclass
+
 class AccountPoolGroup:
     id: str
     name: str
     enabled: bool = True
     next_index: int = 0
+    pool_type: str = ACCOUNT_POOL_GROUP_TYPE_CODEX
+    default_model: str = DEFAULT_CODEX_MODEL
+    claude_model: str = DEFAULT_CLAUDE_MODEL
+    claude_fallback_model: str = DEFAULT_CLAUDE_FALLBACK_MODEL
 
     @classmethod
-    def create(cls, name: str = DEFAULT_ACCOUNT_POOL_GROUP_NAME) -> "AccountPoolGroup":
-        return cls(id=str(uuid.uuid4()), name=name.strip() or DEFAULT_ACCOUNT_POOL_GROUP_NAME)
+    def create(
+        cls,
+        name: str = DEFAULT_ACCOUNT_POOL_GROUP_NAME,
+        *,
+        pool_type: str = ACCOUNT_POOL_GROUP_TYPE_CODEX,
+        default_model: str = DEFAULT_CODEX_MODEL,
+        claude_model: str = DEFAULT_CLAUDE_MODEL,
+        claude_fallback_model: str = DEFAULT_CLAUDE_FALLBACK_MODEL,
+    ) -> "AccountPoolGroup":
+        return cls(
+            id=str(uuid.uuid4()),
+            name=name.strip() or DEFAULT_ACCOUNT_POOL_GROUP_NAME,
+            pool_type=normalize_account_pool_group_type(pool_type),
+            default_model=default_model.strip() or DEFAULT_CODEX_MODEL,
+            claude_model=claude_model.strip() or DEFAULT_CLAUDE_MODEL,
+            claude_fallback_model=claude_fallback_model.strip() or DEFAULT_CLAUDE_FALLBACK_MODEL,
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "AccountPoolGroup":
@@ -472,10 +524,25 @@ class AccountPoolGroup:
             name=str(data.get("name") or DEFAULT_ACCOUNT_POOL_GROUP_NAME).strip() or DEFAULT_ACCOUNT_POOL_GROUP_NAME,
             enabled=bool(data.get("enabled", True)),
             next_index=max(0, next_index),
+            pool_type=normalize_account_pool_group_type(data.get("pool_type")),
+            default_model=str(data.get("default_model") or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL,
+            claude_model=str(data.get("claude_model") or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL,
+            claude_fallback_model=(
+                str(data.get("claude_fallback_model") or DEFAULT_CLAUDE_FALLBACK_MODEL).strip()
+                or DEFAULT_CLAUDE_FALLBACK_MODEL
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def is_codex(self) -> bool:
+        return self.pool_type == ACCOUNT_POOL_GROUP_TYPE_CODEX
+
+    @property
+    def is_claude(self) -> bool:
+        return self.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE
 
 
 @dataclass
@@ -575,6 +642,7 @@ class AccountPoolSettings:
     recovery_interval_minutes: int = DEFAULT_ACCOUNT_POOL_RECOVERY_INTERVAL_MINUTES
 
     @classmethod
+
     def from_dict(cls, data: dict[str, Any] | None) -> "AccountPoolSettings":
         if not isinstance(data, dict):
             settings = cls()
@@ -600,6 +668,7 @@ class AccountPoolSettings:
             ),
         )
         settings.ensure_default_group()
+        settings._migrate_group_models_from_channels()
         return settings
 
     def to_dict(self) -> dict[str, Any]:
@@ -628,6 +697,22 @@ class AccountPoolSettings:
             self.selected_group_id = default_group.id
         return default_group
 
+    def _migrate_group_models_from_channels(self) -> None:
+        for group in self.groups:
+            group.pool_type = normalize_account_pool_group_type(group.pool_type)
+            if group.default_model and group.default_model != DEFAULT_CODEX_MODEL:
+                continue
+            first_channel = next(
+                (
+                    channel
+                    for channel in self.channels
+                    if channel.group_id == group.id and channel.default_model
+                ),
+                None,
+            )
+            if first_channel is not None:
+                group.default_model = first_channel.default_model
+
     def group_by_id(self, group_id: str | None) -> AccountPoolGroup | None:
         self.ensure_default_group()
         if group_id:
@@ -636,8 +721,22 @@ class AccountPoolSettings:
                 return group
         return self.groups[0] if self.groups else None
 
-    def add_group(self, name: str) -> AccountPoolGroup:
-        group = AccountPoolGroup.create(name)
+    def add_group(
+        self,
+        name: str,
+        *,
+        pool_type: str = ACCOUNT_POOL_GROUP_TYPE_CODEX,
+        default_model: str = DEFAULT_CODEX_MODEL,
+        claude_model: str = DEFAULT_CLAUDE_MODEL,
+        claude_fallback_model: str = DEFAULT_CLAUDE_FALLBACK_MODEL,
+    ) -> AccountPoolGroup:
+        group = AccountPoolGroup.create(
+            name,
+            pool_type=pool_type,
+            default_model=default_model,
+            claude_model=claude_model,
+            claude_fallback_model=claude_fallback_model,
+        )
         self.groups.append(group)
         self.selected_group_id = group.id
         return group

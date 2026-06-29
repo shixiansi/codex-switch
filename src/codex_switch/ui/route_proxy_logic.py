@@ -72,6 +72,8 @@ def route_proxy_rules_for_project(
     codex_account_pool_group_id: str = "",
     codex_compact_model: str = "",
     codex_manual_upstream_protocol: bool = False,
+    claude_upstream_source: str = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    claude_account_pool_group_id: str = "",
     claude_manual_upstream_protocol: bool = False,
 ) -> list[RouteProxyRule]:
     codex_conversion_protocols = {
@@ -100,7 +102,8 @@ def route_proxy_rules_for_project(
             project_id=project.id,
             client_type=ROUTE_PROXY_CLIENT_CLAUDE,
             primary_profile_id=claude_profile.id,
-            upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+            upstream_source=claude_upstream_source,
+            account_pool_group_id=claude_account_pool_group_id,
             upstream_protocol=claude_protocol,
             upstream_model=claude_upstream_model,
             manual_upstream_protocol=claude_manual_upstream_protocol,
@@ -166,6 +169,12 @@ def refresh_route_proxy_rules_for_project(
             codex_compact_model=existing_codex_rule.compact_model if existing_codex_rule is not None else "",
             codex_manual_upstream_protocol=(
                 existing_codex_rule.manual_upstream_protocol if existing_codex_rule is not None else False
+            ),
+            claude_upstream_source=(
+                existing_claude_rule.upstream_source if existing_claude_rule is not None else ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
+            ),
+            claude_account_pool_group_id=(
+                existing_claude_rule.account_pool_group_id if existing_claude_rule is not None else ""
             ),
             claude_manual_upstream_protocol=(
                 existing_claude_rule.manual_upstream_protocol if existing_claude_rule is not None else False

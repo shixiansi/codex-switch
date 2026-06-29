@@ -45,8 +45,15 @@ from codex_switch.models import (
     AccountPoolSettings,
     ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
     ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+    ACCOUNT_POOL_GROUP_TYPE_CODEX,
+    ACCOUNT_POOL_GROUP_TYPE_LABELS,
     CurrentCodexConfig,
+    DEFAULT_CLAUDE_FALLBACK_MODEL,
+    DEFAULT_CLAUDE_MODEL,
+    DEFAULT_CODEX_MODEL,
     DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
+    effective_account_pool_wire_api,
     HealthResult,
     HOT_UPDATE_EVENT_LIMIT,
     HotUpdateEvent,
@@ -99,6 +106,7 @@ from codex_switch.project_template import (
     CLAUDE_MODEL_ENV_KEY,
     ProjectTemplateService,
     apply_claude_profile_env,
+    claude_runtime_env_from_profile,
     load_default_agents_doc_text,
 )
 from codex_switch.skills import (
@@ -893,6 +901,9 @@ class CodexSwitchApp:
         self.proxy_codex_upstream_source_var = tk.StringVar(
             value=CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE]
         )
+        self.proxy_claude_upstream_source_var = tk.StringVar(
+            value=CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE]
+        )
         self.proxy_codex_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_OPENAI)
         self.proxy_claude_protocol_var = tk.StringVar(value=ROUTE_PROXY_PROTOCOL_ANTHROPIC)
         self.proxy_codex_compact_model_var = tk.StringVar(value="")
@@ -905,6 +916,10 @@ class CodexSwitchApp:
         self.account_pool_enabled_var = tk.BooleanVar(value=self.account_pool_settings.enabled)
         self.account_pool_group_var = tk.StringVar(value="")
         self.account_pool_group_enabled_var = tk.BooleanVar(value=True)
+        self.account_pool_group_type_var = tk.StringVar(value=ACCOUNT_POOL_GROUP_TYPE_LABELS[ACCOUNT_POOL_GROUP_TYPE_CODEX])
+        self.account_pool_group_default_model_var = tk.StringVar(value=DEFAULT_CODEX_MODEL)
+        self.account_pool_group_claude_model_var = tk.StringVar(value=DEFAULT_CLAUDE_MODEL)
+        self.account_pool_group_claude_fallback_model_var = tk.StringVar(value=DEFAULT_CLAUDE_FALLBACK_MODEL)
         self.account_pool_selected_name_var = tk.StringVar(value="未选择渠道")
         self.account_pool_selected_detail_var = tk.StringVar(value="-")
         self.account_pool_group_choices: dict[str, str] = {}
@@ -964,7 +979,9 @@ class CodexSwitchApp:
         self.chat_settings_summary_var = tk.StringVar(value="模型：-    接口：responses")
         self.chat_request_body_text = ""
         self.proxy_account_pool_group_var = tk.StringVar(value="")
+        self.proxy_claude_account_pool_group_var = tk.StringVar(value="")
         self.proxy_account_pool_group_choices: dict[str, str] = {}
+        self.proxy_claude_account_pool_group_choices: dict[str, str] = {}
 
     def _setup_theme(self) -> None:
         self.hero_font = tkfont.Font(family="Microsoft YaHei UI", size=15, weight="bold")
@@ -1507,7 +1524,7 @@ class CodexSwitchApp:
         left = self._make_card(content)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(5, weight=1)
+        left.rowconfigure(8, weight=1)
         tk.Label(left, text="路由代理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
         tk.Label(left, textvariable=self.proxy_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
@@ -1526,7 +1543,7 @@ class CodexSwitchApp:
             state="readonly",
             width=28,
         ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="Codex 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
         self.proxy_account_pool_group_combo = ttk.Combobox(
             settings,
             textvariable=self.proxy_account_pool_group_var,
@@ -1544,17 +1561,33 @@ class CodexSwitchApp:
         ).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
         tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 上游", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="Claude 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Combobox(
+            settings,
+            textvariable=self.proxy_claude_upstream_source_var,
+            values=tuple(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.keys()),
+            state="readonly",
+            width=28,
+        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=6, column=0, sticky="w", padx=(0, 10), pady=4)
+        self.proxy_claude_account_pool_group_combo = ttk.Combobox(
+            settings,
+            textvariable=self.proxy_claude_account_pool_group_var,
+            state="readonly",
+            width=28,
+        )
+        self.proxy_claude_account_pool_group_combo.grid(row=6, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=7, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
             values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
+        ).grid(row=7, column=1, columnspan=3, sticky="w", pady=4)
 
         proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        proxy_tree_wrap.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
+        proxy_tree_wrap.grid(row=8, column=0, sticky="nsew", pady=(12, 0))
         proxy_tree_wrap.columnconfigure(0, weight=1)
         proxy_tree_wrap.rowconfigure(0, weight=1)
         self.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "pool", "enabled"), show="headings")
@@ -1574,7 +1607,7 @@ class CodexSwitchApp:
         self.proxy_project_tree.configure(yscrollcommand=proxy_scroll.set)
 
         actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=6, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=9, column=0, sticky="ew", pady=(14, 0))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
         make_button(actions, text="保存设置", variant="secondary", command=self.save_route_proxy_settings).grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -1727,7 +1760,7 @@ class CodexSwitchApp:
         header = tk.Frame(left, bg=PALETTE["card_bg"])
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        tk.Label(header, text="Codex 号池", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
+        tk.Label(header, text="号池", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(
             header,
             text="启用号池",
@@ -1739,6 +1772,7 @@ class CodexSwitchApp:
         group_bar = tk.Frame(left, bg=PALETTE["card_bg"])
         group_bar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         group_bar.columnconfigure(1, weight=1)
+        group_bar.columnconfigure(3, weight=1)
         tk.Label(group_bar, text="号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.account_pool_group_combo = ttk.Combobox(
             group_bar,
@@ -1765,6 +1799,22 @@ class CodexSwitchApp:
         )
         self.account_pool_source_filter_combo.grid(row=0, column=5, sticky="e")
         self.account_pool_source_filter_var.trace_add("write", lambda *_args: self.refresh_account_pool_tab())
+
+        tk.Label(group_bar, text="类型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Combobox(
+            group_bar,
+            textvariable=self.account_pool_group_type_var,
+            values=tuple(ACCOUNT_POOL_GROUP_TYPE_LABELS.values()),
+            state="readonly",
+            width=14,
+        ).grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(8, 0))
+        tk.Label(group_bar, text="Codex 默认模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=2, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(group_bar, textvariable=self.account_pool_group_default_model_var, width=24).grid(row=1, column=3, columnspan=3, sticky="ew", pady=(8, 0))
+        tk.Label(group_bar, text="Claude 默认模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(group_bar, textvariable=self.account_pool_group_claude_model_var, width=24).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
+        tk.Label(group_bar, text="Claude 兜底模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=2, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(group_bar, textvariable=self.account_pool_group_claude_fallback_model_var, width=24).grid(row=2, column=3, columnspan=3, sticky="ew", pady=(8, 0))
+        make_button(group_bar, text="保存组设置", variant="primary", command=self.save_account_pool_group_settings).grid(row=3, column=3, columnspan=3, sticky="e", pady=(8, 0))
 
         tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
         tree_wrap.grid(row=3, column=0, sticky="nsew")
@@ -3775,80 +3825,98 @@ class CodexSwitchApp:
     def _refresh_proxy_account_pool_group_choices(self) -> None:
         self.account_pool_settings.ensure_default_group()
         self.proxy_account_pool_group_choices = {}
-        labels = []
+        self.proxy_claude_account_pool_group_choices = {}
+        codex_labels: list[str] = []
+        claude_labels: list[str] = []
         for group in self.account_pool_settings.groups:
             label = self._account_pool_group_label(group)
-            labels.append(label)
-            self.proxy_account_pool_group_choices[label] = group.id
+            if group.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
+                claude_labels.append(label)
+                self.proxy_claude_account_pool_group_choices[label] = group.id
+            else:
+                codex_labels.append(label)
+                self.proxy_account_pool_group_choices[label] = group.id
         if hasattr(self, "proxy_account_pool_group_combo"):
-            self.proxy_account_pool_group_combo.configure(values=labels)
-        if labels and self.proxy_account_pool_group_var.get() not in self.proxy_account_pool_group_choices:
-            self.proxy_account_pool_group_var.set(labels[0])
+            self.proxy_account_pool_group_combo.configure(values=codex_labels)
+        if hasattr(self, "proxy_claude_account_pool_group_combo"):
+            self.proxy_claude_account_pool_group_combo.configure(values=claude_labels)
+        if codex_labels and self.proxy_account_pool_group_var.get() not in self.proxy_account_pool_group_choices:
+            self.proxy_account_pool_group_var.set(codex_labels[0])
+        elif not codex_labels:
+            self.proxy_account_pool_group_var.set("")
+        if claude_labels and self.proxy_claude_account_pool_group_var.get() not in self.proxy_claude_account_pool_group_choices:
+            self.proxy_claude_account_pool_group_var.set(claude_labels[0])
+        elif not claude_labels:
+            self.proxy_claude_account_pool_group_var.set("")
 
-    def _proxy_group_label_for_id(self, group_id: str) -> str:
+    def _proxy_group_label_for_id(self, group_id: str, *, client_type: str = ROUTE_PROXY_CLIENT_CODEX) -> str:
         self._refresh_proxy_account_pool_group_choices()
         group = self.account_pool_settings.group_by_id(group_id)
         if group is None:
             return ""
+        choices = (
+            self.proxy_claude_account_pool_group_choices
+            if client_type == ROUTE_PROXY_CLIENT_CLAUDE
+            else self.proxy_account_pool_group_choices
+        )
         return next(
-            (label for label, value in self.proxy_account_pool_group_choices.items() if value == group.id),
+            (label for label, value in choices.items() if value == group.id),
             "",
         )
 
     def _refresh_proxy_detail(self) -> None:
+        default_source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE]
         project = self.get_selected_project()
         if not project:
             self.proxy_selected_project_var.set("未选择项目")
             self.proxy_selected_rules_var.set("-")
-            self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
+            self.proxy_codex_upstream_source_var.set(default_source_label)
+            self.proxy_claude_upstream_source_var.set(default_source_label)
             self.proxy_codex_compact_model_var.set("")
-            default_group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
-            if default_group is not None:
-                label = self._proxy_group_label_for_id(default_group.id)
-                if label:
-                    self.proxy_account_pool_group_var.set(label)
             return
         self.proxy_selected_project_var.set(f"{project.name}    {project.project_dir}")
         rules = self.route_proxy_settings.rules_for_project(project.id)
         if not rules:
             self.proxy_selected_rules_var.set("未启用代理。")
-            self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
+            self.proxy_codex_upstream_source_var.set(default_source_label)
+            self.proxy_claude_upstream_source_var.set(default_source_label)
             self.proxy_codex_compact_model_var.set("")
-            default_group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
-            if default_group is not None:
-                label = self._proxy_group_label_for_id(default_group.id)
-                if label:
-                    self.proxy_account_pool_group_var.set(label)
             return
         summaries: list[str] = []
         for rule in rules:
+            source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, "默认配置")
+            group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-                group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
-                group_label = self._proxy_group_label_for_id(group.id) if group is not None else ""
+                group_label = self._proxy_group_label_for_id(rule.account_pool_group_id, client_type=ROUTE_PROXY_CLIENT_CODEX)
                 if group_label:
                     self.proxy_account_pool_group_var.set(group_label)
                 self.proxy_codex_upstream_source_var.set(
                     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
                         normalize_route_proxy_upstream_source(rule.upstream_source),
-                        CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE],
+                        default_source_label,
                     )
                 )
                 self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
                 self.proxy_codex_compact_model_var.set(rule.compact_model)
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+                group_label = self._proxy_group_label_for_id(rule.account_pool_group_id, client_type=ROUTE_PROXY_CLIENT_CLAUDE)
+                if group_label:
+                    self.proxy_claude_account_pool_group_var.set(group_label)
+                self.proxy_claude_upstream_source_var.set(
+                    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
+                        normalize_route_proxy_upstream_source(rule.upstream_source),
+                        default_source_label,
+                    )
+                )
                 self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
             profile = self._profile_by_id(rule.primary_profile_id)
             profile_name = profile.name if profile else "配置已删除"
             compact_suffix = f" / compact: {rule.compact_model}" if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and rule.compact_model else ""
-            source_suffix = ""
-            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-                source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, "默认配置")
-                if rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
-                    group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
-                    group_name = group.name if group is not None else "号池组已删除"
-                    source_label = f"{source_label}:{group_name}"
-                    profile_name = group_name
-                source_suffix = f" / {source_label}"
+            if rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
+                group_name = group.name if group is not None else "号池组已删除"
+                source_label = f"{source_label}:{group_name}"
+                profile_name = group_name
+            source_suffix = f" / {source_label}"
             summaries.append(f"{rule.client_type}{source_suffix} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
         self.proxy_selected_rules_var.set("\n".join(summaries))
 
@@ -3876,11 +3944,18 @@ class CodexSwitchApp:
         group = self._selected_account_pool_group()
         return group.id if group is not None else ""
 
+    def _account_pool_group_type_from_label(self, label: str) -> str:
+        for group_type, group_label in ACCOUNT_POOL_GROUP_TYPE_LABELS.items():
+            if group_label == label:
+                return group_type
+        return ACCOUNT_POOL_GROUP_TYPE_CODEX
+
     def _account_pool_group_label(self, group: AccountPoolGroup) -> str:
         state = "启用" if group.enabled else "停用"
+        type_label = ACCOUNT_POOL_GROUP_TYPE_LABELS.get(group.pool_type, "Codex")
         normal_count = len(self.account_pool_settings.normal_channels_for_group(group.id))
         failed_count = len(self.account_pool_settings.failed_channels_for_group(group.id))
-        return f"{group.name}    {state} / 正常 {normal_count} / 异常 {failed_count}"
+        return f"{group.name}    {type_label} / {state} / 正常 {normal_count} / 异常 {failed_count}"
 
     def _refresh_account_pool_group_choices(self) -> None:
         self.account_pool_settings.ensure_default_group()
@@ -3901,6 +3976,14 @@ class CodexSwitchApp:
             if selected_label:
                 self.account_pool_group_var.set(selected_label)
             self.account_pool_group_enabled_var.set(selected_group.enabled)
+            self.account_pool_group_type_var.set(
+                ACCOUNT_POOL_GROUP_TYPE_LABELS.get(selected_group.pool_type, ACCOUNT_POOL_GROUP_TYPE_LABELS[ACCOUNT_POOL_GROUP_TYPE_CODEX])
+            )
+            self.account_pool_group_default_model_var.set(selected_group.default_model or DEFAULT_CODEX_MODEL)
+            self.account_pool_group_claude_model_var.set(selected_group.claude_model or DEFAULT_CLAUDE_MODEL)
+            self.account_pool_group_claude_fallback_model_var.set(
+                selected_group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL
+            )
 
     def _account_pool_source_label(self, channel: AccountPoolChannel) -> str:
         if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
@@ -3929,7 +4012,6 @@ class CodexSwitchApp:
         return any(
             rule.enabled
             and rule.project_id == project_id
-            and rule.client_type == ROUTE_PROXY_CLIENT_CODEX
             and rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
             for rule in self.route_proxy_settings.rules
         )
@@ -3941,7 +4023,6 @@ class CodexSwitchApp:
                 for item in self.route_proxy_settings.rules
                 if item.enabled
                 and item.project_id == project_id
-                and item.client_type == ROUTE_PROXY_CLIENT_CODEX
                 and item.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
             ),
             None,
@@ -6093,17 +6174,52 @@ class CodexSwitchApp:
         }
         for rule in self.route_proxy_settings.rules_for_project(project.id):
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and codex_profile is not None:
+                codex_pool_model = self._codex_model_override_for_project(project)
                 rule.upstream_model = (
-                    codex_profile.codex_display_model
+                    codex_pool_model or codex_profile.codex_display_model
                     if rule.upstream_protocol in codex_conversion_protocols
                     else ""
                 )
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE and claude_profile is not None:
+                claude_pool_model, _fallback = self._claude_model_overrides_for_project(project)
                 rule.upstream_model = (
-                    claude_profile.claude_display_model
+                    claude_pool_model or claude_profile.claude_display_model
                     if rule.upstream_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
                     else ""
                 )
+
+    def _route_proxy_rule_for_project_client(self, project: ProjectRecord, client_type: str) -> RouteProxyRule | None:
+        return next(
+            (
+                rule
+                for rule in self.route_proxy_settings.rules_for_project(project.id)
+                if rule.client_type == client_type
+            ),
+            None,
+        )
+
+    def _account_pool_group_for_project_client(self, project: ProjectRecord, client_type: str) -> AccountPoolGroup | None:
+        rule = self._route_proxy_rule_for_project_client(project, client_type)
+        if rule is None or rule.upstream_source != ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
+            return None
+        group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
+        if group is None or group.pool_type != client_type:
+            return None
+        return group
+
+    def _codex_model_override_for_project(self, project: ProjectRecord) -> str | None:
+        group = self._account_pool_group_for_project_client(project, ROUTE_PROXY_CLIENT_CODEX)
+        if group is None:
+            return None
+        return (group.default_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+
+    def _claude_model_overrides_for_project(self, project: ProjectRecord) -> tuple[str | None, str | None]:
+        group = self._account_pool_group_for_project_client(project, ROUTE_PROXY_CLIENT_CLAUDE)
+        if group is None:
+            return None, None
+        model = (group.claude_model or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
+        fallback = (group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL).strip() or DEFAULT_CLAUDE_FALLBACK_MODEL
+        return model, fallback
 
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
@@ -6159,6 +6275,16 @@ class CodexSwitchApp:
             self.proxy_claude_protocol_var.get(),
             ROUTE_PROXY_CLIENT_CLAUDE,
         )
+        claude_source = normalize_route_proxy_upstream_source(
+            CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
+                self.proxy_claude_upstream_source_var.get(),
+                self.proxy_claude_upstream_source_var.get(),
+            )
+        )
+        claude_group_choices = getattr(self, "proxy_claude_account_pool_group_choices", {})
+        claude_group_var = getattr(self, "proxy_claude_account_pool_group_var", None)
+        claude_group_label = claude_group_var.get() if claude_group_var is not None else ""
+        claude_account_pool_group_id = claude_group_choices.get(claude_group_label, "")
         compact_model = self.proxy_codex_compact_model_var.get().strip()
         changed = False
         for rule in self.route_proxy_settings.rules_for_project(project.id):
@@ -6170,7 +6296,12 @@ class CodexSwitchApp:
                 rule.manual_upstream_protocol = True
                 changed = True
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
-                rule.upstream_source = ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE
+                rule.upstream_source = claude_source
+                rule.account_pool_group_id = (
+                    claude_account_pool_group_id
+                    if claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+                    else ""
+                )
                 rule.upstream_protocol = claude_protocol
                 rule.manual_upstream_protocol = True
                 changed = True
@@ -6219,13 +6350,34 @@ class CodexSwitchApp:
         group = self.account_pool_settings.group_by_id(group_id)
         if group is not None:
             self.account_pool_group_enabled_var.set(group.enabled)
+            self.account_pool_group_type_var.set(
+                ACCOUNT_POOL_GROUP_TYPE_LABELS.get(group.pool_type, ACCOUNT_POOL_GROUP_TYPE_LABELS[ACCOUNT_POOL_GROUP_TYPE_CODEX])
+            )
+            self.account_pool_group_default_model_var.set(group.default_model or DEFAULT_CODEX_MODEL)
+            self.account_pool_group_claude_model_var.set(group.claude_model or DEFAULT_CLAUDE_MODEL)
+            self.account_pool_group_claude_fallback_model_var.set(
+                group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL
+            )
         self.refresh_account_pool_tab()
 
     def save_account_pool_group_settings(self) -> None:
         group = self._selected_account_pool_group()
         if group is None:
             return
+        group_type = self._account_pool_group_type_from_label(self.account_pool_group_type_var.get())
+        claude_model = self.account_pool_group_claude_model_var.get().strip() or DEFAULT_CLAUDE_MODEL
+        claude_fallback_model = (
+            self.account_pool_group_claude_fallback_model_var.get().strip()
+            or DEFAULT_CLAUDE_FALLBACK_MODEL
+        )
+        if group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE and (not claude_model or not claude_fallback_model):
+            messagebox.showerror("保存失败", "Claude 号池组需要默认模型和兜底模型。", parent=self.root)
+            return
         group.enabled = self.account_pool_group_enabled_var.get()
+        group.pool_type = group_type
+        group.default_model = self.account_pool_group_default_model_var.get().strip() or DEFAULT_CODEX_MODEL
+        group.claude_model = claude_model
+        group.claude_fallback_model = claude_fallback_model
         self.persist_state()
         self.refresh_account_pool_tab()
         self.refresh_proxy_tab()
@@ -6290,19 +6442,54 @@ class CodexSwitchApp:
         return channel
 
     def _check_account_pool_channel(self, channel: AccountPoolChannel) -> HealthResult:
-        profile = Profile.create(
-            channel.name,
-            channel.base_url,
-            channel.api_key,
-            model=channel.default_model,
-            codex_model=channel.default_model,
-            wire_api=channel.wire_api,
-            custom_headers=channel.custom_headers,
-        )
-        validator = getattr(self, "account_pool_validator", None)
+        group = self.account_pool_settings.group_by_id(channel.group_id)
+        group_type = group.pool_type if group is not None else ACCOUNT_POOL_GROUP_TYPE_CODEX
+        wire_api = effective_account_pool_wire_api(group_type, channel.wire_api)
+        if group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
+            model = (group.claude_model if group is not None else channel.default_model).strip() or DEFAULT_CLAUDE_MODEL
+            profile = Profile.create(
+                channel.name,
+                channel.base_url,
+                channel.api_key,
+                model=model,
+                vendor=VENDOR_CLAUDE,
+                claude_model=model,
+                claude_fallback_model=(
+                    (group.claude_fallback_model if group is not None else "").strip()
+                    or DEFAULT_CLAUDE_FALLBACK_MODEL
+                ),
+                wire_api=wire_api,
+                custom_headers=channel.custom_headers,
+            )
+        else:
+            model = (group.default_model if group is not None else channel.default_model).strip() or DEFAULT_CODEX_MODEL
+            profile = Profile.create(
+                channel.name,
+                channel.base_url,
+                channel.api_key,
+                model=model,
+                vendor=VENDOR_CODEX,
+                codex_model=model,
+                wire_api=wire_api,
+                custom_headers=channel.custom_headers,
+            )
+        validator = getattr(self, "account_pool_validator", None) or getattr(self, "health_checker", None)
         if validator is not None:
-            return validator.check(profile)
-        return self.health_checker.check(profile)
+            try:
+                return validator.check(
+                    profile,
+                    model=model,
+                    wire_api=wire_api,
+                    allow_codex_client_restricted=(group_type == ACCOUNT_POOL_GROUP_TYPE_CODEX),
+                )
+            except TypeError:
+                return validator.check(profile)
+        return AccountPoolSessionValidator().check(
+            profile,
+            model=model,
+            wire_api=wire_api,
+            allow_codex_client_restricted=(group_type == ACCOUNT_POOL_GROUP_TYPE_CODEX),
+        )
 
     def _mark_channel_from_success(self, channel: AccountPoolChannel, result: HealthResult) -> None:
         checked_at = result.checked_at or now_iso()
@@ -6313,7 +6500,10 @@ class CodexSwitchApp:
         channel.last_success_at = checked_at
 
     def add_account_pool_channel(self) -> None:
-        dialog = AccountPoolChannelDialog(self.root)
+        try:
+            dialog = AccountPoolChannelDialog(self.root, group=self._selected_account_pool_group())
+        except TypeError:
+            dialog = AccountPoolChannelDialog(self.root)
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -6329,7 +6519,15 @@ class CodexSwitchApp:
         self.status_var.set(f"已新增号池渠道：{channel.name}")
 
     def add_account_pool_profile_channel(self) -> None:
-        dialog = AccountPoolProfileChannelDialog(self.root, self.profiles)
+        group = self._selected_account_pool_group()
+        try:
+            dialog = AccountPoolProfileChannelDialog(
+                self.root,
+                self.profiles,
+                group_type=group.pool_type if group is not None else ACCOUNT_POOL_GROUP_TYPE_CODEX,
+            )
+        except TypeError:
+            dialog = AccountPoolProfileChannelDialog(self.root, self.profiles)
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -6352,7 +6550,14 @@ class CodexSwitchApp:
         if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
             messagebox.showinfo("提示", "配置库号池渠道是加入时的快照；如需更换配置或 Key，请删除后重新加入。", parent=self.root)
             return
-        dialog = AccountPoolChannelDialog(self.root, channel=channel)
+        try:
+            dialog = AccountPoolChannelDialog(
+                self.root,
+                channel=channel,
+                group=self.account_pool_settings.group_by_id(channel.group_id),
+            )
+        except TypeError:
+            dialog = AccountPoolChannelDialog(self.root, channel=channel)
         self.root.wait_window(dialog)
         if not dialog.result:
             return
@@ -6416,12 +6621,12 @@ class CodexSwitchApp:
             if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
                 group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
                 rule.account_pool_group_id = group.id if group is not None else ""
-                self.proxy_codex_upstream_source_var.set(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE])
                 self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
             elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
                 self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
         self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
         self.route_proxy_settings.rules.extend(rules)
+        self._save_selected_route_proxy_project_rules()
         self.persist_state()
         self.refresh_proxy_tab()
         if self._sync_project_api_binding(project):
@@ -6739,6 +6944,7 @@ class CodexSwitchApp:
                         project_root,
                         codex_profile,
                         route_proxy_base_url=route_proxy_base_url,
+                        model_override=self._codex_model_override_for_project(project),
                     )
                 )
             except Exception as exc:
@@ -6751,12 +6957,15 @@ class CodexSwitchApp:
             if claude_profile is None:
                 messagebox.showerror("无法同步", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
                 return False
+            claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
             try:
                 updated_paths.extend(
                     self.project_template_service.sync_claude_binding(
                         project_root,
                         claude_profile,
                         route_proxy_base_url=route_proxy_base_url,
+                        model_override=claude_model,
+                        fallback_model_override=claude_fallback_model,
                     )
                 )
             except Exception as exc:
@@ -6952,6 +7161,11 @@ class CodexSwitchApp:
         self.status_var.set(f"已切换到 {profile.name}（{targets}），并已备份原配置。")
         messagebox.showinfo("切换成功", f"已切换到配置“{profile.name}”。\n\n{self._global_apply_detail(result)}", parent=self.root)
 
+    def _refresh_project_proxy_rules_before_action(self, project: ProjectRecord) -> None:
+        if self._refresh_route_proxy_rules_for_project(project):
+            self._refresh_route_proxy_upstream_models(project)
+            self.persist_state()
+
     def generate_project_template(self) -> None:
         project = self.get_selected_project()
         if not project:
@@ -6962,7 +7176,9 @@ class CodexSwitchApp:
             messagebox.showerror("无法生成", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
             return
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
+        self._refresh_project_proxy_rules_before_action(project)
         project_mcp_toml = self._effective_project_mcp_toml(project)
+        claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
         template_options = codex_project_template_options(
             project,
             project_mcp_toml=project_mcp_toml,
@@ -6979,6 +7195,9 @@ class CodexSwitchApp:
                 agents_doc_text=template_options.agents_doc_text,
                 claude_profile=claude_profile,
                 route_proxy_base_url=template_options.route_proxy_base_url,
+                codex_model_override=self._codex_model_override_for_project(project),
+                claude_model_override=claude_model,
+                claude_fallback_model_override=claude_fallback_model,
                 skill_sources=template_options.skill_sources,
                 skill_definitions=template_options.skill_definitions,
             )
@@ -7003,6 +7222,8 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showerror("无法生成", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
+        self._refresh_project_proxy_rules_before_action(project)
+        claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
         template_options = claude_project_template_options(
             project,
             project_mcp_toml=self._effective_project_mcp_toml(project),
@@ -7016,6 +7237,8 @@ class CodexSwitchApp:
                 project_mcp_toml=template_options.project_mcp_toml,
                 agents_doc_text=template_options.agents_doc_text,
                 route_proxy_base_url=template_options.route_proxy_base_url,
+                model_override=claude_model,
+                fallback_model_override=claude_fallback_model,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入 Claude 项目模板失败：\n{exc}", parent=self.root)
@@ -7130,20 +7353,29 @@ class CodexSwitchApp:
         if not profile_supports_claude(profile):
             messagebox.showerror("启动失败", "项目绑定的配置不支持 Claude。", parent=self.root)
             return
+        self._refresh_project_proxy_rules_before_action(project)
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
+        claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
         try:
             self.project_template_service.sync_claude_binding(
                 project_root_path(project),
                 profile,
                 route_proxy_base_url=route_proxy_base_url,
+                model_override=claude_model,
+                fallback_model_override=claude_fallback_model,
             )
         except Exception as exc:
             messagebox.showerror("启动失败", f"同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
             return
-        env = apply_claude_profile_env(os.environ.copy(), profile)
-        if route_proxy_base_url:
-            env[CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url
-            env[CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
+        env = os.environ.copy()
+        env.update(
+            claude_runtime_env_from_profile(
+                profile,
+                route_proxy_base_url=route_proxy_base_url,
+                model_override=claude_model,
+                fallback_model_override=claude_fallback_model,
+            )
+        )
         try:
             subprocess.Popen(
                 project_claude_cmd_command(),
@@ -7200,6 +7432,9 @@ class CodexSwitchApp:
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        self._refresh_project_proxy_rules_before_action(project)
+        if not self._sync_project_api_binding(project, sync_claude=False):
             return
         _ps1_path, cmd_path = project_codex_script_paths(project)
         if not cmd_path.exists():

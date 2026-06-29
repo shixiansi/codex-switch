@@ -9,6 +9,7 @@ import unittest
 from helpers import start_test_server
 
 from codex_switch.models import (
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
     AccountPoolChannel,
     AccountPoolSettings,
     HealthResult,
@@ -396,6 +397,175 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8"))["label"], "b")
 
+    def test_account_pool_route_rejects_group_type_mismatch(self) -> None:
+        pool = AccountPoolSettings(enabled=True)
+        group = pool.ensure_default_group()
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id=group.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "sonnet", "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 502)
+        self.assertIsNone(chunks)
+        self.assertIn("group type does not match", body.decode("utf-8") if body else "")
+
+    def test_claude_account_pool_native_anthropic_route_uses_group_channel(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["x_api_key"] = self.headers.get("x-api-key")
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "msg_pool",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "pool ok"}],
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        pool = AccountPoolSettings(enabled=True)
+        group = pool.add_group(
+            "claude-pool",
+            pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+            claude_model="pool-sonnet",
+            claude_fallback_model="pool-haiku",
+        )
+        channel = AccountPoolChannel.create(
+            name="claude-native",
+            base_url=f"http://127.0.0.1:{upstream.server_port}",
+            api_key="sk-pool",
+            group_id=group.id,
+            wire_api="anthropic_messages",
+        )
+        pool.channels = [channel]
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id=group.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "client-sonnet", "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={},
+            body=request_body,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertIn("msg_pool", body.decode("utf-8") if body else "")
+        self.assertEqual(captured["path"], "/v1/messages")
+        self.assertEqual(captured["x_api_key"], "sk-pool")
+        self.assertIsNone(captured["authorization"])
+        self.assertEqual(captured["payload"]["model"], "pool-sonnet")
+
+    def test_claude_account_pool_chat_route_converts_with_group_model(self) -> None:
+        captured: dict[str, object] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                captured["path"] = self.path
+                captured["authorization"] = self.headers.get("Authorization")
+                captured["x_api_key"] = self.headers.get("x-api-key")
+                captured["payload"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                body = json.dumps(
+                    {
+                        "id": "chatcmpl_pool",
+                        "choices": [{"finish_reason": "stop", "message": {"content": "converted pool ok"}}],
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream = self._serve(Handler)
+        pool = AccountPoolSettings(enabled=True)
+        group = pool.add_group(
+            "claude-pool",
+            pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+            claude_model="pool-sonnet",
+            claude_fallback_model="pool-haiku",
+        )
+        channel = AccountPoolChannel.create(
+            name="claude-chat",
+            base_url=f"http://127.0.0.1:{upstream.server_port}",
+            api_key="sk-pool",
+            group_id=group.id,
+            wire_api="chat_completions",
+        )
+        pool.channels = [channel]
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id=group.id,
+                )
+            ]
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [], account_pool_provider=lambda: pool)
+        request_body = json.dumps({"model": "client-sonnet", "messages": [{"role": "user", "content": "hi"}]}).encode("utf-8")
+
+        status, _headers, body, chunks = proxy.handle(
+            method="POST",
+            raw_path="/project/project-1/v1/messages",
+            headers={},
+            body=request_body,
+        )
+
+        response_payload = json.loads(body.decode("utf-8") if body else "{}")
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(captured["path"], "/v1/chat/completions")
+        self.assertEqual(captured["authorization"], "Bearer sk-pool")
+        self.assertIsNone(captured["x_api_key"])
+        self.assertEqual(captured["payload"]["model"], "pool-sonnet")
+        self.assertEqual(response_payload["content"], [{"type": "text", "text": "converted pool ok"}])
+
     def test_account_pool_route_sends_channel_custom_headers(self) -> None:
         captured: dict[str, str | None] = {}
 
@@ -642,7 +812,7 @@ class RouteProxyTests(unittest.TestCase):
         pool.last_recovery_checked_at = "2000-01-01T00:00:00"
 
         class FakeSessionValidator:
-            def check(self, profile: Profile) -> HealthResult:
+            def check(self, profile: Profile, **_kwargs) -> HealthResult:
                 checks[profile.name] += 1
                 if profile.name == "recovered":
                     return HealthResult(status="healthy", detail="真实会话验证通过")
@@ -679,6 +849,63 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(checks, {"recovered": 1, "failed": 1})
         self.assertIn("真实会话响应未包含", failed_channel.failure_reason)
         self.assertNotEqual(pool.last_recovery_checked_at, "2000-01-01T00:00:00")
+
+    def test_claude_account_pool_recovery_checks_default_model_only(self) -> None:
+        pool = AccountPoolSettings(
+            enabled=True,
+            last_recovery_checked_at="2000-01-01T00:00:00",
+        )
+        group = pool.add_group(
+            "claude-pool",
+            pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+            claude_model="pool-sonnet",
+            claude_fallback_model="pool-haiku",
+        )
+        channel = AccountPoolChannel.create(
+            name="failed-claude",
+            base_url="https://claude.example.com",
+            api_key="sk-claude",
+            group_id=group.id,
+            wire_api="anthropic_messages",
+        )
+        pool.channels = [channel]
+        pool.mark_failed(channel.id, "old")
+        pool.last_recovery_checked_at = "2000-01-01T00:00:00"
+        calls: list[dict[str, object]] = []
+
+        class FakeSessionValidator:
+            def check(
+                self,
+                profile: Profile,
+                *,
+                model: str | None = None,
+                wire_api: str | None = None,
+                allow_codex_client_restricted: bool = True,
+            ) -> HealthResult:
+                calls.append(
+                    {
+                        "profile": profile,
+                        "model": model,
+                        "wire_api": wire_api,
+                        "allow_codex_client_restricted": allow_codex_client_restricted,
+                    }
+                )
+                return HealthResult(status="healthy", detail="ok")
+
+        proxy = RouteProxyServer(
+            lambda: RouteProxySettings(),
+            lambda: [],
+            account_pool_provider=lambda: pool,
+            recovery_checker=FakeSessionValidator(),
+        )
+
+        proxy._maybe_recover_account_pool(pool)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["model"], "pool-sonnet")
+        self.assertEqual(calls[0]["wire_api"], "anthropic_messages")
+        self.assertFalse(calls[0]["allow_codex_client_restricted"])
+        self.assertTrue(channel.is_normal)
 
     def test_route_proxy_keeps_project_context_local_and_sends_custom_headers(self) -> None:
         captured: dict[str, str | None] = {}

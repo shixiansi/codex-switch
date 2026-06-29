@@ -10,8 +10,11 @@ from tkinter import filedialog, messagebox
 from codex_switch.codex_config import dumps_toml, parse_mcp_servers_toml, render_mcp_servers_toml
 from codex_switch.models import (
     AccountPoolChannel,
+    AccountPoolGroup,
     ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
     ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+    ACCOUNT_POOL_GROUP_TYPE_CODEX,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
@@ -534,19 +537,40 @@ class SuccessfulModelsDialog(tk.Toplevel):
 
 
 class AccountPoolChannelDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, channel: AccountPoolChannel | None = None) -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        channel: AccountPoolChannel | None = None,
+        *,
+        group: AccountPoolGroup | None = None,
+    ) -> None:
         super().__init__(master)
         self.title("号池渠道")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
         self.result: dict | None = None
+        self.group_type = group.pool_type if group is not None else ACCOUNT_POOL_GROUP_TYPE_CODEX
 
         defaults = channel or AccountPoolChannel.create(name="", base_url="", api_key="")
+        if channel is None and group is not None:
+            default_model = group.claude_model if group.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else group.default_model
+            default_wire_api = "anthropic_messages" if group.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else "responses"
+        else:
+            default_model = defaults.default_model
+            default_wire_api = defaults.wire_api
+        wire_values = (
+            ("anthropic_messages", "chat_completions")
+            if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE
+            else ("responses", "chat_completions")
+        )
+        if default_wire_api not in wire_values:
+            default_wire_api = wire_values[0]
+
         self.name_var = tk.StringVar(value=defaults.name)
         self.base_url_var = tk.StringVar(value=defaults.base_url)
         self.api_key_var = tk.StringVar(value=defaults.api_key)
-        self.wire_api_var = tk.StringVar(value=defaults.wire_api)
-        self.default_model_var = tk.StringVar(value=defaults.default_model)
+        self.wire_api_var = tk.StringVar(value=default_wire_api)
+        self.default_model_var = tk.StringVar(value=default_model)
         self.show_key_var = tk.BooleanVar(value=False)
 
         card = tk.Frame(
@@ -559,8 +583,9 @@ class AccountPoolChannelDialog(tk.Toplevel):
         )
         card.grid(padx=18, pady=18, sticky="nsew")
         card.columnconfigure(1, weight=1)
+        type_label = "Claude" if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else "Codex"
         tk.Label(card, text="号池渠道", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
-        tk.Label(card, text="仅用于 Codex 路由代理号池，保存前会做真实会话验证。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 14))
+        tk.Label(card, text=f"用于 {type_label} 路由代理号池，保存前会做真实会话验证。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 14))
 
         fields = (
             ("名称", self.name_var),
@@ -575,7 +600,7 @@ class AccountPoolChannelDialog(tk.Toplevel):
         ttk.Combobox(
             card,
             textvariable=self.wire_api_var,
-            values=("responses", "chat_completions"),
+            values=wire_values,
             state="readonly",
             width=46,
         ).grid(row=5, column=1, columnspan=2, sticky="ew", pady=6)
@@ -616,8 +641,9 @@ class AccountPoolChannelDialog(tk.Toplevel):
         name = self.name_var.get().strip()
         base_url = self.base_url_var.get().strip().rstrip("/")
         api_key = self.api_key_var.get().strip()
-        default_model = self.default_model_var.get().strip() or DEFAULT_CODEX_MODEL
-        wire_api = self.wire_api_var.get().strip() or "responses"
+        fallback_model = DEFAULT_CLAUDE_MODEL if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else DEFAULT_CODEX_MODEL
+        default_model = self.default_model_var.get().strip() or fallback_model
+        wire_api = self.wire_api_var.get().strip() or ("anthropic_messages" if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else "responses")
         custom_headers, header_errors = parse_custom_headers_text(self.custom_headers_text.get("1.0", "end"))
         if not name:
             messagebox.showerror("校验失败", "请输入渠道名称。", parent=self)
@@ -644,13 +670,15 @@ class AccountPoolChannelDialog(tk.Toplevel):
 
 
 class AccountPoolProfileChannelDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, profiles: list[Profile]) -> None:
+    def __init__(self, master: tk.Misc, profiles: list[Profile], *, group_type: str = ACCOUNT_POOL_GROUP_TYPE_CODEX) -> None:
         super().__init__(master)
         self.title("配置库号池")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
         self.result: dict | None = None
-        self.profiles = [profile for profile in profiles if profile_supports_codex(profile)]
+        self.group_type = group_type if group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else ACCOUNT_POOL_GROUP_TYPE_CODEX
+        supports_profile = profile_supports_claude if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else profile_supports_codex
+        self.profiles = [profile for profile in profiles if supports_profile(profile)]
         self.profile_by_label: dict[str, Profile] = {}
         self.key_by_label: dict[str, int] = {}
 
@@ -669,8 +697,9 @@ class AccountPoolProfileChannelDialog(tk.Toplevel):
         card.grid(padx=18, pady=18, sticky="nsew")
         card.columnconfigure(1, weight=1)
 
+        type_label = "Claude" if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else "Codex"
         tk.Label(card, text="配置库号池", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 14, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
-        tk.Label(card, text="从已有 Codex/通用配置复制 API 快照加入当前号池组。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 14))
+        tk.Label(card, text=f"从已有 {type_label}/通用配置复制 API 快照加入当前号池组。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 14))
 
         tk.Label(card, text="配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=("Microsoft YaHei UI", 10, "bold")).grid(row=2, column=0, sticky="w", pady=6)
         self.profile_combo = ttk.Combobox(card, textvariable=self.profile_var, state="readonly", width=48)
@@ -734,13 +763,20 @@ class AccountPoolProfileChannelDialog(tk.Toplevel):
     def _on_submit(self) -> None:
         profile = self.profile_by_label.get(self.profile_var.get())
         if profile is None:
-            messagebox.showerror("校验失败", "请选择配置库中的 Codex 配置。", parent=self)
+            type_label = "Claude" if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE else "Codex"
+            messagebox.showerror("校验失败", f"请选择配置库中的 {type_label} 配置。", parent=self)
             return
         key_index = self.key_by_label.get(self.key_var.get())
         if key_index is None or key_index >= len(profile.api_keys):
             messagebox.showerror("校验失败", "请选择要加入号池的 API Key。", parent=self)
             return
         name = self.name_var.get().strip() or profile.name
+        if self.group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
+            wire_api = "anthropic_messages" if profile.vendor == VENDOR_CLAUDE else profile.wire_api
+            default_model = profile.claude_display_model
+        else:
+            wire_api = profile.wire_api
+            default_model = profile.codex_display_model
         self.result = {
             "name": name,
             "base_url": profile.base_url.rstrip("/"),
@@ -749,8 +785,8 @@ class AccountPoolProfileChannelDialog(tk.Toplevel):
             "source_profile_id": profile.id,
             "source_profile_name": profile.name,
             "source_api_key_index": key_index,
-            "wire_api": profile.wire_api,
-            "default_model": profile.codex_display_model,
+            "wire_api": wire_api,
+            "default_model": default_model,
             "custom_headers": profile.custom_headers,
         }
         self.destroy()

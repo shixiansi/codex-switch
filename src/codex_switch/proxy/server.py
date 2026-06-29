@@ -15,6 +15,7 @@ import zlib
 from codex_switch.models import (
     AccountPoolChannel,
     AccountPoolSettings,
+    DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CODEX_MODEL,
     Profile,
     ProjectRecord,
@@ -24,10 +25,13 @@ from codex_switch.models import (
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+    ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    VENDOR_CLAUDE,
+    VENDOR_CODEX,
     normalize_custom_headers,
 )
 from codex_switch.chat import AccountPoolSessionValidator, is_codex_client_restricted_error
@@ -309,6 +313,11 @@ class RouteProxyServer:
         group = pool.group_by_id(route.account_pool_group_id)
         if group is None or not group.enabled:
             return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "Selected account pool group is disabled or missing."})
+        if getattr(group, "pool_type", "codex") != route.client_type:
+            return self._json_response(
+                HTTPStatus.BAD_GATEWAY,
+                {"error": "Selected account pool group type does not match the route client."},
+            )
         group_channels = pool.channels_for_group(group.id)
         if not pool.normal_channels_for_group(group.id):
             return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "No normal account pool channels are available in the selected group."})
@@ -325,8 +334,8 @@ class RouteProxyServer:
                 upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
                 channel_name=channel.name,
             )
-            profile = self._profile_from_account_pool_channel(channel)
-            effective_route = self._account_pool_route(route, channel)
+            profile = self._profile_from_account_pool_channel(channel, group)
+            effective_route = self._account_pool_route(route, channel, group)
             try:
                 response = self._forward(
                     method=method,
@@ -358,7 +367,7 @@ class RouteProxyServer:
             status, _response_headers, response_body, response_chunks = response
             if self._is_account_pool_unavailable_status(status):
                 last_error = self._account_pool_status_error(status, response_body)
-                if self._is_codex_client_restricted_response(status, response_body):
+                if route.client_type == ROUTE_PROXY_CLIENT_CODEX and self._is_codex_client_restricted_response(status, response_body):
                     self._record(
                         "warn",
                         f"{log_context} {client_type} {upstream_path} requires Codex client: {last_error}",
@@ -422,6 +431,10 @@ class RouteProxyServer:
             rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
             response_transform = lambda payload: translation.response(payload, model or upstream_model)
             stream_transform = lambda chunks: translation.stream(chunks, model or upstream_model)
+        elif protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC and route.upstream_model.strip() and request_payload:
+            converted = dict(request_payload)
+            converted["model"] = route.upstream_model.strip()
+            rendered_body = json.dumps(converted, ensure_ascii=False).encode("utf-8")
         elif route.client_type == ROUTE_PROXY_CLIENT_CODEX and self._is_openai_compact_path(rendered_path):
             compact_model = route.compact_model.strip()
             if compact_model and request_payload:
@@ -632,30 +645,64 @@ class RouteProxyServer:
 
     def _uses_account_pool(self, route: RouteProxyRule) -> bool:
         return (
-            route.client_type == ROUTE_PROXY_CLIENT_CODEX
+            route.client_type in {ROUTE_PROXY_CLIENT_CODEX, ROUTE_PROXY_CLIENT_CLAUDE}
             and route.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
         )
 
-    def _profile_from_account_pool_channel(self, channel: AccountPoolChannel) -> Profile:
-        profile = Profile.create(
-            channel.name,
-            channel.base_url,
-            channel.api_key,
-            model=channel.default_model or DEFAULT_CODEX_MODEL,
-            codex_model=channel.default_model or DEFAULT_CODEX_MODEL,
-            wire_api=channel.wire_api,
-            custom_headers=channel.custom_headers,
-        )
+    def _profile_from_account_pool_channel(self, channel: AccountPoolChannel, group=None) -> Profile:
+        group_type = getattr(group, "pool_type", "codex")
+        if group_type == "claude":
+            model = getattr(group, "claude_model", "") or channel.default_model
+            profile = Profile.create(
+                channel.name,
+                channel.base_url,
+                channel.api_key,
+                model=model,
+                claude_model=model,
+                claude_fallback_model=getattr(group, "claude_fallback_model", "") or DEFAULT_CLAUDE_FALLBACK_MODEL,
+                vendor=VENDOR_CLAUDE,
+                wire_api="anthropic_messages" if channel.wire_api != "chat_completions" else "chat_completions",
+                custom_headers=channel.custom_headers,
+            )
+        else:
+            model = getattr(group, "default_model", "") or channel.default_model or DEFAULT_CODEX_MODEL
+            profile = Profile.create(
+                channel.name,
+                channel.base_url,
+                channel.api_key,
+                model=model,
+                codex_model=model,
+                vendor=VENDOR_CODEX,
+                wire_api="chat_completions" if channel.wire_api == "chat_completions" else "responses",
+                custom_headers=channel.custom_headers,
+            )
         profile.id = channel.id
         return profile
 
-    def _account_pool_route(self, route: RouteProxyRule, channel: AccountPoolChannel) -> RouteProxyRule:
+    def _account_pool_route(self, route: RouteProxyRule, channel: AccountPoolChannel, group=None) -> RouteProxyRule:
+        group_type = getattr(group, "pool_type", "codex")
+        if group_type == "claude":
+            model = getattr(group, "claude_model", "") or channel.default_model
+            if channel.wire_api == "chat_completions":
+                return replace(
+                    route,
+                    primary_profile_id=channel.id,
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                    upstream_model=model,
+                )
+            return replace(
+                route,
+                primary_profile_id=channel.id,
+                upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+                upstream_model=model,
+            )
+        model = getattr(group, "default_model", "") or channel.default_model or DEFAULT_CODEX_MODEL
         if channel.wire_api == "chat_completions":
             return replace(
                 route,
                 primary_profile_id=channel.id,
                 upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
-                upstream_model=channel.default_model or DEFAULT_CODEX_MODEL,
+                upstream_model=model,
             )
         return replace(
             route,
@@ -695,7 +742,22 @@ class RouteProxyServer:
             return
         pool.mark_recovery_checked()
         for channel in list(pool.failed_channels):
-            result = self.recovery_checker.check(self._profile_from_account_pool_channel(channel))
+            group = pool.group_by_id(channel.group_id)
+            profile = self._profile_from_account_pool_channel(channel, group)
+            if group is not None and getattr(group, "pool_type", "codex") == "claude":
+                wire_api = "chat_completions" if channel.wire_api == "chat_completions" else "anthropic_messages"
+                result = self.recovery_checker.check(
+                    profile,
+                    model=getattr(group, "claude_model", "") or channel.default_model,
+                    wire_api=wire_api,
+                    allow_codex_client_restricted=False,
+                )
+            else:
+                result = self.recovery_checker.check(
+                    profile,
+                    model=getattr(group, "default_model", "") if group is not None else channel.default_model,
+                    wire_api="chat_completions" if channel.wire_api == "chat_completions" else "responses",
+                )
             if result.status == "healthy":
                 pool.mark_recovered(channel.id)
                 self._record(

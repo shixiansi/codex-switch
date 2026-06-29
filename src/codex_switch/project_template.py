@@ -64,13 +64,21 @@ GENERATED_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
 BACKUP_TEMPLATE_FILES = MANAGED_TEMPLATE_FILES + (".gitignore",)
 
 
-def claude_env_from_profile(profile: Profile) -> dict[str, str]:
-    model = profile.claude_display_model
+def claude_env_from_profile(
+    profile: Profile,
+    *,
+    model_override: str | None = None,
+    fallback_model_override: str | None = None,
+) -> dict[str, str]:
+    model = (model_override or profile.claude_display_model).strip() or profile.claude_display_model
+    fallback_model = (
+        fallback_model_override or profile.claude_display_fallback_model
+    ).strip() or profile.claude_display_fallback_model
     return {
         CLAUDE_BASE_URL_ENV_KEY: profile.base_url.rstrip("/"),
         CLAUDE_API_KEY_ENV_KEY: profile.api_key,
         CLAUDE_MODEL_ENV_KEY: model,
-        CLAUDE_FALLBACK_MODEL_ENV_KEY: profile.claude_display_fallback_model,
+        CLAUDE_FALLBACK_MODEL_ENV_KEY: fallback_model,
         CLAUDE_DEFAULT_HAIKU_MODEL_NAME_ENV_KEY: model,
         CLAUDE_DEFAULT_OPUS_MODEL_ENV_KEY: model,
         CLAUDE_DEFAULT_OPUS_MODEL_NAME_ENV_KEY: model,
@@ -79,13 +87,43 @@ def claude_env_from_profile(profile: Profile) -> dict[str, str]:
     }
 
 
-def apply_claude_profile_env(env: dict[str, str], profile: Profile) -> dict[str, str]:
+def claude_runtime_env_from_profile(
+    profile: Profile,
+    *,
+    route_proxy_base_url: str | None = None,
+    model_override: str | None = None,
+    fallback_model_override: str | None = None,
+) -> dict[str, str]:
+    env = claude_env_from_profile(
+        profile,
+        model_override=model_override,
+        fallback_model_override=fallback_model_override,
+    )
+    if route_proxy_base_url:
+        env[CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url.rstrip("/")
+        env[CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
+    return env
+
+
+def apply_claude_profile_env(
+    env: dict[str, str],
+    profile: Profile,
+    *,
+    model_override: str | None = None,
+    fallback_model_override: str | None = None,
+) -> dict[str, str]:
     auth_env_keys = {
         CLAUDE_AUTH_TOKEN_ENV_KEY.casefold(),
         CLAUDE_LEGACY_API_KEY_ENV_KEY.casefold(),
     }
     rendered = {key: value for key, value in env.items() if key.casefold() not in auth_env_keys}
-    rendered.update(claude_env_from_profile(profile))
+    rendered.update(
+        claude_env_from_profile(
+            profile,
+            model_override=model_override,
+            fallback_model_override=fallback_model_override,
+        )
+    )
     return rendered
 
 
@@ -106,6 +144,8 @@ def render_claude_settings_payload(
     payload: dict | None = None,
     *,
     route_proxy_base_url: str | None = None,
+    model_override: str | None = None,
+    fallback_model_override: str | None = None,
 ) -> dict:
     rendered = dict(payload or {})
     env = rendered.get("env")
@@ -113,15 +153,31 @@ def render_claude_settings_payload(
         env = {}
     else:
         env = dict(env)
-    rendered["env"] = apply_claude_profile_env(env, profile)
+    rendered["env"] = apply_claude_profile_env(
+        env,
+        profile,
+        model_override=model_override,
+        fallback_model_override=fallback_model_override,
+    )
     if route_proxy_base_url:
         rendered["env"][CLAUDE_BASE_URL_ENV_KEY] = route_proxy_base_url.rstrip("/")
         rendered["env"][CLAUDE_API_KEY_ENV_KEY] = ROUTE_PROXY_PLACEHOLDER_KEY
     return rendered
 
 
-def render_claude_settings(profile: Profile, *, route_proxy_base_url: str | None = None) -> str:
-    payload = render_claude_settings_payload(profile, route_proxy_base_url=route_proxy_base_url)
+def render_claude_settings(
+    profile: Profile,
+    *,
+    route_proxy_base_url: str | None = None,
+    model_override: str | None = None,
+    fallback_model_override: str | None = None,
+) -> str:
+    payload = render_claude_settings_payload(
+        profile,
+        route_proxy_base_url=route_proxy_base_url,
+        model_override=model_override,
+        fallback_model_override=fallback_model_override,
+    )
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
@@ -201,26 +257,28 @@ class ProjectTemplateService:
         profile: Profile,
         *,
         route_proxy_base_url: str | None = None,
+        model_override: str | None = None,
     ) -> list[Path]:
         project_root = project_root.resolve()
         repo_config_path = project_root / ".codex" / "config.toml"
         runtime_config_path = project_root / ".codex" / "home" / "config.toml"
         env_path = project_root / ".codex" / "local.env"
         updated_paths: list[Path] = []
+        codex_model = (model_override or profile.codex_display_model).strip() or profile.codex_display_model
 
         if repo_config_path.exists():
             with repo_config_path.open("rb") as handle:
                 config = tomllib.load(handle)
-            config["model"] = profile.codex_display_model
-            config["review_model"] = profile.codex_display_model
+            config["model"] = codex_model
+            config["review_model"] = codex_model
             repo_config_path.write_text(dumps_toml(config), encoding="utf-8")
             updated_paths.append(repo_config_path)
 
         if runtime_config_path.exists():
             with runtime_config_path.open("rb") as handle:
                 config = tomllib.load(handle)
-            config["model"] = profile.codex_display_model
-            config["review_model"] = profile.codex_display_model
+            config["model"] = codex_model
+            config["review_model"] = codex_model
             providers = config.setdefault("model_providers", {})
             provider = providers.setdefault(PROJECT_PROVIDER_ID, {})
             provider.setdefault("name", profile.provider_name)
@@ -242,11 +300,25 @@ class ProjectTemplateService:
 
         return updated_paths
 
-    def sync_claude_binding(self, project_root: Path, profile: Profile, *, route_proxy_base_url: str | None = None) -> list[Path]:
+    def sync_claude_binding(
+        self,
+        project_root: Path,
+        profile: Profile,
+        *,
+        route_proxy_base_url: str | None = None,
+        model_override: str | None = None,
+        fallback_model_override: str | None = None,
+    ) -> list[Path]:
         project_root = project_root.resolve()
         settings_path = project_root / ".claude" / "settings.local.json"
         payload = load_claude_settings_payload(settings_path)
-        payload = render_claude_settings_payload(profile, payload, route_proxy_base_url=route_proxy_base_url)
+        payload = render_claude_settings_payload(
+            profile,
+            payload,
+            route_proxy_base_url=route_proxy_base_url,
+            model_override=model_override,
+            fallback_model_override=fallback_model_override,
+        )
 
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -262,6 +334,9 @@ class ProjectTemplateService:
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
+        codex_model_override: str | None = None,
+        claude_model_override: str | None = None,
+        claude_fallback_model_override: str | None = None,
         skill_sources: list[SkillSource] | None = None,
         skill_definitions: list[SkillDefinition] | None = None,
     ) -> ProjectTemplateResult:
@@ -281,6 +356,9 @@ class ProjectTemplateService:
             agents_doc_text=agents_doc_text,
             claude_profile=claude_profile,
             route_proxy_base_url=route_proxy_base_url,
+            codex_model_override=codex_model_override,
+            claude_model_override=claude_model_override,
+            claude_fallback_model_override=claude_fallback_model_override,
         )
 
         generated_paths: list[Path] = []
@@ -335,6 +413,8 @@ class ProjectTemplateService:
         project_mcp_toml: str = "",
         agents_doc_text: str | None = None,
         route_proxy_base_url: str | None = None,
+        model_override: str | None = None,
+        fallback_model_override: str | None = None,
     ) -> ProjectTemplateResult:
         project_root = project_root.resolve()
         backup_root = project_root / ".claude" / "template-backups"
@@ -347,6 +427,8 @@ class ProjectTemplateService:
             agents_doc_text=agents_doc_text,
             profile=profile,
             route_proxy_base_url=route_proxy_base_url,
+            model_override=model_override,
+            fallback_model_override=fallback_model_override,
         )
 
         generated_paths: list[Path] = []
@@ -452,6 +534,9 @@ class ProjectTemplateService:
         agents_doc_text: str | None = None,
         claude_profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
+        codex_model_override: str | None = None,
+        claude_model_override: str | None = None,
+        claude_fallback_model_override: str | None = None,
     ) -> dict[str, str]:
         effective_project_mcp_toml = project_mcp_toml or global_mcp_toml
         agents_content = self._render_agents_file(agents_doc_text)
@@ -466,6 +551,7 @@ class ProjectTemplateService:
                     profile=profile,
                     project_mcp_toml=effective_project_mcp_toml,
                     project_root=project_root,
+                    model_override=codex_model_override,
                 )
             ),
             ".codex/local.env": self._render_local_env(profile.api_key),
@@ -476,6 +562,7 @@ class ProjectTemplateService:
                     global_mcp_toml=effective_project_mcp_toml,
                     project_root=project_root,
                     base_url_override=route_proxy_base_url,
+                    model_override=codex_model_override,
                 )
             ),
             ".codex/home/AGENTS.md": agents_content,
@@ -489,6 +576,8 @@ class ProjectTemplateService:
                 agents_doc_text=agents_doc_text,
                 profile=claude_profile,
                 route_proxy_base_url=route_proxy_base_url,
+                model_override=claude_model_override,
+                fallback_model_override=claude_fallback_model_override,
             )
         )
         return files
@@ -501,6 +590,8 @@ class ProjectTemplateService:
         agents_doc_text: str | None = None,
         profile: Profile | None = None,
         route_proxy_base_url: str | None = None,
+        model_override: str | None = None,
+        fallback_model_override: str | None = None,
     ) -> dict[str, str]:
         agents_content = self._render_agents_file(agents_doc_text)
         files = {
@@ -513,11 +604,28 @@ class ProjectTemplateService:
             ),
         }
         if profile is not None:
-            files[".claude/settings.local.json"] = self._render_claude_settings(profile, route_proxy_base_url=route_proxy_base_url)
+            files[".claude/settings.local.json"] = self._render_claude_settings(
+                profile,
+                route_proxy_base_url=route_proxy_base_url,
+                model_override=model_override,
+                fallback_model_override=fallback_model_override,
+            )
         return files
 
-    def _render_claude_settings(self, profile: Profile, *, route_proxy_base_url: str | None = None) -> str:
-        return render_claude_settings(profile, route_proxy_base_url=route_proxy_base_url)
+    def _render_claude_settings(
+        self,
+        profile: Profile,
+        *,
+        route_proxy_base_url: str | None = None,
+        model_override: str | None = None,
+        fallback_model_override: str | None = None,
+    ) -> str:
+        return render_claude_settings(
+            profile,
+            route_proxy_base_url=route_proxy_base_url,
+            model_override=model_override,
+            fallback_model_override=fallback_model_override,
+        )
 
     def _load_claude_settings_payload(self, settings_path: Path) -> dict:
         return load_claude_settings_payload(settings_path)
@@ -528,8 +636,16 @@ class ProjectTemplateService:
         payload: dict | None = None,
         *,
         route_proxy_base_url: str | None = None,
+        model_override: str | None = None,
+        fallback_model_override: str | None = None,
     ) -> dict:
-        return render_claude_settings_payload(profile, payload, route_proxy_base_url=route_proxy_base_url)
+        return render_claude_settings_payload(
+            profile,
+            payload,
+            route_proxy_base_url=route_proxy_base_url,
+            model_override=model_override,
+            fallback_model_override=fallback_model_override,
+        )
 
     def select_project_mcp_toml(
         self,

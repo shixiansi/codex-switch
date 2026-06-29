@@ -35,6 +35,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
     PROFILE_CATEGORY_IMAGE_GENERATION,
     PROFILE_CATEGORY_TEXT,
     SkillDefinition,
@@ -861,6 +862,35 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(rules[1].upstream_model, "mimo-v2.5-pro")
 
+    def test_route_proxy_rules_for_project_can_use_codex_and_claude_account_pools(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex")
+        codex_profile.id = "codex-profile"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude_profile.id = "claude-profile"
+
+        rules = route_proxy_rules_for_project(
+            project,
+            codex_profile,
+            claude_profile,
+            ROUTE_PROXY_PROTOCOL_OPENAI,
+            ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+            codex_upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+            codex_account_pool_group_id="codex-group",
+            claude_upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+            claude_account_pool_group_id="claude-group",
+        )
+
+        self.assertEqual(rules[0].upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
+        self.assertEqual(rules[0].account_pool_group_id, "codex-group")
+        self.assertEqual(rules[1].upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
+        self.assertEqual(rules[1].account_pool_group_id, "claude-group")
+
     def test_route_proxy_codex_protocol_tracks_upstream_wire_api(self) -> None:
         responses_profile = Profile.create("responses", "https://responses.example.com", "sk-responses", wire_api="responses")
         chat_profile = Profile.create("chat", "https://chat.example.com", "sk-chat", wire_api="chat_completions")
@@ -991,6 +1021,8 @@ class UiFilterTests(unittest.TestCase):
             project_id=project.id,
             client_type=ROUTE_PROXY_CLIENT_CLAUDE,
             primary_profile_id="old-claude",
+            upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+            account_pool_group_id="claude-group",
             upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
             manual_upstream_protocol=True,
         )
@@ -1017,6 +1049,8 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(refreshed_codex.compact_model, "gpt-4.1-compact")
         self.assertTrue(refreshed_codex.manual_upstream_protocol)
         self.assertEqual(refreshed_claude.primary_profile_id, "new-claude")
+        self.assertEqual(refreshed_claude.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
+        self.assertEqual(refreshed_claude.account_pool_group_id, "claude-group")
         self.assertEqual(refreshed_claude.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC)
         self.assertEqual(refreshed_claude.upstream_model, "")
         self.assertTrue(refreshed_claude.manual_upstream_protocol)
@@ -1063,12 +1097,21 @@ class UiFilterTests(unittest.TestCase):
         )
         app.proxy_codex_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
         app.proxy_codex_upstream_source_var = _ValueVar(ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
+        app.proxy_claude_upstream_source_var = _ValueVar(ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
         app.proxy_claude_protocol_var = _ValueVar(ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         app.proxy_codex_compact_model_var = _ValueVar("gpt-4.1-compact")
         app.account_pool_settings = AccountPoolSettings()
         group = app.account_pool_settings.ensure_default_group()
+        group.default_model = "pool-codex"
+        claude_group = app.account_pool_settings.add_group(
+            "claude-pool",
+            pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
+            claude_model="pool-sonnet",
+        )
         app.proxy_account_pool_group_var = _ValueVar("default")
+        app.proxy_claude_account_pool_group_var = _ValueVar("claude")
         app.proxy_account_pool_group_choices = {"default": group.id}
+        app.proxy_claude_account_pool_group_choices = {"claude": claude_group.id}
 
         app._save_selected_route_proxy_project_rules()
 
@@ -1077,12 +1120,13 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(codex_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
         self.assertEqual(codex_rule.account_pool_group_id, group.id)
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
-        self.assertEqual(codex_rule.upstream_model, "gpt-real")
+        self.assertEqual(codex_rule.upstream_model, "pool-codex")
         self.assertEqual(codex_rule.compact_model, "gpt-4.1-compact")
         self.assertTrue(codex_rule.manual_upstream_protocol)
-        self.assertEqual(claude_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE)
+        self.assertEqual(claude_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL)
+        self.assertEqual(claude_rule.account_pool_group_id, claude_group.id)
         self.assertEqual(claude_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
-        self.assertEqual(claude_rule.upstream_model, "sonnet-real")
+        self.assertEqual(claude_rule.upstream_model, "pool-sonnet")
         self.assertTrue(claude_rule.manual_upstream_protocol)
 
     def test_refresh_stats_tab_renders_token_usage_summary(self) -> None:

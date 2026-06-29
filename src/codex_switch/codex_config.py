@@ -361,9 +361,10 @@ def render_project_runtime_config(
     global_mcp_toml: str = "",
     project_root: str | Path | None = None,
     base_url_override: str | None = None,
+    model_override: str | None = None,
 ) -> dict:
     config = render_project_base_config()
-    codex_model = profile.codex_display_model
+    codex_model = (model_override or profile.codex_display_model).strip() or profile.codex_display_model
     config["model_provider"] = PROJECT_PROVIDER_ID
     config["model"] = codex_model
     config["review_model"] = codex_model
@@ -390,10 +391,14 @@ def render_project_repo_config(
     profile: Profile | None = None,
     project_mcp_toml: str = "",
     project_root: str | Path | None = None,
+    model_override: str | None = None,
 ) -> dict:
+    model = ""
+    if profile is not None:
+        model = (model_override or profile.codex_display_model).strip() or profile.codex_display_model
     config = render_project_base_config(
         project_mcp_toml=project_mcp_toml,
-        model=profile.codex_display_model if profile else None,
+        model=model or None,
     )
     merge_mcp_servers(
         config,
