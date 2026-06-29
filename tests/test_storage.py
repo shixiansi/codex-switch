@@ -25,6 +25,7 @@ from codex_switch.models import (
     ProjectRecord,
     RouteProxyRule,
     RouteProxySettings,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
@@ -156,7 +157,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded[8], "Custom AGENTS text")
 
             payload = json.loads(store.storage_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["version"], 20)
+            self.assertEqual(payload["version"], 21)
             self.assertEqual(payload["settings"]["agents_doc_text"], "Custom AGENTS text")
 
     def test_store_persists_image_generation_profile_without_api(self) -> None:
@@ -215,7 +216,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(loaded.channels[0].default_model, "gpt-pool")
             self.assertEqual(loaded.channels[0].custom_headers, {"X-Client-Version": "codex-cli-test"})
             self.assertEqual(loaded.channels[0].failure_reason, "HTTP 503")
-            self.assertEqual(payload["version"], 20)
+            self.assertEqual(payload["version"], 21)
             self.assertEqual(loaded.recovery_interval_minutes, 5)
             self.assertEqual(len(loaded.groups), 1)
             self.assertEqual(loaded.channels[0].group_id, loaded.groups[0].id)
@@ -268,6 +269,8 @@ class ProfileStoreTests(unittest.TestCase):
             settings = RouteProxySettings(
                 enabled=True,
                 port=17890,
+                account_pool_strategy=ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
+                upstream_timeout_seconds=12,
                 rules=[
                     RouteProxyRule.create(
                         project_id="project-1",
@@ -284,8 +287,13 @@ class ProfileStoreTests(unittest.TestCase):
 
             self.assertTrue(loaded.enabled)
             self.assertEqual(loaded.port, 17890)
+            self.assertEqual(loaded.account_pool_strategy, ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER)
+            self.assertEqual(loaded.upstream_timeout_seconds, 12)
             self.assertEqual(loaded.rules[0].project_id, "project-1")
             self.assertEqual(loaded.rules[0].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+            self.assertEqual(payload["version"], 21)
+            self.assertEqual(payload["settings"]["route_proxy"]["account_pool_strategy"], ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER)
+            self.assertEqual(payload["settings"]["route_proxy"]["upstream_timeout_seconds"], 12)
             self.assertEqual(payload["settings"]["route_proxy"]["rules"][0]["primary_profile_id"], "profile-1")
 
     def test_store_persists_route_proxy_token_usage(self) -> None:

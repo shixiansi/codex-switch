@@ -58,6 +58,9 @@ DEFAULT_CLAUDE_MODEL = "sonnet"
 DEFAULT_CLAUDE_FALLBACK_MODEL = "haiku"
 ROUTE_PROXY_DEFAULT_HOST = "127.0.0.1"
 ROUTE_PROXY_DEFAULT_PORT = 15721
+ROUTE_PROXY_DEFAULT_UPSTREAM_TIMEOUT_SECONDS = 90
+ROUTE_PROXY_UPSTREAM_TIMEOUT_SECONDS_MIN = 1
+ROUTE_PROXY_UPSTREAM_TIMEOUT_SECONDS_MAX = 600
 ROUTE_PROXY_PLACEHOLDER_KEY = "codex-switch-proxy"
 ROUTE_PROXY_CLIENT_CODEX = "codex"
 ROUTE_PROXY_CLIENT_CLAUDE = "claude"
@@ -71,6 +74,12 @@ ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL = "account_pool"
 ROUTE_PROXY_UPSTREAM_SOURCE_CHOICES = (
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+)
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN = "round_robin"
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER = "failover"
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_CHOICES = (
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
 )
 ROUTE_PROXY_CLIENT_CHOICES = (ROUTE_PROXY_CLIENT_CODEX, ROUTE_PROXY_CLIENT_CLAUDE)
 ROUTE_PROXY_PROTOCOL_CHOICES = (
@@ -387,6 +396,24 @@ def normalize_route_proxy_port(value: int | str | None) -> int:
     except (TypeError, ValueError):
         port = ROUTE_PROXY_DEFAULT_PORT
     return max(1, min(65535, port))
+
+
+def normalize_route_proxy_account_pool_strategy(value: str | None) -> str:
+    strategy = str(value or "").strip().lower()
+    if strategy in ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_CHOICES:
+        return strategy
+    return ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN
+
+
+def normalize_route_proxy_upstream_timeout_seconds(value: int | str | None) -> int:
+    try:
+        timeout = int(value or ROUTE_PROXY_DEFAULT_UPSTREAM_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        timeout = ROUTE_PROXY_DEFAULT_UPSTREAM_TIMEOUT_SECONDS
+    return max(
+        ROUTE_PROXY_UPSTREAM_TIMEOUT_SECONDS_MIN,
+        min(ROUTE_PROXY_UPSTREAM_TIMEOUT_SECONDS_MAX, timeout),
+    )
 
 
 def profile_supports_codex(profile: "Profile") -> bool:
@@ -788,6 +815,7 @@ class AccountPoolSettings:
         exclude_ids: set[str] | None = None,
         *,
         group_id: str | None = None,
+        advance: bool = True,
     ) -> AccountPoolChannel | None:
         excluded = exclude_ids or set()
         if group_id:
@@ -804,7 +832,7 @@ class AccountPoolSettings:
                 index = (start_index + offset) % channel_count
                 channel = channels[index]
                 if channel.is_normal and channel.id not in excluded:
-                    group.next_index = (index + 1) % channel_count
+                    group.next_index = (index + 1) % channel_count if advance else index
                     return channel
             group.next_index = start_index
             return None
@@ -818,7 +846,7 @@ class AccountPoolSettings:
             index = (start_index + offset) % channel_count
             channel = self.channels[index]
             if channel.is_normal and channel.id not in excluded:
-                self.next_index = (index + 1) % channel_count
+                self.next_index = (index + 1) % channel_count if advance else index
                 return channel
         self.next_index = start_index
         return None
@@ -1184,6 +1212,8 @@ class RouteProxySettings:
     enabled: bool = False
     host: str = ROUTE_PROXY_DEFAULT_HOST
     port: int = ROUTE_PROXY_DEFAULT_PORT
+    account_pool_strategy: str = ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN
+    upstream_timeout_seconds: int = ROUTE_PROXY_DEFAULT_UPSTREAM_TIMEOUT_SECONDS
     rules: list[RouteProxyRule] = field(default_factory=list)
     events: list[RouteProxyEvent] = field(default_factory=list)
     token_usage: RouteProxyTokenUsageStats = field(default_factory=RouteProxyTokenUsageStats)
@@ -1200,6 +1230,8 @@ class RouteProxySettings:
             enabled=bool(data.get("enabled", False)),
             host=str(data.get("host") or ROUTE_PROXY_DEFAULT_HOST).strip() or ROUTE_PROXY_DEFAULT_HOST,
             port=normalize_route_proxy_port(data.get("port")),
+            account_pool_strategy=normalize_route_proxy_account_pool_strategy(data.get("account_pool_strategy")),
+            upstream_timeout_seconds=normalize_route_proxy_upstream_timeout_seconds(data.get("upstream_timeout_seconds")),
             rules=rules,
             events=events[-50:],
             token_usage=RouteProxyTokenUsageStats.from_dict(data.get("token_usage")),
@@ -1210,6 +1242,8 @@ class RouteProxySettings:
             "enabled": self.enabled,
             "host": self.host,
             "port": self.port,
+            "account_pool_strategy": normalize_route_proxy_account_pool_strategy(self.account_pool_strategy),
+            "upstream_timeout_seconds": normalize_route_proxy_upstream_timeout_seconds(self.upstream_timeout_seconds),
             "rules": [rule.to_dict() for rule in self.rules],
             "events": [event.to_dict() for event in self.events[-50:]],
             "token_usage": self.token_usage.to_dict(),
@@ -1233,6 +1267,8 @@ class RouteProxySettings:
             enabled=self.enabled,
             host=self.host,
             port=self.port,
+            account_pool_strategy=self.account_pool_strategy,
+            upstream_timeout_seconds=self.upstream_timeout_seconds,
             rules=[rule for rule in self.rules if rule.project_id != project_id],
             events=list(self.events),
             token_usage=self.token_usage,

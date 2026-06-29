@@ -67,6 +67,8 @@ from codex_switch.models import (
     SkillGroup,
     SkillMarketRepo,
     SKILL_TYPE_LABELS,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PLACEHOLDER_KEY,
@@ -77,6 +79,7 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    normalize_route_proxy_account_pool_strategy,
     normalize_route_proxy_protocol,
     normalize_route_proxy_upstream_source,
     VENDOR_CLAUDE,
@@ -84,6 +87,7 @@ from codex_switch.models import (
     VENDOR_GENERIC,
     VENDOR_OTHER,
     normalize_route_proxy_port,
+    normalize_route_proxy_upstream_timeout_seconds,
     normalize_account_pool_recovery_interval_minutes,
     normalize_hot_update_interval_minutes,
     normalize_model_vendor_keywords,
@@ -198,6 +202,13 @@ LIBRARY_PROFILE_VIEW_TABS = (
 )
 LIBRARY_PROFILE_VIEW_VALUES = {view for view, _label in LIBRARY_PROFILE_VIEW_TABS}
 LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS = {
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN: "轮询分发",
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER: "失败后切换",
+}
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES = {
+    label: value for value, label in ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS.items()
+}
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
 HOT_UPDATE_SCOPE_LABELS = {
     "software": "软件",
@@ -895,6 +906,14 @@ class CodexSwitchApp:
         self.proxy_status_var = tk.StringVar(value="未启动")
         self.proxy_host_var = tk.StringVar(value=self.route_proxy_settings.host)
         self.proxy_port_var = tk.StringVar(value=str(self.route_proxy_settings.port))
+        self.proxy_account_pool_strategy_var = tk.StringVar(
+            value=ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS[
+                normalize_route_proxy_account_pool_strategy(self.route_proxy_settings.account_pool_strategy)
+            ]
+        )
+        self.proxy_upstream_timeout_var = tk.StringVar(
+            value=str(normalize_route_proxy_upstream_timeout_seconds(self.route_proxy_settings.upstream_timeout_seconds))
+        )
         self.proxy_hint_var = tk.StringVar(value="项目级代理默认关闭。启用项目后生成模板会指向本地代理。")
         self.proxy_selected_project_var = tk.StringVar(value="未选择项目")
         self.proxy_selected_rules_var = tk.StringVar(value="-")
@@ -1524,7 +1543,7 @@ class CodexSwitchApp:
         left = self._make_card(content)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(8, weight=1)
+        left.rowconfigure(9, weight=1)
         tk.Label(left, text="路由代理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
         tk.Label(left, textvariable=self.proxy_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
 
@@ -1535,59 +1554,69 @@ class CodexSwitchApp:
         ttk.Entry(settings, textvariable=self.proxy_host_var, width=18).grid(row=0, column=1, sticky="w", pady=4)
         tk.Label(settings, text="端口", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w", padx=(16, 10), pady=4)
         ttk.Entry(settings, textvariable=self.proxy_port_var, width=8).grid(row=0, column=3, sticky="w", pady=4)
-        tk.Label(settings, text="Codex 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        tk.Label(settings, text="号池策略", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Combobox(
+            settings,
+            textvariable=self.proxy_account_pool_strategy_var,
+            values=tuple(ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES.keys()),
+            state="readonly",
+            width=12,
+        ).grid(row=1, column=1, sticky="w", pady=4)
+        tk.Label(settings, text="节点超时(秒)", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=2, sticky="w", padx=(16, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_upstream_timeout_var, width=8).grid(row=1, column=3, sticky="w", pady=4)
+        tk.Label(settings, text="Codex 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_codex_upstream_source_var,
             values=tuple(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.keys()),
             state="readonly",
             width=28,
-        ).grid(row=1, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Codex 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+        ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Codex 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
         self.proxy_account_pool_group_combo = ttk.Combobox(
             settings,
             textvariable=self.proxy_account_pool_group_var,
             state="readonly",
             width=28,
         )
-        self.proxy_account_pool_group_combo.grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Codex 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
+        self.proxy_account_pool_group_combo.grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Codex 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_codex_protocol_var,
             values=CODEX_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=4)
+        ).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Entry(settings, textvariable=self.proxy_codex_compact_model_var, width=28).grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=6, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_upstream_source_var,
             values=tuple(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.keys()),
             state="readonly",
             width=28,
-        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=6, column=0, sticky="w", padx=(0, 10), pady=4)
+        ).grid(row=6, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=7, column=0, sticky="w", padx=(0, 10), pady=4)
         self.proxy_claude_account_pool_group_combo = ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_account_pool_group_var,
             state="readonly",
             width=28,
         )
-        self.proxy_claude_account_pool_group_combo.grid(row=6, column=1, columnspan=3, sticky="w", pady=4)
-        tk.Label(settings, text="Claude 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=7, column=0, sticky="w", padx=(0, 10), pady=4)
+        self.proxy_claude_account_pool_group_combo.grid(row=7, column=1, columnspan=3, sticky="w", pady=4)
+        tk.Label(settings, text="Claude 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=8, column=0, sticky="w", padx=(0, 10), pady=4)
         ttk.Combobox(
             settings,
             textvariable=self.proxy_claude_protocol_var,
             values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
             state="readonly",
             width=28,
-        ).grid(row=7, column=1, columnspan=3, sticky="w", pady=4)
+        ).grid(row=8, column=1, columnspan=3, sticky="w", pady=4)
 
         proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        proxy_tree_wrap.grid(row=8, column=0, sticky="nsew", pady=(12, 0))
+        proxy_tree_wrap.grid(row=9, column=0, sticky="nsew", pady=(12, 0))
         proxy_tree_wrap.columnconfigure(0, weight=1)
         proxy_tree_wrap.rowconfigure(0, weight=1)
         self.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "pool", "enabled"), show="headings")
@@ -1607,7 +1636,7 @@ class CodexSwitchApp:
         self.proxy_project_tree.configure(yscrollcommand=proxy_scroll.set)
 
         actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=9, column=0, sticky="ew", pady=(14, 0))
+        actions.grid(row=10, column=0, sticky="ew", pady=(14, 0))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
         make_button(actions, text="保存设置", variant="secondary", command=self.save_route_proxy_settings).grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -3792,6 +3821,13 @@ class CodexSwitchApp:
         self._refresh_proxy_account_pool_group_choices()
         self.proxy_host_var.set(self.route_proxy_settings.host)
         self.proxy_port_var.set(str(self.route_proxy_settings.port))
+        strategy = normalize_route_proxy_account_pool_strategy(self.route_proxy_settings.account_pool_strategy)
+        self.proxy_account_pool_strategy_var.set(
+            ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS[strategy]
+        )
+        self.proxy_upstream_timeout_var.set(
+            str(normalize_route_proxy_upstream_timeout_seconds(self.route_proxy_settings.upstream_timeout_seconds))
+        )
         self.proxy_status_var.set(
             f"代理运行中：{self.route_proxy_settings.base_url}"
             if self.route_proxy_server.is_running
@@ -6243,6 +6279,15 @@ class CodexSwitchApp:
             messagebox.showerror("保存失败", "代理端口必须是数字。", parent=self.root)
             return False
         self.route_proxy_settings.port = normalize_route_proxy_port(raw_port)
+        self.route_proxy_settings.account_pool_strategy = normalize_route_proxy_account_pool_strategy(
+            ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES.get(
+                self.proxy_account_pool_strategy_var.get(),
+                self.proxy_account_pool_strategy_var.get(),
+            )
+        )
+        self.route_proxy_settings.upstream_timeout_seconds = normalize_route_proxy_upstream_timeout_seconds(
+            self.proxy_upstream_timeout_var.get()
+        )
         if save_project_rules:
             self._save_selected_route_proxy_project_rules()
         self.persist_state()

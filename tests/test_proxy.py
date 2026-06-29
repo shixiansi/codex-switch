@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 import gzip
 import json
 import unittest
@@ -17,6 +19,7 @@ from codex_switch.models import (
     ProjectRecord,
     RouteProxyRule,
     RouteProxySettings,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PLACEHOLDER_KEY,
@@ -287,6 +290,58 @@ class RouteProxyTests(unittest.TestCase):
         self.assertIn(expected_url, error_text)
         self.assertIn(expected_url, events[-1].message)
 
+    def test_route_proxy_uses_configured_upstream_timeout(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def getheaders(self) -> list[tuple[str, str]]:
+                return [("Content-Type", "application/json")]
+
+            def read(self) -> bytes:
+                return b'{"ok":true}'
+
+        class FakeConnection:
+            captured_timeout: int | None = None
+
+            def __init__(self, _host: str, timeout: int) -> None:
+                FakeConnection.captured_timeout = timeout
+
+            def request(self, *_args, **_kwargs) -> None:
+                return
+
+            def getresponse(self) -> FakeResponse:
+                return FakeResponse()
+
+            def close(self) -> None:
+                return
+
+        profile = Profile.create("main", "http://upstream.example/root", "sk-main")
+        settings = RouteProxySettings(
+            upstream_timeout_seconds=7,
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=profile.id,
+                )
+            ],
+        )
+        proxy = RouteProxyServer(lambda: settings, lambda: [profile])
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        with patch("codex_switch.proxy.server.http.client.HTTPConnection", FakeConnection):
+            status, _headers, body, chunks = proxy.handle(
+                method="POST",
+                raw_path="/project/project-1/responses",
+                headers={},
+                body=request_body,
+            )
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(chunks)
+        self.assertEqual(json.loads(body.decode("utf-8") if body else "{}"), {"ok": True})
+        self.assertEqual(FakeConnection.captured_timeout, 7)
+
     def test_account_pool_round_robin_is_shared_across_projects_and_skips_failed_channels(self) -> None:
         def handler_for(label: str):
             class Handler(BaseHTTPRequestHandler):
@@ -308,7 +363,11 @@ class RouteProxyTests(unittest.TestCase):
         upstream_b = self._serve(handler_for("b"))
         channel_a = AccountPoolChannel.create(name="pool-a", base_url=f"http://127.0.0.1:{upstream_a.server_port}", api_key="sk-a")
         channel_b = AccountPoolChannel.create(name="pool-b", base_url=f"http://127.0.0.1:{upstream_b.server_port}", api_key="sk-b")
-        pool = AccountPoolSettings(enabled=True, channels=[channel_a, channel_b])
+        pool = AccountPoolSettings(
+            enabled=True,
+            channels=[channel_a, channel_b],
+            last_recovery_checked_at=datetime.now().isoformat(),
+        )
         settings = RouteProxySettings(
             rules=[
                 RouteProxyRule.create(
@@ -336,6 +395,121 @@ class RouteProxyTests(unittest.TestCase):
         self.assertEqual(json.loads(first[2].decode("utf-8"))["label"], "a")
         self.assertEqual(json.loads(second[2].decode("utf-8"))["label"], "b")
         self.assertEqual(json.loads(third[2].decode("utf-8"))["label"], "b")
+
+    def test_account_pool_failover_strategy_sticks_until_channel_fails(self) -> None:
+        counts = {"a": 0, "b": 0}
+        state = {"a_down": False}
+
+        class AHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                counts["a"] += 1
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                if state["a_down"]:
+                    body = b'{"error":"down"}'
+                    self.send_response(503)
+                else:
+                    body = b'{"label":"a"}'
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        class BHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                counts["b"] += 1
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                body = b'{"label":"b"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003
+                return
+
+        upstream_a = self._serve(AHandler)
+        upstream_b = self._serve(BHandler)
+        channel_a = AccountPoolChannel.create(name="pool-a", base_url=f"http://127.0.0.1:{upstream_a.server_port}", api_key="sk-a")
+        channel_b = AccountPoolChannel.create(name="pool-b", base_url=f"http://127.0.0.1:{upstream_b.server_port}", api_key="sk-b")
+        pool = AccountPoolSettings(enabled=True, channels=[channel_a, channel_b])
+        settings = RouteProxySettings(
+            account_pool_strategy=ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
+            rules=[
+                RouteProxyRule.create(
+                    project_id="project-1",
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id="profile-1",
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                )
+            ],
+        )
+
+        class NeverRecoverChecker:
+            def check(self, _profile: Profile, **_kwargs) -> HealthResult:
+                return HealthResult(status="error", detail="still down")
+
+        proxy = RouteProxyServer(
+            lambda: settings,
+            lambda: [],
+            account_pool_provider=lambda: pool,
+            recovery_checker=NeverRecoverChecker(),
+        )
+        request_body = json.dumps({"model": "gpt-5", "input": "hi"}).encode("utf-8")
+
+        first = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+        second = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+        state["a_down"] = True
+        third = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+        fourth = proxy.handle(method="POST", raw_path="/project/project-1/responses", headers={}, body=request_body)
+
+        self.assertEqual(json.loads(first[2].decode("utf-8"))["label"], "a")
+        self.assertEqual(json.loads(second[2].decode("utf-8"))["label"], "a")
+        self.assertEqual(json.loads(third[2].decode("utf-8"))["label"], "b")
+        self.assertEqual(json.loads(fourth[2].decode("utf-8"))["label"], "b")
+        self.assertEqual(counts, {"a": 3, "b": 2})
+        self.assertFalse(channel_a.is_normal)
+        self.assertTrue(channel_b.is_normal)
+
+    def test_account_pool_stream_failure_marks_channel_failed(self) -> None:
+        channel = AccountPoolChannel.create(
+            name="pool-a",
+            base_url="http://127.0.0.1:1",
+            api_key="sk-a",
+        )
+        pool = AccountPoolSettings(enabled=True, channels=[channel])
+        events: list[RouteProxyEvent] = []
+        proxy = RouteProxyServer(
+            lambda: RouteProxySettings(),
+            lambda: [],
+            events.append,
+            account_pool_provider=lambda: pool,
+        )
+
+        def chunks() -> Iterable[bytes]:
+            yield b"data: partial\n\n"
+            raise TimeoutError("read timed out")
+
+        stream = proxy._account_pool_failure_stream(
+            chunks(),
+            pool=pool,
+            channel=channel,
+            log_context="[project-1][pool-a]",
+            project_id="project-1",
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            upstream_path="/v1/responses",
+        )
+
+        with self.assertRaises(TimeoutError):
+            list(stream)
+
+        self.assertFalse(channel.is_normal)
+        self.assertEqual(channel.failure_reason, "read timed out")
+        self.assertTrue(any("stream failed: read timed out" in event.message for event in events))
 
     def test_account_pool_route_uses_selected_group_only(self) -> None:
         def handler_for(label: str):

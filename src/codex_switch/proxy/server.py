@@ -22,6 +22,7 @@ from codex_switch.models import (
     RouteProxyEvent,
     RouteProxyRule,
     RouteProxySettings,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
@@ -322,10 +323,16 @@ class RouteProxyServer:
         if not pool.normal_channels_for_group(group.id):
             return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": "No normal account pool channels are available in the selected group."})
 
+        settings = self.settings_provider()
+        advance_channel = settings.account_pool_strategy == ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN
         attempted_channel_ids: set[str] = set()
         last_error = ""
         while len(attempted_channel_ids) < len(group_channels):
-            channel = pool.take_next_normal_channel(attempted_channel_ids, group_id=group.id)
+            channel = pool.take_next_normal_channel(
+                attempted_channel_ids,
+                group_id=group.id,
+                advance=advance_channel,
+            )
             if channel is None:
                 break
             attempted_channel_ids.add(channel.id)
@@ -364,7 +371,7 @@ class RouteProxyServer:
                 )
                 continue
 
-            status, _response_headers, response_body, response_chunks = response
+            status, response_headers, response_body, response_chunks = response
             if self._is_account_pool_unavailable_status(status):
                 last_error = self._account_pool_status_error(status, response_body)
                 if route.client_type == ROUTE_PROXY_CLIENT_CODEX and self._is_codex_client_restricted_response(status, response_body):
@@ -391,6 +398,16 @@ class RouteProxyServer:
                 )
                 continue
 
+            if response_chunks is not None:
+                response_chunks = self._account_pool_failure_stream(
+                    response_chunks,
+                    pool=pool,
+                    channel=channel,
+                    log_context=log_context,
+                    project_id=project_id,
+                    client_type=client_type,
+                    upstream_path=upstream_path,
+                )
             pool.mark_success(channel.id)
             self._notify_account_pool_updated(pool)
             self._record(
@@ -401,7 +418,7 @@ class RouteProxyServer:
                 profile_id=channel.id,
                 path=upstream_path,
             )
-            return response
+            return status, response_headers, response_body, response_chunks
 
         return self._json_response(HTTPStatus.BAD_GATEWAY, {"error": last_error or "All account pool channels failed."})
 
@@ -453,7 +470,7 @@ class RouteProxyServer:
         upstream_url = self._format_upstream_url(parsed_base, upstream_target)
 
         connection_cls = http.client.HTTPSConnection if parsed_base.scheme == "https" else http.client.HTTPConnection
-        connection = connection_cls(parsed_base.netloc, timeout=90)
+        connection = connection_cls(parsed_base.netloc, timeout=self.settings_provider().upstream_timeout_seconds)
         close_connection = True
         try:
             connection.request(method, upstream_target or "/", body=rendered_body if method != "GET" else None, headers=rendered_headers)
@@ -525,6 +542,34 @@ class RouteProxyServer:
                     status=status,
                 )
             connection.close()
+
+    def _account_pool_failure_stream(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        pool: AccountPoolSettings,
+        channel: AccountPoolChannel,
+        log_context: str,
+        project_id: str,
+        client_type: str,
+        upstream_path: str,
+    ) -> Iterable[bytes]:
+        try:
+            for chunk in chunks:
+                yield chunk
+        except Exception as exc:
+            last_error = sanitize_text(str(exc))
+            pool.mark_failed(channel.id, last_error)
+            self._notify_account_pool_updated(pool)
+            self._record(
+                "error",
+                f"{log_context} {client_type} {upstream_path} stream failed: {last_error}",
+                project_id=project_id,
+                client_type=client_type,
+                profile_id=channel.id,
+                path=upstream_path,
+            )
+            raise
 
     def _observed_stream(
         self,

@@ -26,6 +26,7 @@ from codex_switch.models import (
     ProjectRecord,
     RouteProxyRule,
     RouteProxySettings,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
@@ -956,7 +957,11 @@ class UiFilterTests(unittest.TestCase):
             client_type=ROUTE_PROXY_CLIENT_CODEX,
             primary_profile_id="other-profile",
         )
-        settings = RouteProxySettings(rules=[codex_rule, claude_rule, other_rule])
+        settings = RouteProxySettings(
+            account_pool_strategy=ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
+            upstream_timeout_seconds=12,
+            rules=[codex_rule, claude_rule, other_rule],
+        )
         updated_project = replace(
             project,
             profile_id="new-codex",
@@ -979,6 +984,8 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(project_rules[1].upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(project_rules[1].upstream_model, "sonnet-new")
         self.assertEqual(refreshed.rules_for_project("other-project"), [other_rule])
+        self.assertEqual(refreshed.account_pool_strategy, ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER)
+        self.assertEqual(refreshed.upstream_timeout_seconds, 12)
 
     def test_refresh_route_proxy_rules_for_project_bridges_new_chat_api(self) -> None:
         project = ProjectRecord.create(str(Path.cwd()), "old-profile")
@@ -1128,6 +1135,25 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(claude_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
         self.assertEqual(claude_rule.upstream_model, "pool-sonnet")
         self.assertTrue(claude_rule.manual_upstream_protocol)
+
+    def test_save_route_proxy_settings_updates_pool_strategy_and_timeout(self) -> None:
+        app = CodexSwitchApp.__new__(CodexSwitchApp)
+        app.route_proxy_settings = RouteProxySettings()
+        app.proxy_host_var = _ValueVar("127.0.0.1")
+        app.proxy_port_var = _ValueVar("15722")
+        app.proxy_account_pool_strategy_var = _ValueVar("失败后切换")
+        app.proxy_upstream_timeout_var = _ValueVar("12")
+        app.persist_state = lambda: None
+        app.refresh_proxy_tab = lambda: None
+        app.status_var = _ValueVar("")
+
+        saved = app.save_route_proxy_settings(save_project_rules=False)
+
+        self.assertTrue(saved)
+        self.assertEqual(app.route_proxy_settings.host, "127.0.0.1")
+        self.assertEqual(app.route_proxy_settings.port, 15722)
+        self.assertEqual(app.route_proxy_settings.account_pool_strategy, ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER)
+        self.assertEqual(app.route_proxy_settings.upstream_timeout_seconds, 12)
 
     def test_refresh_stats_tab_renders_token_usage_summary(self) -> None:
         app = _make_minimal_app()
