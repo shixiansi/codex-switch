@@ -262,6 +262,7 @@ from codex_switch.ui.skills_logic import (
     PROJECT_METADATA_RELATIVE_PATHS,
     SkillMarketEntry,
     apply_profile_metadata,
+    build_skills_tab_display,
     existing_repo_files,
     import_skill_sources_to_group,
     load_skill_market_entries,
@@ -3752,24 +3753,30 @@ class CodexSwitchApp:
             market_entries, market_errors = self._load_skill_market_entries(sync_remote=self.skill_market_force_sync)
             self.skill_market_force_sync = False
             self._render_skill_market_cards(market_entries)
+        visible_repos = self._filtered_skill_market_repos() if hasattr(self, "skill_repo_tree") else list(self.skill_market_repos)
+        display = build_skills_tab_display(
+            all_repos=self.skill_market_repos,
+            visible_repos=visible_repos,
+            groups=self.skill_groups,
+            projects=self.projects,
+            market_entries_count=len(market_entries),
+            market_errors_count=len(market_errors),
+            repo_filter_active=bool(
+                hasattr(self, "skill_repo_filter_var") and self.skill_repo_filter_var.get().strip()
+            ),
+        )
         if hasattr(self, "skill_repo_tree"):
             selected_repo_id = self.skill_repo_tree.focus()
             for item in self.skill_repo_tree.get_children():
                 self.skill_repo_tree.delete(item)
-            visible_repos = self._filtered_skill_market_repos()
-            for repo in visible_repos:
+            for row in display.repo_rows:
                 self.skill_repo_tree.insert(
                     "",
                     "end",
-                    iid=repo.id,
-                    values=(
-                        repo.url,
-                        repo.branch,
-                        compact_text(repo.last_sync_commit or "-", 12),
-                        "是" if repo.auto_update else "否",
-                    ),
+                    iid=row.repo_id,
+                    values=row.values,
                 )
-            if selected_repo_id and any(repo.id == selected_repo_id for repo in visible_repos):
+            if selected_repo_id and any(row.repo_id == selected_repo_id for row in display.repo_rows):
                 self.skill_repo_tree.selection_set(selected_repo_id)
                 self.skill_repo_tree.focus(selected_repo_id)
 
@@ -3777,47 +3784,30 @@ class CodexSwitchApp:
             selected_group_id = self.skill_group_tree.focus()
             for item in self.skill_group_tree.get_children():
                 self.skill_group_tree.delete(item)
-            for group in self.skill_groups:
+            for row in display.group_rows:
                 self.skill_group_tree.insert(
                     "",
                     "end",
-                    iid=group.id,
-                    values=(group.name, len(group.skills), compact_text(group.description or "-", 54)),
+                    iid=row.group_id,
+                    values=row.values,
                 )
-            if selected_group_id and any(group.id == selected_group_id for group in self.skill_groups):
+            if selected_group_id and any(row.group_id == selected_group_id for row in display.group_rows):
                 self.skill_group_tree.selection_set(selected_group_id)
                 self.skill_group_tree.focus(selected_group_id)
 
         if hasattr(self, "skill_project_tree"):
             for item in self.skill_project_tree.get_children():
                 self.skill_project_tree.delete(item)
-            group_by_id = {group.id: group for group in self.skill_groups}
-            for project in self.projects:
-                group_names = [
-                    group_by_id[group_id].name
-                    for group_id in (project.skill_group_ids or [])
-                    if group_id in group_by_id
-                ]
-                skill_names = [skill.name for skill in project.skills] or list(project.skill_names or [])
+            for row in display.project_rows:
                 self.skill_project_tree.insert(
                     "",
                     "end",
-                    iid=project.id,
-                    values=(
-                        project.name,
-                        compact_text(", ".join(group_names) if group_names else "未启用", 36),
-                        compact_text(", ".join(skill_names) if skill_names else "未启用", 48),
-                    ),
+                    iid=row.project_id,
+                    values=row.values,
                 )
-
-        visible_repo_count = len(self._filtered_skill_market_repos()) if hasattr(self, "skill_repo_tree") else len(self.skill_market_repos)
-        repo_filter_text = ""
-        if hasattr(self, "skill_repo_filter_var") and self.skill_repo_filter_var.get().strip():
-            repo_filter_text = f"，仓库筛选 {visible_repo_count}/{len(self.skill_market_repos)}"
-        self.skills_hint_var.set(f"{len(self.skill_market_repos)} 个仓库{repo_filter_text}，{len(self.skill_groups)} 个本地组，{len(self.projects)} 个项目。")
+        self.skills_hint_var.set(display.hint_text)
         if hasattr(self, "skill_market_frame"):
-            error_text = f"，{len(market_errors)} 个仓库读取失败" if market_errors else ""
-            self.skill_repo_preview_var.set(f"市场显示 {len(market_entries)} 个 Skills{error_text}。")
+            self.skill_repo_preview_var.set(display.preview_status_text)
         if hasattr(self, "skill_repo_tree"):
             self._refresh_skill_repo_detail()
         self._refresh_skill_group_detail()

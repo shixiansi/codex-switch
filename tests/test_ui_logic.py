@@ -124,6 +124,7 @@ from codex_switch.ui.mcp_logic import (
     render_mcp_preview,
     safe_mcp_server_names,
 )
+from codex_switch.ui.skills_logic import build_skills_tab_display
 from codex_switch.ui.project_logic import (
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
@@ -980,6 +981,36 @@ command = "node"
         self.assertEqual(detail.selected_name_text, "alpha")
         self.assertIn("type: stdio", detail.summary_text)
         self.assertIn("[mcp_servers.alpha]", detail.preview_text)
+
+    def test_skills_tab_display_builds_repo_group_project_rows_and_hints(self) -> None:
+        group = SkillGroup.create("frontend", skills=[SkillDefinition.create("skill-a", content="a")], description="UI helpers")
+        repo_a = SkillMarketRepo.create("https://github.com/example/a", branch="main", last_sync_commit="abcdef123456", auto_update=True)
+        repo_b = SkillMarketRepo.create("https://github.com/example/b", branch="release", auto_update=False)
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            skill_group_ids=[group.id],
+            skills=[SkillDefinition.create("skill-a", content="a")],
+            skill_names=["skill-a"],
+        )
+
+        display = build_skills_tab_display(
+            all_repos=[repo_a, repo_b],
+            visible_repos=[repo_b],
+            groups=[group],
+            projects=[project],
+            market_entries_count=3,
+            market_errors_count=1,
+            repo_filter_active=True,
+        )
+
+        self.assertEqual([row.repo_id for row in display.repo_rows], [repo_b.id])
+        self.assertEqual(display.group_rows[0].group_id, group.id)
+        self.assertEqual(display.project_rows[0].project_id, project.id)
+        self.assertIn("仓库筛选 1/2", display.hint_text)
+        self.assertIn("1 个本地组", display.hint_text)
+        self.assertIn("市场显示 3 个 Skills", display.preview_status_text)
+        self.assertIn("1 个仓库读取失败", display.preview_status_text)
 
     def test_hot_update_logic_helpers_append_render_and_summarize(self) -> None:
         events = append_hot_update_event(

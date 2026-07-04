@@ -17,6 +17,7 @@ from codex_switch.models import (
 )
 from codex_switch.skills import SkillSource, discover_skill_sources
 from codex_switch.ui.project_logic import project_claude_profile_id, project_codex_profile_id
+from codex_switch.ui.utils import compact_text
 
 
 MODEL_METADATA_RELATIVE_PATHS = (
@@ -37,6 +38,33 @@ class SkillMarketEntry:
     repo_url: str
     author: str
     source: SkillSource
+
+
+@dataclass(frozen=True)
+class SkillRepoRow:
+    repo_id: str
+    values: tuple[str, str, str, str]
+
+
+@dataclass(frozen=True)
+class SkillGroupRow:
+    group_id: str
+    values: tuple[str, int, str]
+
+
+@dataclass(frozen=True)
+class SkillProjectRow:
+    project_id: str
+    values: tuple[str, str, str]
+
+
+@dataclass(frozen=True)
+class SkillsTabDisplay:
+    repo_rows: list[SkillRepoRow]
+    group_rows: list[SkillGroupRow]
+    project_rows: list[SkillProjectRow]
+    hint_text: str
+    preview_status_text: str
 
 
 def github_repo_author(repo_url: str) -> str:
@@ -102,6 +130,72 @@ def load_skill_market_entries(
             for source in sources
         )
     return filter_skill_market_entries(entries, query), errors
+
+
+def build_skills_tab_display(
+    *,
+    all_repos: list[SkillMarketRepo],
+    visible_repos: list[SkillMarketRepo],
+    groups: list[SkillGroup],
+    projects: list[ProjectRecord],
+    market_entries_count: int,
+    market_errors_count: int,
+    repo_filter_active: bool,
+) -> SkillsTabDisplay:
+    repo_rows = [
+        SkillRepoRow(
+            repo_id=repo.id,
+            values=(
+                repo.url,
+                repo.branch,
+                compact_text(repo.last_sync_commit or "-", 12),
+                "是" if repo.auto_update else "否",
+            ),
+        )
+        for repo in visible_repos
+    ]
+
+    group_rows = [
+        SkillGroupRow(
+            group_id=group.id,
+            values=(group.name, len(group.skills), compact_text(group.description or "-", 54)),
+        )
+        for group in groups
+    ]
+
+    group_by_id = {group.id: group for group in groups}
+    project_rows: list[SkillProjectRow] = []
+    for project in projects:
+        group_names = [
+            group_by_id[group_id].name
+            for group_id in (project.skill_group_ids or [])
+            if group_id in group_by_id
+        ]
+        skill_names = [skill.name for skill in project.skills] or list(project.skill_names or [])
+        project_rows.append(
+            SkillProjectRow(
+                project_id=project.id,
+                values=(
+                    project.name,
+                    compact_text(", ".join(group_names) if group_names else "未配置", 36),
+                    compact_text(", ".join(skill_names) if skill_names else "未配置", 48),
+                ),
+            )
+        )
+
+    repo_filter_text = ""
+    if repo_filter_active:
+        repo_filter_text = f"；仓库筛选 {len(visible_repos)}/{len(all_repos)}"
+    hint_text = f"{len(all_repos)} 个仓库{repo_filter_text}；{len(groups)} 个本地组，{len(projects)} 个项目。"
+    error_text = f"；{market_errors_count} 个仓库读取失败" if market_errors_count else ""
+    preview_status_text = f"市场显示 {market_entries_count} 个 Skills{error_text}。"
+    return SkillsTabDisplay(
+        repo_rows=repo_rows,
+        group_rows=group_rows,
+        project_rows=project_rows,
+        hint_text=hint_text,
+        preview_status_text=preview_status_text,
+    )
 
 
 def existing_repo_files(repo_root: Path, relative_paths: tuple[Path, ...]) -> list[Path]:
