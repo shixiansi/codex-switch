@@ -7,7 +7,7 @@ from typing import Callable
 from codex_switch.models import Profile, ProjectRecord, SkillDefinition, SkillGroup
 from codex_switch.project_template import ProjectTemplateStatus
 from codex_switch.skills import SkillSource, resolve_selected_skill_sources, skill_selection_summary
-from codex_switch.ui.utils import project_start_script_paths
+from codex_switch.ui.utils import compact_text, project_start_script_paths
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,20 @@ class ProjectTemplateDisplay:
     generated_text: str
     badge_text: str
     badge_state: str
+
+
+@dataclass(frozen=True)
+class ProjectTreeRow:
+    project_id: str
+    values: tuple[str, str, str, str, str]
+
+
+@dataclass(frozen=True)
+class ProjectTabDisplay:
+    selected_project_id: str | None
+    rows: list[ProjectTreeRow]
+    generated_count: int
+    hint_text: str
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -78,6 +92,12 @@ def project_root_path(project: ProjectRecord) -> Path:
 
 def project_text_file_path(project: ProjectRecord, relative_path: str) -> Path:
     return project_root_path(project) / relative_path
+
+
+def resolve_selected_project_id(projects: list[ProjectRecord], selected_project_id: str | None) -> str | None:
+    if selected_project_id and any(project.id == selected_project_id for project in projects):
+        return selected_project_id
+    return projects[0].id if projects else None
 
 
 def project_github_label(project: ProjectRecord, *, default_ref: str) -> str:
@@ -196,6 +216,49 @@ def project_template_display(
         generated_text="尚未生成项目模板。",
         badge_text="未生成",
         badge_state="neutral",
+    )
+
+
+def project_tab_display(
+    projects: list[ProjectRecord],
+    *,
+    selected_project_id: str | None,
+    profile_by_id: Callable[[str | None], Profile | None],
+    project_codex_profile_id: Callable[[ProjectRecord], str],
+    project_claude_profile_id: Callable[[ProjectRecord], str],
+    project_mcp_summary: Callable[[ProjectRecord], str],
+    project_status: Callable[[ProjectRecord], ProjectTemplateStatus | None],
+) -> ProjectTabDisplay:
+    resolved_selected_id = resolve_selected_project_id(projects, selected_project_id)
+    rows: list[ProjectTreeRow] = []
+    generated_count = 0
+
+    for project in projects:
+        codex_profile = profile_by_id(project_codex_profile_id(project))
+        claude_profile = profile_by_id(project_claude_profile_id(project))
+        codex_name = codex_profile.name if codex_profile else "绑定配置已删除"
+        claude_name = claude_profile.name if claude_profile else "绑定配置已删除"
+        rows.append(
+            ProjectTreeRow(
+                project_id=project.id,
+                values=(
+                    project.name,
+                    compact_text(project.project_dir, 42),
+                    compact_text(codex_name, 16),
+                    compact_text(claude_name, 16),
+                    compact_text(project_mcp_summary(project), 16),
+                ),
+            )
+        )
+        status = project_status(project)
+        if status is not None and status.generated_paths:
+            generated_count += 1
+
+    return ProjectTabDisplay(
+        selected_project_id=resolved_selected_id,
+        rows=rows,
+        generated_count=generated_count,
+        hint_text=f"共 {len(projects)} 个项目，已生成模板 {generated_count} 个。",
     )
 
 

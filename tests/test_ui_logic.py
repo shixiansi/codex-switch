@@ -59,6 +59,7 @@ from codex_switch.project_template import (
     CLAUDE_BASE_URL_ENV_KEY,
     CLAUDE_FALLBACK_MODEL_ENV_KEY,
     CLAUDE_MODEL_ENV_KEY,
+    ProjectTemplateStatus,
 )
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
@@ -119,6 +120,7 @@ from codex_switch.ui.project_logic import (
     project_codex_script_paths,
     project_codex_vscode_command,
     project_custom_run_command,
+    project_tab_display,
     project_root_path,
     project_text_file_path,
     project_vscode_open_command,
@@ -888,6 +890,48 @@ class UiFilterTests(unittest.TestCase):
             )
             self.assertEqual(project_codex_cmd_command(cmd_path), ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(project_claude_cmd_command(), ("cmd.exe", "/k", "claude"))
+
+    def test_project_tab_display_builds_rows_and_generated_count(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            first = ProjectRecord.create(str(temp_dir / "first"), "codex-a", claude_profile_id="claude-a")
+            second = ProjectRecord.create(str(temp_dir / "second"), "codex-b", claude_profile_id="claude-b")
+            codex_a = Profile.create("Codex A", "https://a.example.com", "sk-a")
+            codex_a.id = "codex-a"
+            claude_a = Profile.create("Claude A", "https://claude-a.example.com", "sk-ca", vendor=VENDOR_CLAUDE)
+            claude_a.id = "claude-a"
+
+            def profile_by_id(profile_id: str | None) -> Profile | None:
+                return {
+                    "codex-a": codex_a,
+                    "claude-a": claude_a,
+                }.get(profile_id)
+
+            generated_status = ProjectTemplateStatus(
+                generated_paths=[temp_dir / "first" / "generated.txt"],
+                backup_dir=None,
+                project_root=temp_dir / "first",
+                start_script_path=temp_dir / "first" / CODEX_SCRIPT_DIRNAME / "start-codex.ps1",
+            )
+
+            display = project_tab_display(
+                [first, second],
+                selected_project_id="missing-project",
+                profile_by_id=profile_by_id,
+                project_codex_profile_id=project_codex_profile_id,
+                project_claude_profile_id=project_claude_profile_id,
+                project_mcp_summary=lambda project: f"mcp:{project.name}",
+                project_status=lambda project: generated_status if project.id == first.id else None,
+            )
+
+            self.assertEqual(display.selected_project_id, first.id)
+            self.assertEqual(display.generated_count, 1)
+            self.assertEqual(display.hint_text, "共 2 个项目，已生成模板 1 个。")
+            self.assertEqual(display.rows[0].project_id, first.id)
+            self.assertEqual(display.rows[0].values[0], first.name)
+            self.assertIn("Codex A", display.rows[0].values[2])
+            self.assertIn("Claude A", display.rows[0].values[3])
+            self.assertEqual(display.rows[1].project_id, second.id)
+            self.assertIn("绑定配置已删除", display.rows[1].values[2])
 
     def test_project_template_option_helpers_build_service_inputs(self) -> None:
         project_skill = SkillDefinition.create("prompt-helper", content="Use short answers.")

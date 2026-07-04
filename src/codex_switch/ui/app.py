@@ -197,6 +197,7 @@ from codex_switch.ui.project_logic import (
     project_mcp_selection_summary,
     project_root_path,
     project_skill_selection_summary,
+    project_tab_display,
     project_template_display,
     project_text_file_path,
     project_vscode_open_command,
@@ -3389,45 +3390,38 @@ class CodexSwitchApp:
         self.status_var.set(f"已选择模型：{model}")
 
     def refresh_project_tab(self) -> None:
-        selected_id = self.selected_project_id
-        generated_count = 0
-
-        if selected_id and not any(project.id == selected_id for project in self.projects):
-            selected_id = self.projects[0].id if self.projects else None
-            self.selected_project_id = selected_id
+        display = project_tab_display(
+            self.projects,
+            selected_project_id=self.selected_project_id,
+            profile_by_id=self._profile_by_id,
+            project_codex_profile_id=project_codex_profile_id,
+            project_claude_profile_id=project_claude_profile_id,
+            project_mcp_summary=self._project_mcp_selection_summary,
+            project_status=lambda project: (
+                self.project_template_service.inspect(project_root_path(project))
+                if project_root_path(project).exists()
+                else None
+            ),
+        )
+        self.selected_project_id = display.selected_project_id
 
         self.suppress_selection_events = True
         try:
             for item in self.project_tree.get_children():
                 self.project_tree.delete(item)
-            for project in self.projects:
-                codex_profile = self._profile_by_id(project_codex_profile_id(project))
-                claude_profile = self._profile_by_id(project_claude_profile_id(project))
-                codex_name = codex_profile.name if codex_profile else "配置已删除"
-                claude_name = claude_profile.name if claude_profile else "配置已删除"
+            for row in display.rows:
                 self.project_tree.insert(
                     "",
                     "end",
-                    iid=project.id,
-                    values=(
-                        project.name,
-                        compact_text(project.project_dir, 42),
-                        compact_text(codex_name, 16),
-                        compact_text(claude_name, 16),
-                        compact_text(self._project_mcp_selection_summary(project), 16),
-                    ),
+                    iid=row.project_id,
+                    values=row.values,
                 )
-                project_root = project_root_path(project)
-                if project_root.exists():
-                    status = self.project_template_service.inspect(project_root)
-                    if status.generated_paths:
-                        generated_count += 1
         finally:
             self.suppress_selection_events = False
 
         self._sync_project_tree_selection()
 
-        self.project_hint_var.set(f"共 {len(self.projects)} 个项目，已生成模板 {generated_count} 个。")
+        self.project_hint_var.set(display.hint_text)
         self._refresh_project_detail()
         self.refresh_proxy_tab()
 
