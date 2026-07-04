@@ -166,7 +166,9 @@ from codex_switch.ui.hot_update_logic import (
     HOT_UPDATE_STATUS_LABELS,
     append_hot_update_event,
     hot_update_event_line,
+    HotUpdateDecisionTexts,
     hot_update_summary_text,
+    process_hot_update_candidate,
 )
 from codex_switch.ui.library_logic import (
     build_global_tab_display,
@@ -2812,80 +2814,44 @@ class CodexSwitchApp:
                     automatic=automatic,
                 )
                 continue
-            if not update.has_update:
-                self._set_skill_repo_commit(repo, update.latest_commit)
-                if not automatic:
-                    self._record_hot_update_event(
-                        scope="skill_repo",
-                        target=repo.url,
-                        status="current",
-                        detail="远端提交未变化。",
-                        commit=update.latest_commit,
-                        automatic=False,
+            decision = process_hot_update_candidate(
+                has_update=update.has_update,
+                latest_commit=update.latest_commit,
+                automatic=automatic,
+                auto_update_enabled=repo.auto_update,
+                texts=HotUpdateDecisionTexts(
+                    current="\u8fdc\u7aef\u63d0\u4ea4\u672a\u53d8\u5316\u3002",
+                    auto_updated="\u81ea\u52a8\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730 Skills\u3002",
+                    auto_pending="\u81ea\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
+                    manual_updated="\u7528\u6237\u786e\u8ba4\u540e\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730 Skills\u3002",
+                    manual_pending="\u624b\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
+                    declined="\u7528\u6237\u6682\u4e0d\u62c9\u53d6\u3002",
+                    auto_disabled="\u672a\u914d\u7f6e\u4ed3\u5e93\u81ea\u52a8\u66f4\u65b0\u3002",
+                ),
+                apply_update=lambda: self._apply_skill_repo_update(
+                    repo,
+                    automatic=repo.auto_update,
+                    expected_commit=update.latest_commit,
+                ),
+                set_current_commit=lambda commit: self._set_skill_repo_commit(repo, commit),
+                confirm_update=(
+                    lambda: messagebox.askyesno(
+                        "\u53d1\u73b0 Skills \u4ed3\u5e93\u66f4\u65b0",
+                        f"{repo.url}\n\u8fdc\u7aef\u63d0\u4ea4\uff1a{update.short_latest}\n\u662f\u5426\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730\uff1f",
+                        parent=self.root,
                     )
-                continue
-            if repo.auto_update:
-                if self._apply_skill_repo_update(repo, automatic=True, expected_commit=update.latest_commit):
-                    repo_updates += 1
-                    self._record_hot_update_event(
-                        scope="skill_repo",
-                        target=repo.url,
-                        status="updated",
-                        detail="自动拉取并重载本地 Skills。",
-                        commit=update.latest_commit,
-                        automatic=True,
-                    )
-                else:
-                    pending_repo_updates += 1
-                    self._record_hot_update_event(
-                        scope="skill_repo",
-                        target=repo.url,
-                        status="pending",
-                        detail="自动更新未完成，保留待确认。",
-                        commit=update.latest_commit,
-                        automatic=True,
-                    )
-            elif not automatic:
-                if messagebox.askyesno("发现 Skills 仓库更新", f"{repo.url}\n最新提交：{update.short_latest}\n是否拉取并重载？", parent=self.root):
-                    if self._apply_skill_repo_update(repo, automatic=False, expected_commit=update.latest_commit):
-                        repo_updates += 1
-                        self._record_hot_update_event(
-                            scope="skill_repo",
-                            target=repo.url,
-                            status="updated",
-                            detail="用户确认后拉取并重载本地 Skills。",
-                            commit=update.latest_commit,
-                            automatic=False,
-                        )
-                    else:
-                        pending_repo_updates += 1
-                        self._record_hot_update_event(
-                            scope="skill_repo",
-                            target=repo.url,
-                            status="pending",
-                            detail="手动更新未完成，保留待确认。",
-                            commit=update.latest_commit,
-                            automatic=False,
-                        )
-                else:
-                    pending_repo_updates += 1
-                    self._record_hot_update_event(
-                        scope="skill_repo",
-                        target=repo.url,
-                        status="pending",
-                        detail="用户暂不拉取。",
-                        commit=update.latest_commit,
-                        automatic=False,
-                    )
-            else:
-                pending_repo_updates += 1
+                ) if not automatic and not repo.auto_update else None,
+            )
+            repo_updates += decision.updated_delta
+            pending_repo_updates += decision.pending_delta
+            if decision.event_status:
                 self._record_hot_update_event(
                     scope="skill_repo",
                     target=repo.url,
-                    status="pending",
-                    detail="未启用仓库自动更新。",
-                    commit=update.latest_commit,
-                    automatic=True,
+                    status=decision.event_status,
+                    detail=decision.event_detail,
+                    commit=decision.commit,
+                    automatic=decision.event_automatic,
                 )
 
         for project in list(self.projects):
@@ -2904,80 +2870,44 @@ class CodexSwitchApp:
                     automatic=automatic,
                 )
                 continue
-            if not update.has_update:
-                self._set_project_commit(project, update.latest_commit)
-                if not automatic:
-                    self._record_hot_update_event(
-                        scope="project",
-                        target=project.name,
-                        status="current",
-                        detail="远端提交未变化。",
-                        commit=update.latest_commit,
-                        automatic=False,
+            decision = process_hot_update_candidate(
+                has_update=update.has_update,
+                latest_commit=update.latest_commit,
+                automatic=automatic,
+                auto_update_enabled=project.github_auto_update,
+                texts=HotUpdateDecisionTexts(
+                    current="\u8fdc\u7aef\u63d0\u4ea4\u672a\u53d8\u5316\u3002",
+                    auto_updated="\u81ea\u52a8\u6267\u884c git pull --ff-only \u5e76\u540c\u6b65\u9879\u76ee\u5143\u6570\u636e\u3002",
+                    auto_pending="\u81ea\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
+                    manual_updated="\u7528\u6237\u786e\u8ba4\u540e\u6267\u884c git pull --ff-only \u5e76\u540c\u6b65\u9879\u76ee\u5143\u6570\u636e\u3002",
+                    manual_pending="\u624b\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
+                    declined="\u7528\u6237\u6682\u4e0d\u62c9\u53d6\u3002",
+                    auto_disabled="\u672a\u914d\u7f6e\u9879\u76ee\u81ea\u52a8\u66f4\u65b0\u3002",
+                ),
+                apply_update=lambda: self._apply_project_update(
+                    project,
+                    update.latest_commit,
+                    automatic=project.github_auto_update,
+                ),
+                set_current_commit=lambda commit: self._set_project_commit(project, commit),
+                confirm_update=(
+                    lambda: messagebox.askyesno(
+                        "\u53d1\u73b0\u9879\u76ee\u66f4\u65b0",
+                        f"{project.name}\n\u8fdc\u7aef\u63d0\u4ea4\uff1a{update.short_latest}\n\u662f\u5426\u6267\u884c git pull --ff-only\uff1f",
+                        parent=self.root,
                     )
-                continue
-            if project.github_auto_update:
-                if self._apply_project_update(project, update.latest_commit, automatic=True):
-                    project_updates += 1
-                    self._record_hot_update_event(
-                        scope="project",
-                        target=project.name,
-                        status="updated",
-                        detail="自动执行 git pull --ff-only 并同步项目元数据。",
-                        commit=update.latest_commit,
-                        automatic=True,
-                    )
-                else:
-                    pending_project_updates += 1
-                    self._record_hot_update_event(
-                        scope="project",
-                        target=project.name,
-                        status="pending",
-                        detail="自动更新未完成，保留待确认。",
-                        commit=update.latest_commit,
-                        automatic=True,
-                    )
-            elif not automatic:
-                if messagebox.askyesno("发现项目更新", f"{project.name}\n最新提交：{update.short_latest}\n是否执行 git pull --ff-only？", parent=self.root):
-                    if self._apply_project_update(project, update.latest_commit, automatic=False):
-                        project_updates += 1
-                        self._record_hot_update_event(
-                            scope="project",
-                            target=project.name,
-                            status="updated",
-                            detail="用户确认后执行 git pull --ff-only 并同步项目元数据。",
-                            commit=update.latest_commit,
-                            automatic=False,
-                        )
-                    else:
-                        pending_project_updates += 1
-                        self._record_hot_update_event(
-                            scope="project",
-                            target=project.name,
-                            status="pending",
-                            detail="手动更新未完成，保留待确认。",
-                            commit=update.latest_commit,
-                            automatic=False,
-                        )
-                else:
-                    pending_project_updates += 1
-                    self._record_hot_update_event(
-                        scope="project",
-                        target=project.name,
-                        status="pending",
-                        detail="用户暂不拉取。",
-                        commit=update.latest_commit,
-                        automatic=False,
-                    )
-            else:
-                pending_project_updates += 1
+                ) if not automatic and not project.github_auto_update else None,
+            )
+            project_updates += decision.updated_delta
+            pending_project_updates += decision.pending_delta
+            if decision.event_status:
                 self._record_hot_update_event(
                     scope="project",
                     target=project.name,
-                    status="pending",
-                    detail="未启用项目自动更新。",
-                    commit=update.latest_commit,
-                    automatic=True,
+                    status=decision.event_status,
+                    detail=decision.event_detail,
+                    commit=decision.commit,
+                    automatic=decision.event_automatic,
                 )
 
         summary = hot_update_summary_text(
@@ -2989,7 +2919,7 @@ class CodexSwitchApp:
         )
         self._record_hot_update_event(
             scope="check",
-            target="自动检查" if automatic else "手动检查",
+            target="\u81ea\u52a8\u68c0\u67e5" if automatic else "\u624b\u52a8\u68c0\u67e5",
             status="summary",
             detail=summary,
             automatic=automatic,

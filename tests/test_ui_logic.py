@@ -109,9 +109,11 @@ from codex_switch.ui.global_logic import (
     resolve_global_profile_id,
 )
 from codex_switch.ui.hot_update_logic import (
+    HotUpdateDecisionTexts,
     append_hot_update_event,
     hot_update_event_line,
     hot_update_summary_text,
+    process_hot_update_candidate,
 )
 from codex_switch.ui.library_logic import (
     build_library_detail_display,
@@ -1119,6 +1121,55 @@ command = "node"
         self.assertIn("仓库 1、项目 2", summary)
         self.assertIn("待确认仓库 1、项目 0", summary)
         self.assertIn("错误 3 条", summary)
+
+    def test_process_hot_update_candidate_handles_manual_and_auto_paths(self) -> None:
+        commits = []
+        texts = HotUpdateDecisionTexts(
+            current="current",
+            auto_updated="auto updated",
+            auto_pending="auto pending",
+            manual_updated="manual updated",
+            manual_pending="manual pending",
+            declined="declined",
+            auto_disabled="auto disabled",
+        )
+
+        current = process_hot_update_candidate(
+            has_update=False,
+            latest_commit="abc",
+            automatic=False,
+            auto_update_enabled=False,
+            texts=texts,
+            apply_update=lambda: True,
+            set_current_commit=commits.append,
+        )
+        auto_pending = process_hot_update_candidate(
+            has_update=True,
+            latest_commit="def",
+            automatic=True,
+            auto_update_enabled=False,
+            texts=texts,
+            apply_update=lambda: False,
+        )
+        manual_declined = process_hot_update_candidate(
+            has_update=True,
+            latest_commit="ghi",
+            automatic=False,
+            auto_update_enabled=False,
+            texts=texts,
+            apply_update=lambda: False,
+            confirm_update=lambda: False,
+        )
+
+        self.assertEqual(commits, ["abc"])
+        self.assertEqual(current.event_status, "current")
+        self.assertEqual(current.event_detail, "current")
+        self.assertEqual(auto_pending.event_status, "pending")
+        self.assertEqual(auto_pending.event_detail, "auto disabled")
+        self.assertTrue(auto_pending.event_automatic)
+        self.assertEqual(manual_declined.event_status, "pending")
+        self.assertEqual(manual_declined.event_detail, "declined")
+        self.assertFalse(manual_declined.event_automatic)
 
     def test_project_tab_display_builds_rows_and_generated_count(self) -> None:
         with workspace_tempdir() as temp_dir:

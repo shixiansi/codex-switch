@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+
 from codex_switch.models import HOT_UPDATE_EVENT_LIMIT, HotUpdateEvent
 from codex_switch.ui.update_logic import software_update_error_detail
 
@@ -20,6 +23,27 @@ HOT_UPDATE_STATUS_LABELS = {
     "error": "错误",
     "summary": "完成",
 }
+
+
+@dataclass(frozen=True)
+class HotUpdateDecisionTexts:
+    current: str
+    auto_updated: str
+    auto_pending: str
+    manual_updated: str
+    manual_pending: str
+    declined: str
+    auto_disabled: str
+
+
+@dataclass(frozen=True)
+class HotUpdateDecision:
+    updated_delta: int
+    pending_delta: int
+    event_status: str | None
+    event_detail: str
+    event_automatic: bool
+    commit: str
 
 
 def append_hot_update_event(
@@ -71,3 +95,93 @@ def hot_update_summary_text(
     if error_count:
         return f"仓库同步检查完成，仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {error_count} 条"
     return f"仓库同步检查完成，仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
+
+
+def process_hot_update_candidate(
+    *,
+    has_update: bool,
+    latest_commit: str,
+    automatic: bool,
+    auto_update_enabled: bool,
+    texts: HotUpdateDecisionTexts,
+    apply_update: Callable[[], bool],
+    set_current_commit: Callable[[str], None] | None = None,
+    confirm_update: Callable[[], bool] | None = None,
+) -> HotUpdateDecision:
+    if not has_update:
+        if set_current_commit is not None and latest_commit:
+            set_current_commit(latest_commit)
+        if automatic:
+            return HotUpdateDecision(
+                updated_delta=0,
+                pending_delta=0,
+                event_status=None,
+                event_detail=texts.current,
+                event_automatic=False,
+                commit=latest_commit,
+            )
+        return HotUpdateDecision(
+            updated_delta=0,
+            pending_delta=0,
+            event_status="current",
+            event_detail=texts.current,
+            event_automatic=False,
+            commit=latest_commit,
+        )
+
+    if auto_update_enabled:
+        if apply_update():
+            return HotUpdateDecision(
+                updated_delta=1,
+                pending_delta=0,
+                event_status="updated",
+                event_detail=texts.auto_updated,
+                event_automatic=True,
+                commit=latest_commit,
+            )
+        return HotUpdateDecision(
+            updated_delta=0,
+            pending_delta=1,
+            event_status="pending",
+            event_detail=texts.auto_pending,
+            event_automatic=True,
+            commit=latest_commit,
+        )
+
+    if not automatic:
+        confirmed = confirm_update() if confirm_update is not None else False
+        if confirmed:
+            if apply_update():
+                return HotUpdateDecision(
+                    updated_delta=1,
+                    pending_delta=0,
+                    event_status="updated",
+                    event_detail=texts.manual_updated,
+                    event_automatic=False,
+                    commit=latest_commit,
+                )
+            return HotUpdateDecision(
+                updated_delta=0,
+                pending_delta=1,
+                event_status="pending",
+                event_detail=texts.manual_pending,
+                event_automatic=False,
+                commit=latest_commit,
+            )
+        return HotUpdateDecision(
+            updated_delta=0,
+            pending_delta=1,
+            event_status="pending",
+            event_detail=texts.declined,
+            event_automatic=False,
+            commit=latest_commit,
+        )
+
+    return HotUpdateDecision(
+        updated_delta=0,
+        pending_delta=1,
+        event_status="pending",
+        event_detail=texts.auto_disabled,
+        event_automatic=True,
+        commit=latest_commit,
+    )
