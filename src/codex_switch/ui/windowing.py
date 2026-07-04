@@ -14,10 +14,8 @@ _WM_NCDESTROY = 0x0082
 _WM_SETREDRAW = 0x000B
 
 _RDW_INVALIDATE = 0x0001
-_RDW_ERASE = 0x0004
 _RDW_ALLCHILDREN = 0x0080
-_RDW_UPDATENOW = 0x0100
-_REDRAW_FLAGS = _RDW_INVALIDATE | _RDW_ERASE | _RDW_ALLCHILDREN | _RDW_UPDATENOW
+_REDRAW_FLAGS = _RDW_INVALIDATE | _RDW_ALLCHILDREN
 
 
 def install_windows_drag_redraw_guard(window: tk.Misc) -> bool:
@@ -67,15 +65,26 @@ def install_windows_drag_redraw_guard(window: tk.Misc) -> bool:
         redraw_window.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
         redraw_window.restype = wintypes.BOOL
 
-        state = {"redraw_suspended": False, "removed": False}
+        state = {"redraw_suspended": False, "removed": False, "refresh_pending": False}
         subclass_id = uint_ptr(id(window))
 
-        def resume_redraw(target_hwnd: int) -> None:
+        def queue_refresh(target_hwnd: int) -> None:
+            state["refresh_pending"] = False
+            redraw_window(target_hwnd, None, None, _REDRAW_FLAGS)
+
+        def resume_redraw(target_hwnd: int, *, refresh: bool = True) -> None:
             if not state["redraw_suspended"]:
                 return
             state["redraw_suspended"] = False
             send_message(target_hwnd, _WM_SETREDRAW, 1, 0)
-            redraw_window(target_hwnd, None, None, _REDRAW_FLAGS)
+            if not refresh or state["refresh_pending"]:
+                return
+            state["refresh_pending"] = True
+            try:
+                # Avoid blocking the system move loop with a synchronous full repaint.
+                window.after_idle(lambda hwnd=target_hwnd: queue_refresh(hwnd))
+            except Exception:
+                queue_refresh(target_hwnd)
 
         def remove_subclass() -> None:
             if state["removed"]:
@@ -84,7 +93,7 @@ def install_windows_drag_redraw_guard(window: tk.Misc) -> bool:
             remove_window_subclass(hwnd, callback, subclass_id)
 
         def handle_destroy(_event: tk.Event) -> None:
-            resume_redraw(hwnd)
+            resume_redraw(hwnd, refresh=False)
             remove_subclass()
 
         def window_proc(
@@ -101,7 +110,7 @@ def install_windows_drag_redraw_guard(window: tk.Misc) -> bool:
             elif message == _WM_EXITSIZEMOVE:
                 resume_redraw(target_hwnd)
             elif message == _WM_NCDESTROY:
-                resume_redraw(target_hwnd)
+                resume_redraw(target_hwnd, refresh=False)
                 remove_subclass()
             return def_subclass_proc(target_hwnd, message, wparam, lparam)
 

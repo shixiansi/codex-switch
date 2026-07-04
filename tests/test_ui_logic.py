@@ -130,6 +130,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_rules_for_project,
     route_proxy_rules_for_project_profiles,
 )
+from codex_switch.ui import windowing
 from codex_switch.ui.utils import is_github_repo_url, resolve_mcp_editor_text
 from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
@@ -239,6 +240,12 @@ class WindowingTests(unittest.TestCase):
 
         with patch("codex_switch.ui.windowing.os.name", "nt"):
             self.assertTrue(install_windows_drag_redraw_guard(widget))
+
+    def test_drag_redraw_guard_redraw_flags_skip_sync_repaint(self) -> None:
+        self.assertEqual(
+            windowing._REDRAW_FLAGS,
+            windowing._RDW_INVALIDATE | windowing._RDW_ALLCHILDREN,
+        )
 
 
 class SoftwareUpdateTests(unittest.TestCase):
