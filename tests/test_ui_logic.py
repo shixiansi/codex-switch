@@ -112,17 +112,24 @@ from codex_switch.ui.project_logic import (
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
+    project_claude_cmd_launch_plan,
     project_claude_cmd_command,
+    project_claude_settings_edit_plan,
     project_claude_profile_id,
+    project_codex_cmd_launch_plan,
+    project_codex_config_edit_plan,
     project_codex_cmd_command,
     project_codex_binding_changed,
     project_codex_profile_id,
     project_codex_script_paths,
+    project_codex_vscode_launch_plan,
     project_codex_vscode_command,
     project_custom_run_command,
+    project_custom_run_launch_plan,
     project_tab_display,
     project_root_path,
     project_text_file_path,
+    project_vscode_launch_plan,
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
@@ -890,6 +897,30 @@ class UiFilterTests(unittest.TestCase):
             )
             self.assertEqual(project_codex_cmd_command(cmd_path), ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(project_claude_cmd_command(), ("cmd.exe", "/k", "claude"))
+
+            codex_edit = project_codex_config_edit_plan(project)
+            claude_edit = project_claude_settings_edit_plan(project)
+            self.assertEqual(codex_edit.path, temp_dir / ".codex" / "home" / "config.toml")
+            self.assertEqual(claude_edit.path, temp_dir / ".claude" / "settings.local.json")
+
+            vscode_plan = project_vscode_launch_plan(project)
+            custom_plan = project_custom_run_launch_plan(replace(project, run_command=" npm run dev "))
+            codex_vscode_plan = project_codex_vscode_launch_plan(project)
+            codex_cmd_plan = project_codex_cmd_launch_plan(project)
+            claude_cmd_plan = project_claude_cmd_launch_plan(project)
+
+            self.assertEqual(vscode_plan.command, ("cmd.exe", "/c", "code.cmd", str(temp_dir)))
+            self.assertEqual(vscode_plan.cwd, temp_dir)
+            self.assertEqual(vscode_plan.success_status, f"使用 VS Code 打开项目：{project.name}")
+            self.assertIsNotNone(custom_plan)
+            self.assertEqual(custom_plan.command, ("cmd.exe", "/k", "npm run dev"))
+            self.assertEqual(custom_plan.cwd, temp_dir)
+            self.assertEqual(codex_vscode_plan.required_path, ps1_path)
+            self.assertEqual(codex_vscode_plan.command, ("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1_path)))
+            self.assertEqual(codex_cmd_plan.required_path, cmd_path)
+            self.assertEqual(codex_cmd_plan.command, ("cmd.exe", "/k", str(cmd_path)))
+            self.assertEqual(claude_cmd_plan.command, ("cmd.exe", "/k", "claude"))
+            self.assertEqual(claude_cmd_plan.cwd, temp_dir)
 
     def test_project_tab_display_builds_rows_and_generated_count(self) -> None:
         with workspace_tempdir() as temp_dir:

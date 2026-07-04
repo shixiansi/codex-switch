@@ -51,6 +51,22 @@ class ProjectTabDisplay:
     hint_text: str
 
 
+@dataclass(frozen=True)
+class ProjectFileEditPlan:
+    path: Path
+    title: str
+    missing_message: str
+
+
+@dataclass(frozen=True)
+class ProjectLaunchPlan:
+    command: tuple[str, ...]
+    cwd: Path
+    success_status: str
+    required_path: Path | None = None
+    missing_message: str | None = None
+
+
 def project_codex_profile_id(project: ProjectRecord) -> str:
     return project.codex_profile_id or project.profile_id
 
@@ -92,6 +108,71 @@ def project_root_path(project: ProjectRecord) -> Path:
 
 def project_text_file_path(project: ProjectRecord, relative_path: str) -> Path:
     return project_root_path(project) / relative_path
+
+
+def project_codex_config_edit_plan(project: ProjectRecord) -> ProjectFileEditPlan:
+    return ProjectFileEditPlan(
+        path=project_text_file_path(project, ".codex/home/config.toml"),
+        title="修改 config.toml",
+        missing_message="未找到 .codex/home/config.toml，请先生成 Codex 模板。",
+    )
+
+
+def project_claude_settings_edit_plan(project: ProjectRecord) -> ProjectFileEditPlan:
+    return ProjectFileEditPlan(
+        path=project_text_file_path(project, ".claude/settings.local.json"),
+        title="修改 settings.local.json",
+        missing_message="未找到 .claude/settings.local.json，请先生成 Claude 模板。",
+    )
+
+
+def project_vscode_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
+    return ProjectLaunchPlan(
+        command=project_vscode_open_command(project),
+        cwd=project_root_path(project),
+        success_status=f"使用 VS Code 打开项目：{project.name}",
+    )
+
+
+def project_custom_run_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan | None:
+    command = project_custom_run_command(project)
+    if command is None:
+        return None
+    return ProjectLaunchPlan(
+        command=command,
+        cwd=project_root_path(project),
+        success_status=f"已在新窗口运行项目命令：{project.name}",
+    )
+
+
+def project_codex_vscode_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
+    ps1_path, _cmd_path = project_codex_script_paths(project)
+    return ProjectLaunchPlan(
+        command=project_codex_vscode_command(ps1_path),
+        cwd=project_root_path(project),
+        success_status=f"已通过 PowerShell 启动项目：{project.name}",
+        required_path=ps1_path,
+        missing_message="未找到 start-codex.ps1，请先生成项目模板。",
+    )
+
+
+def project_codex_cmd_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
+    _ps1_path, cmd_path = project_codex_script_paths(project)
+    return ProjectLaunchPlan(
+        command=project_codex_cmd_command(cmd_path),
+        cwd=project_root_path(project),
+        success_status=f"已通过 CMD 启动项目：{project.name}",
+        required_path=cmd_path,
+        missing_message="未找到 start-codex.cmd，请先生成项目模板。",
+    )
+
+
+def project_claude_cmd_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
+    return ProjectLaunchPlan(
+        command=project_claude_cmd_command(),
+        cwd=project_root_path(project),
+        success_status=f"已打开 Claude CMD：{project.name}",
+    )
 
 
 def resolve_selected_project_id(projects: list[ProjectRecord], selected_project_id: str | None) -> str | None:

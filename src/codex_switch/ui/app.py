@@ -182,18 +182,25 @@ from codex_switch.ui.project_logic import (
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
+    project_claude_cmd_launch_plan,
     project_claude_cmd_command,
+    project_claude_settings_edit_plan,
     project_claude_profile_texts,
     project_claude_profile_id,
+    project_codex_config_edit_plan,
+    project_codex_cmd_launch_plan,
     project_codex_cmd_command,
     project_codex_binding_changed,
     project_codex_profile_texts,
     project_codex_profile_id,
     project_codex_script_paths,
+    project_codex_vscode_launch_plan,
     project_codex_vscode_command,
     project_custom_run_command,
+    project_custom_run_launch_plan,
     project_github_label,
     project_github_update_label,
+    project_vscode_launch_plan,
     project_mcp_selection_summary,
     project_root_path,
     project_skill_selection_summary,
@@ -6406,23 +6413,23 @@ class CodexSwitchApp:
             parent=self.root,
         )
 
-    def _edit_project_text_file(self, *, relative_path: str, title: str, missing_message: str, validator) -> None:
+    def _edit_project_text_file(self, *, plan, validator) -> None:
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        target = project_text_file_path(project, relative_path)
+        target = plan.path
         if not target.exists():
-            messagebox.showinfo("提示", missing_message, parent=self.root)
+            messagebox.showinfo("提示", plan.missing_message, parent=self.root)
             return
         try:
             initial_text = target.read_text(encoding="utf-8")
         except OSError as exc:
-            messagebox.showerror("打开失败", f"读取配置文件失败：\n{exc}", parent=self.root)
+            messagebox.showerror("读失败", f"读取配置文件失败：\n{exc}", parent=self.root)
             return
         dialog = McpConfigDialog(
             self.root,
-            title=title,
+            title=plan.title,
             subtitle=str(target),
             initial_text=initial_text,
             validator=validator,
@@ -6438,10 +6445,12 @@ class CodexSwitchApp:
         self.status_var.set(f"已保存：{target}")
 
     def edit_project_codex_config(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
         self._edit_project_text_file(
-            relative_path=".codex/home/config.toml",
-            title="修改 config.toml",
-            missing_message="未找到 .codex/home/config.toml，请先生成 Codex 模板。",
+            plan=project_codex_config_edit_plan(project),
             validator=tomllib.loads,
         )
 
@@ -6452,12 +6461,17 @@ class CodexSwitchApp:
                 raise ValueError("settings.local.json 必须是一个 JSON object。")
             return payload
 
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
         self._edit_project_text_file(
-            relative_path=".claude/settings.local.json",
-            title="修改 settings.local.json",
-            missing_message="未找到 .claude/settings.local.json，请先生成 Claude 模板。",
+            plan=project_claude_settings_edit_plan(project),
             validator=validate_json,
         )
+
+    def _get_project_script_path(self, project: ProjectRecord) -> Path:
+        return preferred_project_script_path(project)
 
     def _get_project_script_path(self, project: ProjectRecord) -> Path:
         return preferred_project_script_path(project)
@@ -6483,16 +6497,17 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
+        plan = project_vscode_launch_plan(project)
         try:
             subprocess.Popen(
-                project_vscode_open_command(project),
+                plan.command,
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
         except Exception as exc:
-            messagebox.showerror("启动失败", f"使用 VS Code 打开项目失败：\n{exc}", parent=self.root)
+            messagebox.showerror("打开失败", f"使用 VS Code 打开项目失败：\n{exc}", parent=self.root)
             return
-        self.status_var.set(f"已用 VS Code 打开项目：{project.name}")
+        self.status_var.set(plan.success_status)
 
     def open_project_claude_cmd(self) -> None:
         project = self.get_selected_project()
@@ -6529,9 +6544,10 @@ class CodexSwitchApp:
                 fallback_model_override=claude_fallback_model,
             )
         )
+        plan = project_claude_cmd_launch_plan(project)
         try:
             subprocess.Popen(
-                project_claude_cmd_command(),
+                plan.command,
                 cwd=project.project_dir,
                 env=env,
                 creationflags=_CREATE_NEW_CONSOLE,
@@ -6539,25 +6555,25 @@ class CodexSwitchApp:
         except Exception as exc:
             messagebox.showerror("启动失败", f"打开 Claude CMD 失败：\n{exc}", parent=self.root)
             return
-        self.status_var.set(f"已打开 Claude CMD：{project.name}")
+        self.status_var.set(plan.success_status)
 
     def run_project(self) -> None:
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        run_command = project_custom_run_command(project)
-        if run_command:
+        plan = project_custom_run_launch_plan(project)
+        if plan is not None:
             try:
                 subprocess.Popen(
-                    run_command,
+                    plan.command,
                     cwd=project.project_dir,
                     creationflags=_CREATE_NEW_CONSOLE,
                 )
             except Exception as exc:
-                messagebox.showerror("运行失败", f"启动运行命令失败：\n{exc}", parent=self.root)
+                messagebox.showerror("运行失败", f"运行项目命令失败：\n{exc}", parent=self.root)
                 return
-            self.status_var.set(f"已在新窗口启动项目命令：{project.name}")
+            self.status_var.set(plan.success_status)
             return
         self.run_project_cmd()
 
@@ -6566,20 +6582,20 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        ps1_path, _cmd_path = project_codex_script_paths(project)
-        if not ps1_path.exists():
-            messagebox.showinfo("提示", "尚未找到 start-codex.ps1，请先生成项目模板。", parent=self.root)
+        plan = project_codex_vscode_launch_plan(project)
+        if plan.required_path is not None and not plan.required_path.exists():
+            messagebox.showinfo("提示", plan.missing_message, parent=self.root)
             return
         try:
             subprocess.Popen(
-                project_codex_vscode_command(ps1_path),
+                plan.command,
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
         except Exception as exc:
-            messagebox.showerror("启动失败", f"启动 VS Code 脚本失败：\n{exc}", parent=self.root)
+            messagebox.showerror("运行失败", f"打开 VS Code 脚本失败：\n{exc}", parent=self.root)
             return
-        self.status_var.set(f"已通过 PowerShell 启动项目：{project.name}")
+        self.status_var.set(plan.success_status)
 
     def run_project_cmd(self) -> None:
         project = self.get_selected_project()
@@ -6589,20 +6605,30 @@ class CodexSwitchApp:
         self._refresh_project_proxy_rules_before_action(project)
         if not self._sync_project_api_binding(project, sync_claude=False):
             return
-        _ps1_path, cmd_path = project_codex_script_paths(project)
-        if not cmd_path.exists():
-            messagebox.showinfo("提示", "尚未找到 start-codex.cmd，请先生成项目模板。", parent=self.root)
+        plan = project_codex_cmd_launch_plan(project)
+        if plan.required_path is not None and not plan.required_path.exists():
+            messagebox.showinfo("提示", plan.missing_message, parent=self.root)
             return
         try:
             subprocess.Popen(
-                project_codex_cmd_command(cmd_path),
+                plan.command,
                 cwd=project.project_dir,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
         except Exception as exc:
-            messagebox.showerror("启动失败", f"启动 CMD 脚本失败：\n{exc}", parent=self.root)
+            messagebox.showerror("运行失败", f"打开 CMD 脚本失败：\n{exc}", parent=self.root)
             return
-        self.status_var.set(f"已通过 CMD 启动项目：{project.name}")
+        self.status_var.set(plan.success_status)
+
+    def test_selected_profile(self) -> None:
+        profile = self.get_selected_profile()
+        if not profile:
+            messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
+            return
+        if not profile.api_provided:
+            messagebox.showinfo("提示", "当前配置未提供 API，无法执行健康检测。", parent=self.root)
+            return
+        self._run_health_check([profile.id])
 
     def test_selected_profile(self) -> None:
         profile = self.get_selected_profile()
