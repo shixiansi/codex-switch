@@ -161,6 +161,13 @@ from codex_switch.ui.model_batch_logic import (
     run_model_batch_requests,
     successful_model_batch_models,
 )
+from codex_switch.ui.hot_update_logic import (
+    HOT_UPDATE_SCOPE_LABELS,
+    HOT_UPDATE_STATUS_LABELS,
+    append_hot_update_event,
+    hot_update_event_line,
+    hot_update_summary_text,
+)
 from codex_switch.ui.mcp_logic import (
     mcp_contains_project_root,
     mcp_env_summary,
@@ -295,21 +302,6 @@ ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES = {
     label: value for value, label in ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS.items()
 }
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
-HOT_UPDATE_SCOPE_LABELS = {
-    "software": "软件",
-    "skill_repo": "Skills仓库",
-    "project": "项目",
-    "check": "检查",
-}
-HOT_UPDATE_STATUS_LABELS = {
-    "available": "发现新版本",
-    "current": "已是最新",
-    "updated": "已更新",
-    "opened": "已打开下载页",
-    "pending": "待确认",
-    "error": "错误",
-    "summary": "完成",
-}
 PROXY_LOG_RENDER_DELAY_MS = 80
 PROXY_STATE_FLUSH_DELAY_MS = 250
 
@@ -2790,29 +2782,19 @@ class CodexSwitchApp:
         commit: str = "",
         automatic: bool = False,
     ) -> None:
-        self.hot_update_events = [
-            *getattr(self, "hot_update_events", []),
-            HotUpdateEvent.create(
-                scope=scope,
-                target=target,
-                status=status,
-                detail=detail,
-                commit=commit,
-                automatic=automatic,
-            ),
-        ][-HOT_UPDATE_EVENT_LIMIT:]
+        self.hot_update_events = append_hot_update_event(
+            getattr(self, "hot_update_events", []),
+            scope=scope,
+            target=target,
+            status=status,
+            detail=detail,
+            commit=commit,
+            automatic=automatic,
+        )
         self._render_hot_update_log()
 
     def _hot_update_event_line(self, event: HotUpdateEvent) -> str:
-        scope = HOT_UPDATE_SCOPE_LABELS.get(event.scope, event.scope or "-")
-        status = HOT_UPDATE_STATUS_LABELS.get(event.status, event.status or "-")
-        mode = "自动" if event.automatic else "手动"
-        commit = f" @{event.commit[:12]}" if event.commit else ""
-        detail_text = event.detail
-        if event.scope == "software" and event.status == "error":
-            detail_text = software_update_error_detail(detail_text)
-        detail = f" - {detail_text}" if detail_text else ""
-        return f"{event.timestamp} [{mode}][{scope}][{status}] {event.target}{commit}{detail}"
+        return hot_update_event_line(event)
 
     def _render_hot_update_log(self) -> None:
         if not hasattr(self, "hot_update_log_text"):
@@ -3047,13 +3029,13 @@ class CodexSwitchApp:
                     automatic=True,
                 )
 
-        pending_text = ""
-        if pending_repo_updates or pending_project_updates:
-            pending_text = f"，待确认仓库 {pending_repo_updates}、项目 {pending_project_updates}"
-        if errors:
-            summary = f"仓库同步检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}，错误 {len(errors)} 个。"
-        else:
-            summary = f"仓库同步检查完成：仓库 {repo_updates}、项目 {project_updates}{pending_text}。"
+        summary = hot_update_summary_text(
+            repo_updates=repo_updates,
+            project_updates=project_updates,
+            pending_repo_updates=pending_repo_updates,
+            pending_project_updates=pending_project_updates,
+            error_count=len(errors),
+        )
         self._record_hot_update_event(
             scope="check",
             target="自动检查" if automatic else "手动检查",
@@ -6600,16 +6582,6 @@ class CodexSwitchApp:
             messagebox.showerror("运行失败", f"打开 CMD 脚本失败：\n{exc}", parent=self.root)
             return
         self.status_var.set(plan.success_status)
-
-    def test_selected_profile(self) -> None:
-        profile = self.get_selected_profile()
-        if not profile:
-            messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
-            return
-        if not profile.api_provided:
-            messagebox.showinfo("提示", "当前配置未提供 API，无法执行健康检测。", parent=self.root)
-            return
-        self._run_health_check([profile.id])
 
     def test_selected_profile(self) -> None:
         profile = self.get_selected_profile()

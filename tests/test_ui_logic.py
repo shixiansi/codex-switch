@@ -107,6 +107,11 @@ from codex_switch.ui.global_logic import (
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
 )
+from codex_switch.ui.hot_update_logic import (
+    append_hot_update_event,
+    hot_update_event_line,
+    hot_update_summary_text,
+)
 from codex_switch.ui.mcp_logic import (
     mcp_contains_project_root,
     mcp_env_summary,
@@ -949,6 +954,30 @@ command = "node"
         preview = render_mcp_preview("alpha", {"alpha": {"command": "python", "args": ["-m", "alpha"]}})
         self.assertIn("[mcp_servers.alpha]", preview)
         self.assertEqual(render_mcp_preview(None, {}), "")
+
+    def test_hot_update_logic_helpers_append_render_and_summarize(self) -> None:
+        events = append_hot_update_event(
+            [],
+            scope="software",
+            target="Codex Switch",
+            status="error",
+            detail="None",
+            automatic=True,
+        )
+        self.assertEqual(len(events), 1)
+        line = hot_update_event_line(events[0])
+        self.assertIn("[自动][软件][错误] Codex Switch", line)
+        self.assertIn("未能获取 GitHub 最新版本信息", line)
+        summary = hot_update_summary_text(
+            repo_updates=1,
+            project_updates=2,
+            pending_repo_updates=1,
+            pending_project_updates=0,
+            error_count=3,
+        )
+        self.assertIn("仓库 1、项目 2", summary)
+        self.assertIn("待确认仓库 1、项目 0", summary)
+        self.assertIn("错误 3 条", summary)
 
     def test_project_tab_display_builds_rows_and_generated_count(self) -> None:
         with workspace_tempdir() as temp_dir:
