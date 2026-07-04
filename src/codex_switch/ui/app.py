@@ -168,6 +168,19 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_event_line,
     hot_update_summary_text,
 )
+from codex_switch.ui.library_logic import (
+    build_library_detail_display,
+    build_library_tab_display,
+    current_status_counts,
+    health_override_note,
+    health_status_text,
+    profile_key_summary,
+    profile_library_model_summary,
+    profile_library_sort_key,
+    profile_model_summary,
+    profiles_for_library_view,
+    visible_profiles_for_filter,
+)
 from codex_switch.ui.mcp_logic import (
     mcp_detail_display,
     mcp_contains_project_root,
@@ -317,34 +330,6 @@ class GlobalApplyResult:
     codex_backup_dir: Path | None = None
     claude_backup_dir: Path | None = None
     claude_settings_path: Path | None = None
-
-
-def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
-    if not hide_error_profiles:
-        return list(profiles)
-    return [profile for profile in profiles if profile.effective_health_status != "error"]
-
-
-def profiles_for_library_view(profiles: list[Profile], profile_view: str) -> list[Profile]:
-    if profile_view == LIBRARY_VIEW_ALL:
-        return list(profiles)
-    if profile_view == VENDOR_CODEX:
-        return [profile for profile in profiles if profile_supports_codex(profile)]
-    if profile_view == VENDOR_CLAUDE:
-        return [profile for profile in profiles if profile_supports_claude(profile)]
-    if profile_view == VENDOR_OTHER:
-        return [profile for profile in profiles if profile.vendor == VENDOR_OTHER]
-    return []
-
-
-def profile_library_sort_key(profile: Profile) -> tuple[int, str, str]:
-    sign_in_rank = {
-        "未签到": 0,
-        "已签到": 1,
-        "无需签到": 2,
-    }.get(profile.sign_in_status, 3)
-    return sign_in_rank, profile.name.casefold(), profile.id
-
 
 class CodexSwitchApp:
     def __init__(self, root: tk.Tk) -> None:
@@ -2157,36 +2142,13 @@ class CodexSwitchApp:
         return next((item for item in self.profiles if item.id == profile_id), None)
 
     def _profile_key_summary(self, profile: Profile) -> str:
-        summary = hidden_secret(profile.api_key)
-        key_count = len(profile.api_keys)
-        if key_count > 1:
-            return f"{summary}（Key {profile.effective_active_api_key_index + 1}/{key_count}）"
-        return summary
+        return profile_key_summary(profile)
 
     def _profile_model_summary(self, profile: Profile) -> str:
-        if profile.vendor == VENDOR_CODEX:
-            return f"Codex：{profile.codex_display_model}"
-        if profile.vendor == VENDOR_CLAUDE:
-            return f"Claude：{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}"
-        if profile.vendor == VENDOR_OTHER:
-            return "-"
-        return (
-            f"Codex：{profile.codex_display_model}\n"
-            f"Claude：{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}"
-        )
+        return profile_model_summary(profile)
 
     def _profile_library_model_summary(self, profile: Profile) -> str:
-        if self.library_profile_view == VENDOR_CODEX:
-            return profile.codex_display_model
-        if self.library_profile_view == VENDOR_CLAUDE:
-            return profile.claude_display_model
-        if profile.vendor == VENDOR_CODEX:
-            return profile.codex_display_model
-        if profile.vendor == VENDOR_CLAUDE:
-            return profile.claude_display_model
-        if profile.vendor == VENDOR_GENERIC:
-            return f"{profile.codex_display_model} / {profile.claude_display_model}"
-        return "-"
+        return profile_library_model_summary(profile, self.library_profile_view)
 
     def _profiles_for_global_target(self, target: str) -> list[Profile]:
         if target == VENDOR_CODEX:
@@ -2364,11 +2326,7 @@ class CodexSwitchApp:
             self.suppress_selection_events = False
 
     def _current_status_counts(self) -> tuple[int, int, int, int]:
-        total = len(self.profiles)
-        healthy = sum(1 for profile in self.profiles if profile.effective_health_status == "healthy")
-        degraded = sum(1 for profile in self.profiles if profile.effective_health_status == "degraded")
-        error = sum(1 for profile in self.profiles if profile.effective_health_status == "error")
-        return total, healthy, degraded, error
+        return current_status_counts(self.profiles)
 
     def _mcp_summary(self, raw_toml: str | None) -> str:
         return mcp_summary(raw_toml)
@@ -2535,14 +2493,10 @@ class CodexSwitchApp:
         self.refresh_test_tab()
 
     def _health_status_text(self, profile: Profile) -> str:
-        label = STATUS_TEXT.get(profile.effective_health_status, "未检测")
-        return f"{label}（手动）" if profile.has_manual_health_override else label
+        return health_status_text(profile, STATUS_TEXT)
 
     def _health_override_note(self, profile: Profile | None) -> str:
-        if profile is None:
-            return "自动检测仅代表连通性，可在这里手动修正。"
-        if profile.has_manual_health_override:
-            return "当前以手动状态为准，自动检测结果仍保留在检测详情中。"
+        return health_override_note(profile)
         return "当前跟随自动检测结果，聊天不可用时可以手动修正。"
 
     def _on_health_override_changed(self, _event=None) -> None:
@@ -3077,38 +3031,32 @@ class CodexSwitchApp:
     def refresh_library_tab(self) -> None:
         self.hide_error_button_var.set("显示异常" if self.hide_error_profiles else "隐藏异常")
         self._sync_library_scope_tabs()
-        selected_id = self.selected_profile_id
-
-        visible_profiles = visible_profiles_for_filter(self.profiles, self.hide_error_profiles)
-        scope_profiles = profiles_for_library_view(visible_profiles, self.library_profile_view)
-        scope_label = dict(LIBRARY_PROFILE_VIEW_TABS).get(self.library_profile_view, "配置")
-        display_columns = (
-            LIBRARY_TREE_COLUMNS_WITH_VENDOR if self.library_profile_view == LIBRARY_VIEW_ALL else LIBRARY_TREE_COLUMNS
+        display = build_library_tab_display(
+            self.profiles,
+            hide_error_profiles=self.hide_error_profiles,
+            library_profile_view=self.library_profile_view,
+            selected_profile_id=self.selected_profile_id,
+            library_view_all=LIBRARY_VIEW_ALL,
+            library_tree_columns=LIBRARY_TREE_COLUMNS,
+            library_tree_columns_with_vendor=LIBRARY_TREE_COLUMNS_WITH_VENDOR,
+            profile_tree_iid=self._profile_tree_iid,
+            scope_label_map=dict(LIBRARY_PROFILE_VIEW_TABS),
+            status_text=STATUS_TEXT,
         )
-        self.profile_tree.configure(displaycolumns=display_columns)
-
-        if selected_id and not any(profile.id == selected_id for profile in scope_profiles):
-            selected_id = scope_profiles[0].id if scope_profiles else None
-            self.selected_profile_id = selected_id
+        self.profile_tree.configure(displaycolumns=display.display_columns)
+        self.selected_profile_id = display.selected_profile_id
 
         self.suppress_selection_events = True
         try:
             for item in self.profile_tree.get_children():
                 self.profile_tree.delete(item)
-            for profile in sorted(scope_profiles, key=profile_library_sort_key):
+            for row in display.rows:
                 self.profile_tree.insert(
                     "",
                     "end",
-                    iid=self._profile_tree_iid(self.library_profile_view, profile),
-                    values=(
-                        profile.name,
-                        profile.vendor_label,
-                        compact_text(profile.base_url, 42),
-                        compact_text(self._profile_library_model_summary(profile) or "-", 18),
-                        profile.sign_in_status,
-                        self._health_status_text(profile),
-                    ),
-                    tags=(profile.effective_health_status,),
+                    iid=row.item_id,
+                    values=row.values,
+                    tags=(row.tag,),
                 )
             self.profile_tree.tag_configure("healthy", foreground=PALETTE["success"])
             self.profile_tree.tag_configure("degraded", foreground=PALETTE["warning"])
@@ -3117,49 +3065,31 @@ class CodexSwitchApp:
         finally:
             self.suppress_selection_events = False
 
-        visible_healthy = sum(1 for profile in scope_profiles if profile.effective_health_status == "healthy")
-        if self.hide_error_profiles:
-            self.library_hint_var.set(f"{scope_label} 显示 {len(scope_profiles)} 套配置，健康配置 {visible_healthy} 套。")
-        else:
-            self.library_hint_var.set(f"{scope_label} 共 {len(scope_profiles)} 套配置，健康配置 {visible_healthy} 套。")
+        self.library_hint_var.set(display.hint_text)
         self._sync_profile_tree_selection()
         self._sync_global_profile_choice()
         self._refresh_library_detail()
 
     def _refresh_library_detail(self) -> None:
-        profile = self.get_selected_profile()
-        if not profile:
-            self.library_selected_name_var.set("未选择配置")
-            self.library_selected_provider_var.set("-")
-            self.library_selected_category_var.set("-")
-            self.library_selected_model_var.set("-")
-            self.library_selected_api_var.set("-")
-            self.library_selected_key_var.set("-")
-            self.library_selected_wire_var.set("-")
-            self.library_selected_sign_in_status_var.set("-")
-            self.library_selected_sign_in_url_var.set("-")
-            self.library_selected_notes_var.set("暂无备注")
-            self.library_health_badge.configure(text="未检测", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
-            self._set_library_api_link_state()
-            self._set_library_sign_in_link_state()
-            self._render_library_model_tags([], "最近检测尚未返回模型列表。")
-            return
-
-        self.library_selected_name_var.set(profile.name)
-        self.library_selected_provider_var.set(f"{profile.vendor_label} / {profile.provider_name}")
-        self.library_selected_category_var.set(profile.category_label)
-        self.library_selected_model_var.set(self._profile_model_summary(profile))
-        self.library_selected_api_var.set(profile.base_url if profile.api_provided else "未提供 API")
-        self.library_selected_key_var.set(self._profile_key_summary(profile) if profile.api_provided else "未提供 API")
-        self.library_selected_wire_var.set(profile.wire_api)
-        self.library_selected_sign_in_status_var.set(profile.sign_in_status)
-        self.library_selected_sign_in_url_var.set(profile.sign_in_url or "-")
-        self.library_selected_notes_var.set(profile.notes or "暂无备注")
-        badge_fg, badge_bg = STATUS_COLORS.get(profile.effective_health_status, STATUS_COLORS["unknown"])
-        self.library_health_badge.configure(text=self._health_status_text(profile), bg=badge_bg, fg=badge_fg)
+        detail = build_library_detail_display(
+            self.get_selected_profile(),
+            status_text=STATUS_TEXT,
+        )
+        self.library_selected_name_var.set(detail.selected_name)
+        self.library_selected_provider_var.set(detail.provider_text)
+        self.library_selected_category_var.set(detail.category_text)
+        self.library_selected_model_var.set(detail.model_text)
+        self.library_selected_api_var.set(detail.api_text)
+        self.library_selected_key_var.set(detail.key_text)
+        self.library_selected_wire_var.set(detail.wire_text)
+        self.library_selected_sign_in_status_var.set(detail.sign_in_status_text)
+        self.library_selected_sign_in_url_var.set(detail.sign_in_url_text)
+        self.library_selected_notes_var.set(detail.notes_text)
+        badge_fg, badge_bg = STATUS_COLORS.get(detail.badge_state, STATUS_COLORS["unknown"])
+        self.library_health_badge.configure(text=detail.badge_text, bg=badge_bg, fg=badge_fg)
         self._set_library_api_link_state()
         self._set_library_sign_in_link_state()
-        self._render_library_model_tags(profile.health.models, "最近检测尚未返回模型列表。")
+        self._render_library_model_tags(detail.model_tags, detail.empty_tags_text)
 
     def _set_link_label_state(self, label: tk.Label, url: str | None) -> None:
         if url and url != "-" and is_http_url(url):

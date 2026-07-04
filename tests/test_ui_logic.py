@@ -113,6 +113,19 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_event_line,
     hot_update_summary_text,
 )
+from codex_switch.ui.library_logic import (
+    build_library_detail_display,
+    build_library_tab_display,
+    current_status_counts,
+    health_override_note,
+    health_status_text,
+    profile_key_summary,
+    profile_library_model_summary,
+    profile_library_sort_key,
+    profile_model_summary,
+    profiles_for_library_view,
+    visible_profiles_for_filter,
+)
 from codex_switch.ui.mcp_logic import (
     mcp_detail_display,
     mcp_contains_project_root,
@@ -609,6 +622,45 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_CODEX), [codex, generic])
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_CLAUDE), [claude, generic])
         self.assertEqual(profiles_for_library_view(profiles, VENDOR_OTHER), [other])
+
+    def test_library_logic_helpers_build_tab_and_detail_display(self) -> None:
+        codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        codex.health = HealthResult(status="healthy", models=["gpt-5"])
+        claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude.health = HealthResult(status="degraded", models=["sonnet"])
+        claude.manual_health_status = "degraded"
+
+        tab = build_library_tab_display(
+            [codex, claude],
+            hide_error_profiles=False,
+            library_profile_view=LIBRARY_VIEW_ALL,
+            selected_profile_id="missing",
+            library_view_all=LIBRARY_VIEW_ALL,
+            library_tree_columns=("name", "base_url", "model", "sign_in", "health"),
+            library_tree_columns_with_vendor=("name", "vendor", "base_url", "model", "sign_in", "health"),
+            profile_tree_iid=lambda scope, profile: f"{scope}:{profile.id}",
+            scope_label_map={LIBRARY_VIEW_ALL: "全部"},
+            status_text={"healthy": "健康", "degraded": "降级", "error": "异常", "unknown": "未知"},
+        )
+        detail = build_library_detail_display(
+            claude,
+            status_text={"healthy": "健康", "degraded": "降级", "error": "异常", "unknown": "未知"},
+        )
+
+        self.assertEqual(current_status_counts([codex, claude]), (2, 1, 1, 0))
+        self.assertEqual(tab.selected_profile_id, codex.id)
+        self.assertEqual(tab.display_columns, ("name", "vendor", "base_url", "model", "sign_in", "health"))
+        self.assertEqual({row.item_id for row in tab.rows}, {f"{LIBRARY_VIEW_ALL}:{codex.id}", f"{LIBRARY_VIEW_ALL}:{claude.id}"})
+        self.assertIn("全部 共 2 个配置", tab.hint_text)
+        self.assertIn("降级", health_status_text(claude, {"degraded": "降级"}))
+        self.assertIn("手动", health_status_text(claude, {"degraded": "降级"}))
+        self.assertIn("*", profile_key_summary(codex))
+        self.assertIn("Claude", profile_model_summary(claude))
+        self.assertEqual(profile_library_model_summary(codex, LIBRARY_VIEW_ALL), codex.codex_display_model)
+        self.assertIn("自动健康状态", health_override_note(None))
+        self.assertEqual(detail.selected_name, claude.name)
+        self.assertEqual(detail.badge_state, "degraded")
+        self.assertEqual(detail.model_tags, ["sonnet"])
 
     def test_library_model_tags_show_first_twenty_and_summary(self) -> None:
         app = _make_minimal_app()
