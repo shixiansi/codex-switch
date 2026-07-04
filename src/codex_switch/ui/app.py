@@ -29,7 +29,6 @@ from codex_switch.codex_config import (
     CodexConfigManager,
     PROJECT_ROOT_PLACEHOLDER,
     load_default_global_mcp_toml,
-    mcp_server_names_from_toml,
     parse_mcp_servers_toml,
     render_mcp_servers_toml,
 )
@@ -161,6 +160,14 @@ from codex_switch.ui.model_batch_logic import (
     ordered_model_batch_models,
     run_model_batch_requests,
     successful_model_batch_models,
+)
+from codex_switch.ui.mcp_logic import (
+    mcp_contains_project_root,
+    mcp_env_summary,
+    mcp_list_summary,
+    mcp_summary,
+    render_mcp_preview,
+    safe_mcp_server_names,
 )
 from codex_switch.ui.styles import (
     BOOTSTRAP_THEME,
@@ -2366,18 +2373,10 @@ class CodexSwitchApp:
         return total, healthy, degraded, error
 
     def _mcp_summary(self, raw_toml: str | None) -> str:
-        names = self._safe_mcp_server_names(raw_toml)
-        if not names:
-            return "未配置"
-        label = ", ".join(names[:4])
-        suffix = " …" if len(names) > 4 else ""
-        return f"{len(names)} 个服务：{label}{suffix}"
+        return mcp_summary(raw_toml)
 
     def _safe_mcp_server_names(self, raw_toml: str | None) -> list[str]:
-        try:
-            return mcp_server_names_from_toml(raw_toml)
-        except ValueError:
-            return []
+        return safe_mcp_server_names(raw_toml)
 
     def _global_mcp_source_toml(self) -> str:
         if self.global_mcp_toml.strip():
@@ -2435,23 +2434,13 @@ class CodexSwitchApp:
         )
 
     def _mcp_contains_project_root(self, value) -> bool:
-        if isinstance(value, str):
-            return PROJECT_ROOT_PLACEHOLDER in value
-        if isinstance(value, list):
-            return any(self._mcp_contains_project_root(item) for item in value)
-        if isinstance(value, dict):
-            return any(self._mcp_contains_project_root(item) for item in value.values())
-        return False
+        return mcp_contains_project_root(value)
 
     def _mcp_list_summary(self, value, limit: int = 36) -> str:
-        if not isinstance(value, list) or not value:
-            return "-"
-        return compact_text(" ".join(str(item) for item in value), limit)
+        return mcp_list_summary(value, limit)
 
     def _mcp_env_summary(self, value, limit: int = 28) -> str:
-        if not isinstance(value, dict) or not value:
-            return "-"
-        return compact_text(", ".join(str(key) for key in value.keys()), limit)
+        return mcp_env_summary(value, limit)
 
     def _mcp_selected_name(self) -> str | None:
         selection = self.mcp_tree.selection()
@@ -2465,12 +2454,7 @@ class CodexSwitchApp:
             widget.configure(state="disabled")
 
     def _render_mcp_preview(self, server_name: str | None) -> str:
-        if not server_name:
-            return ""
-        server_config = self.mcp_page_servers.get(server_name)
-        if not isinstance(server_config, dict):
-            return ""
-        return render_mcp_servers_toml({server_name: server_config})
+        return render_mcp_preview(server_name, self.mcp_page_servers)
 
     def _refresh_mcp_detail(self) -> None:
         server_name = self._mcp_selected_name()
@@ -6469,9 +6453,6 @@ class CodexSwitchApp:
             plan=project_claude_settings_edit_plan(project),
             validator=validate_json,
         )
-
-    def _get_project_script_path(self, project: ProjectRecord) -> Path:
-        return preferred_project_script_path(project)
 
     def _get_project_script_path(self, project: ProjectRecord) -> Path:
         return preferred_project_script_path(project)

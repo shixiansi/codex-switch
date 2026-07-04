@@ -61,6 +61,7 @@ from codex_switch.project_template import (
     CLAUDE_MODEL_ENV_KEY,
     ProjectTemplateStatus,
 )
+from codex_switch.codex_config import PROJECT_ROOT_PLACEHOLDER
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
 from codex_switch.skills import SkillSource
 from codex_switch.software_update import (
@@ -105,6 +106,14 @@ from codex_switch.ui.global_logic import (
     profile_for_choice_index,
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
+)
+from codex_switch.ui.mcp_logic import (
+    mcp_contains_project_root,
+    mcp_env_summary,
+    mcp_list_summary,
+    mcp_summary,
+    render_mcp_preview,
+    safe_mcp_server_names,
 )
 from codex_switch.ui.project_logic import (
     claude_project_template_options,
@@ -921,6 +930,25 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(codex_cmd_plan.command, ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(claude_cmd_plan.command, ("cmd.exe", "/k", "claude"))
             self.assertEqual(claude_cmd_plan.cwd, temp_dir)
+
+    def test_mcp_logic_helpers_summarize_and_preview(self) -> None:
+        raw_toml = """
+[mcp_servers.alpha]
+command = "python"
+args = ["-m", "alpha"]
+
+[mcp_servers.beta]
+command = "node"
+""".strip()
+
+        self.assertEqual(safe_mcp_server_names(raw_toml), ["alpha", "beta"])
+        self.assertEqual(mcp_summary(raw_toml), "2 个服务：alpha, beta")
+        self.assertTrue(mcp_contains_project_root({"cwd": PROJECT_ROOT_PLACEHOLDER}))
+        self.assertEqual(mcp_list_summary(["a", "b"], limit=20), "a b")
+        self.assertEqual(mcp_env_summary({"A": "1", "B": "2"}, limit=20), "A, B")
+        preview = render_mcp_preview("alpha", {"alpha": {"command": "python", "args": ["-m", "alpha"]}})
+        self.assertIn("[mcp_servers.alpha]", preview)
+        self.assertEqual(render_mcp_preview(None, {}), "")
 
     def test_project_tab_display_builds_rows_and_generated_count(self) -> None:
         with workspace_tempdir() as temp_dir:
