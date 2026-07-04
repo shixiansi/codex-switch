@@ -1093,8 +1093,6 @@ class CodexSwitchApp:
             "settings": self.settings_tab,
             "test": self.test_tab,
         }
-        for frame in self.tab_frames.values():
-            frame.grid(row=0, column=0, sticky="nsew")
 
         self._build_global_tab(self.global_tab)
         self._build_library_tab(self.library_tab)
@@ -1117,6 +1115,11 @@ class CodexSwitchApp:
         frame = self.tab_frames.get(key)
         if frame is None:
             return
+        for tab_key, tab_frame in self.tab_frames.items():
+            if tab_key == key:
+                tab_frame.grid(row=0, column=0, sticky="nsew")
+            else:
+                tab_frame.grid_remove()
         frame.tkraise()
         self.top_nav.select(key)
 
@@ -7974,6 +7977,9 @@ class CodexSwitchApp:
 
 
 def run_app() -> None:
+    if not _acquire_single_instance():
+        _show_single_instance_message()
+        return
     root = BootstrapWindow(themename=BOOTSTRAP_THEME) if BootstrapWindow is not None else tk.Tk()
     try:
         app = CodexSwitchApp(root)

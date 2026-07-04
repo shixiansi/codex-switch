@@ -92,6 +92,7 @@ from codex_switch.ui.app import (
     profile_library_sort_key,
     profiles_for_library_view,
     run_model_batch_requests,
+    run_app,
     software_update_error_detail,
     successful_model_batch_models,
     visible_profiles_for_filter,
@@ -166,6 +167,30 @@ class _DelayedRoot:
 
     def after(self, delay_ms: int, callback) -> None:
         self.callbacks.append((delay_ms, callback))
+
+
+class _FakeTabFrame:
+    def __init__(self) -> None:
+        self.grid_calls: list[dict] = []
+        self.remove_count = 0
+        self.raise_count = 0
+
+    def grid(self, **kwargs) -> None:
+        self.grid_calls.append(kwargs)
+
+    def grid_remove(self) -> None:
+        self.remove_count += 1
+
+    def tkraise(self) -> None:
+        self.raise_count += 1
+
+
+class _FakeTopNav:
+    def __init__(self) -> None:
+        self.selected: list[str] = []
+
+    def select(self, key: str) -> None:
+        self.selected.append(key)
 
 
 def _file_sha256(path: Path) -> str:
@@ -396,6 +421,18 @@ class SoftwareUpdateTests(unittest.TestCase):
 
         self.assertEqual(calls, [True])
 
+    def test_run_app_stops_when_single_instance_exists(self) -> None:
+        calls: list[str] = []
+
+        with (
+            patch("codex_switch.ui.app._acquire_single_instance", return_value=False),
+            patch("codex_switch.ui.app._show_single_instance_message", side_effect=lambda: calls.append("message")),
+            patch("codex_switch.ui.app.CodexSwitchApp", side_effect=AssertionError("should not create app")),
+        ):
+            run_app()
+
+        self.assertEqual(calls, ["message"])
+
 
 class UiFilterTests(unittest.TestCase):
     def test_github_repo_url_validation_requires_trusted_https_repo(self) -> None:
@@ -564,6 +601,23 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual([tag.grid_calls[-1]["row"] for tag in tags], [0, 1, 2, 3, 4])
         self.assertEqual([tag.grid_calls[-1]["column"] for tag in tags], [0, 0, 0, 0, 0])
+
+    def test_show_tab_grids_only_selected_frame(self) -> None:
+        app = _make_minimal_app()
+        app.top_nav = _FakeTopNav()
+        app.tab_frames = {
+            "global": _FakeTabFrame(),
+            "library": _FakeTabFrame(),
+            "settings": _FakeTabFrame(),
+        }
+
+        app._show_tab("library")
+
+        self.assertEqual(app.tab_frames["library"].grid_calls, [{"row": 0, "column": 0, "sticky": "nsew"}])
+        self.assertEqual(app.tab_frames["library"].raise_count, 1)
+        self.assertEqual(app.tab_frames["global"].remove_count, 1)
+        self.assertEqual(app.tab_frames["settings"].remove_count, 1)
+        self.assertEqual(app.top_nav.selected, ["library"])
 
     def test_global_profile_ids_are_resolved_per_target(self) -> None:
         codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
