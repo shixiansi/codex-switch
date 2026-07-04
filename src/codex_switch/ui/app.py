@@ -183,14 +183,21 @@ from codex_switch.ui.project_logic import (
     project_bound_profile_ids,
     project_claude_binding_changed,
     project_claude_cmd_command,
+    project_claude_profile_texts,
     project_claude_profile_id,
     project_codex_cmd_command,
     project_codex_binding_changed,
+    project_codex_profile_texts,
     project_codex_profile_id,
     project_codex_script_paths,
     project_codex_vscode_command,
     project_custom_run_command,
+    project_github_label,
+    project_github_update_label,
+    project_mcp_selection_summary,
     project_root_path,
+    project_skill_selection_summary,
+    project_template_display,
     project_text_file_path,
     project_vscode_open_command,
 )
@@ -2400,33 +2407,18 @@ class CodexSwitchApp:
         return discover_skill_sources(default_skill_roots(self.project_root))
 
     def _project_mcp_selection_summary(self, project: ProjectRecord | None) -> str:
-        if not project:
-            return "-"
-        if project.mcp_server_names is None:
-            return self._mcp_summary(self._effective_project_mcp_toml(project))
-        if not project.mcp_server_names:
-            return "未启用"
-        label = ", ".join(project.mcp_server_names[:4])
-        suffix = " …" if len(project.mcp_server_names) > 4 else ""
-        return f"{len(project.mcp_server_names)} 个服务：{label}{suffix}"
+        return project_mcp_selection_summary(
+            project,
+            effective_project_mcp_toml=self._effective_project_mcp_toml(project),
+            mcp_summary=self._mcp_summary,
+        )
 
     def _project_skill_selection_summary(self, project: ProjectRecord | None) -> str:
-        if not project:
-            return "-"
-        if project.skill_group_ids is not None:
-            group_by_id = {group.id: group for group in self.skill_groups}
-            selected_groups = [
-                group_by_id[group_id]
-                for group_id in project.skill_group_ids
-                if group_id in group_by_id
-            ]
-            if not selected_groups:
-                return "未启用"
-            skill_count = sum(len(group.skills) for group in selected_groups)
-            names = ", ".join(group.name for group in selected_groups[:4])
-            suffix = " ..." if len(selected_groups) > 4 else ""
-            return f"{len(selected_groups)} 个组 / {skill_count} 个技能：{names}{suffix}"
-        return skill_selection_summary(self._available_skill_sources(), project.skill_names)
+        return project_skill_selection_summary(
+            project,
+            groups=self.skill_groups,
+            available_skill_sources=self._available_skill_sources(),
+        )
 
     def _mcp_contains_project_root(self, value) -> bool:
         if isinstance(value, str):
@@ -3735,7 +3727,7 @@ class CodexSwitchApp:
     def _refresh_project_detail(self) -> None:
         project = self.get_selected_project()
         if not project:
-            self.project_selected_name_var.set("未选择项目")
+            self.project_selected_name_var.set("\u672a\u9009\u62e9\u9879\u76ee")
             self.project_selected_dir_var.set("-")
             self.project_selected_codex_profile_var.set("-")
             self.project_selected_claude_profile_var.set("-")
@@ -3751,60 +3743,52 @@ class CodexSwitchApp:
             self.project_github_update_var.set("-")
             self.project_mcp_var.set("-")
             self.project_skills_var.set("-")
-            self.project_status_badge.configure(text="未生成", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
+            self.project_status_badge.configure(text="\u672a\u751f\u6210", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
             return
 
         self.project_selected_name_var.set(project.name)
         self.project_selected_dir_var.set(project.project_dir)
-        self.project_run_var.set(project.run_command or "未配置")
-        github_label = project.github_repo or "未配置"
-        if project.github_repo:
-            github_label = f"{project.github_repo} @ {normalize_git_ref(project.github_ref, default=DEFAULT_PROJECT_GITHUB_REF)}"
-        self.project_github_var.set(github_label)
-        commit = project.github_last_sync_commit[:12] if project.github_last_sync_commit else "未同步"
-        self.project_github_update_var.set(f"{'自动' if project.github_auto_update else '手动'} / {commit}")
+        self.project_run_var.set(project.run_command or "\u672a\u914d\u7f6e")
+        self.project_github_var.set(
+            project_github_label(project, default_ref=DEFAULT_PROJECT_GITHUB_REF)
+        )
+        self.project_github_update_var.set(project_github_update_label(project))
         self.project_script_var.set(str(self._get_project_script_path(project)))
         self.project_mcp_var.set(self._project_mcp_selection_summary(project))
         self.project_skills_var.set(self._project_skill_selection_summary(project))
 
         codex_profile = self._profile_by_id(project_codex_profile_id(project))
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
-        if codex_profile:
-            self.project_selected_codex_profile_var.set(f"{codex_profile.name} / {codex_profile.vendor_label}")
-            self.project_selected_codex_model_var.set(codex_profile.codex_display_model)
-            self.project_selected_codex_key_var.set(self._profile_key_summary(codex_profile))
-        else:
-            self.project_selected_codex_profile_var.set("绑定配置已删除")
-            self.project_selected_codex_model_var.set("-")
-            self.project_selected_codex_key_var.set("-")
-        if claude_profile:
-            self.project_selected_claude_profile_var.set(f"{claude_profile.name} / {claude_profile.vendor_label}")
-            self.project_selected_claude_model_var.set(
-                f"{claude_profile.claude_display_model} / 兜底：{claude_profile.claude_display_fallback_model}"
-            )
-            self.project_selected_claude_key_var.set(self._profile_key_summary(claude_profile))
-        else:
-            self.project_selected_claude_profile_var.set("绑定配置已删除")
-            self.project_selected_claude_model_var.set("-")
-            self.project_selected_claude_key_var.set("-")
+        codex_profile_text, codex_model_text, codex_key_text = project_codex_profile_texts(
+            codex_profile,
+            key_summary=self._profile_key_summary,
+        )
+        claude_profile_text, claude_model_text, claude_key_text = project_claude_profile_texts(
+            claude_profile,
+            key_summary=self._profile_key_summary,
+        )
+        self.project_selected_codex_profile_var.set(codex_profile_text)
+        self.project_selected_codex_model_var.set(codex_model_text)
+        self.project_selected_codex_key_var.set(codex_key_text)
+        self.project_selected_claude_profile_var.set(claude_profile_text)
+        self.project_selected_claude_model_var.set(claude_model_text)
+        self.project_selected_claude_key_var.set(claude_key_text)
 
         project_root = project_root_path(project)
-        if not project_root.exists():
-            self.project_backup_var.set("项目目录不存在")
-            self.project_generated_var.set("项目目录不存在，尚未生成模板。")
-            self.project_status_badge.configure(text="目录缺失", bg=PALETTE["warning_soft"], fg=PALETTE["warning"])
-            return
-
-        status = self.project_template_service.inspect(project_root)
-        self.project_backup_var.set(str(status.backup_dir) if status.backup_dir else "暂无备份")
-        if status.generated_paths:
-            preview = ", ".join(path.name for path in status.generated_paths[:4])
-            suffix = " …" if len(status.generated_paths) > 4 else ""
-            self.project_generated_var.set(f"{len(status.generated_paths)} 个文件：{preview}{suffix}")
-            self.project_status_badge.configure(text="已生成", bg=PALETTE["success_soft"], fg=PALETTE["success"])
-        else:
-            self.project_generated_var.set("尚未生成项目模板。")
-            self.project_status_badge.configure(text="未生成", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
+        status = self.project_template_service.inspect(project_root) if project_root.exists() else None
+        display = project_template_display(
+            project_root_exists=project_root.exists(),
+            status=status,
+        )
+        self.project_backup_var.set(display.backup_text)
+        self.project_generated_var.set(display.generated_text)
+        badge_colors = {
+            "success": (PALETTE["success_soft"], PALETTE["success"]),
+            "warning": (PALETTE["warning_soft"], PALETTE["warning"]),
+            "neutral": (PALETTE["neutral_soft"], PALETTE["neutral_text"]),
+        }
+        badge_bg, badge_fg = badge_colors.get(display.badge_state, badge_colors["neutral"])
+        self.project_status_badge.configure(text=display.badge_text, bg=badge_bg, fg=badge_fg)
 
     def refresh_mcp_tab(self, *, reload_from_state: bool = True) -> None:
         selected_name = self._mcp_selected_name()

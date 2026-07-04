@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
-from codex_switch.models import ProjectRecord, SkillDefinition
-from codex_switch.skills import SkillSource, resolve_selected_skill_sources
+from codex_switch.models import Profile, ProjectRecord, SkillDefinition, SkillGroup
+from codex_switch.project_template import ProjectTemplateStatus
+from codex_switch.skills import SkillSource, resolve_selected_skill_sources, skill_selection_summary
 from codex_switch.ui.utils import project_start_script_paths
 
 
@@ -25,6 +27,14 @@ class ClaudeProjectTemplateOptions:
     project_mcp_toml: str
     agents_doc_text: str
     route_proxy_base_url: str | None
+
+
+@dataclass(frozen=True)
+class ProjectTemplateDisplay:
+    backup_text: str
+    generated_text: str
+    badge_text: str
+    badge_state: str
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -68,6 +78,125 @@ def project_root_path(project: ProjectRecord) -> Path:
 
 def project_text_file_path(project: ProjectRecord, relative_path: str) -> Path:
     return project_root_path(project) / relative_path
+
+
+def project_github_label(project: ProjectRecord, *, default_ref: str) -> str:
+    if not project.github_repo:
+        return "未配置"
+    github_ref = (project.github_ref or "").strip() or default_ref
+    return f"{project.github_repo} @ {github_ref}"
+
+
+def project_github_update_label(project: ProjectRecord) -> str:
+    commit = project.github_last_sync_commit[:12] if project.github_last_sync_commit else "未同步"
+    mode = "自动" if project.github_auto_update else "手动"
+    return f"{mode} / {commit}"
+
+
+def project_mcp_selection_summary(
+    project: ProjectRecord | None,
+    *,
+    effective_project_mcp_toml: str,
+    mcp_summary: Callable[[str | None], str],
+) -> str:
+    if not project:
+        return "-"
+    if project.mcp_server_names is None:
+        return mcp_summary(effective_project_mcp_toml)
+    if not project.mcp_server_names:
+        return "未配置"
+    label = ", ".join(project.mcp_server_names[:4])
+    suffix = " …" if len(project.mcp_server_names) > 4 else ""
+    return f"{len(project.mcp_server_names)} 个服务：{label}{suffix}"
+
+
+def project_skill_selection_summary(
+    project: ProjectRecord | None,
+    *,
+    groups: list[SkillGroup],
+    available_skill_sources: list[SkillSource],
+) -> str:
+    if not project:
+        return "-"
+    if project.skill_group_ids is not None:
+        group_by_id = {group.id: group for group in groups}
+        selected_groups = [
+            group_by_id[group_id]
+            for group_id in project.skill_group_ids
+            if group_id in group_by_id
+        ]
+        if not selected_groups:
+            return "未配置"
+        skill_count = sum(len(group.skills) for group in selected_groups)
+        names = ", ".join(group.name for group in selected_groups[:4])
+        suffix = " ..." if len(selected_groups) > 4 else ""
+        return f"{len(selected_groups)} 组 / {skill_count} 个技能：{names}{suffix}"
+    return skill_selection_summary(available_skill_sources, project.skill_names)
+
+
+def project_codex_profile_texts(
+    profile: Profile | None,
+    *,
+    key_summary: Callable[[Profile], str],
+) -> tuple[str, str, str]:
+    if profile is None:
+        return "绑定配置已删除", "-", "-"
+    return (
+        f"{profile.name} / {profile.vendor_label}",
+        profile.codex_display_model,
+        key_summary(profile),
+    )
+
+
+def project_claude_profile_texts(
+    profile: Profile | None,
+    *,
+    key_summary: Callable[[Profile], str],
+) -> tuple[str, str, str]:
+    if profile is None:
+        return "绑定配置已删除", "-", "-"
+    return (
+        f"{profile.name} / {profile.vendor_label}",
+        f"{profile.claude_display_model} / 兜底：{profile.claude_display_fallback_model}",
+        key_summary(profile),
+    )
+
+
+def project_template_display(
+    *,
+    project_root_exists: bool,
+    status: ProjectTemplateStatus | None,
+) -> ProjectTemplateDisplay:
+    if not project_root_exists:
+        return ProjectTemplateDisplay(
+            backup_text="项目目录不存在",
+            generated_text="项目目录不存在，尚未生成模板。",
+            badge_text="目录缺失",
+            badge_state="warning",
+        )
+    if status is None:
+        return ProjectTemplateDisplay(
+            backup_text="暂无备份",
+            generated_text="尚未生成项目模板。",
+            badge_text="未生成",
+            badge_state="neutral",
+        )
+    backup_text = str(status.backup_dir) if status.backup_dir else "暂无备份"
+    if status.generated_paths:
+        preview = ", ".join(path.name for path in status.generated_paths[:4])
+        suffix = " …" if len(status.generated_paths) > 4 else ""
+        return ProjectTemplateDisplay(
+            backup_text=backup_text,
+            generated_text=f"{len(status.generated_paths)} 个文件：{preview}{suffix}",
+            badge_text="已生成",
+            badge_state="success",
+        )
+    return ProjectTemplateDisplay(
+        backup_text=backup_text,
+        generated_text="尚未生成项目模板。",
+        badge_text="未生成",
+        badge_state="neutral",
+    )
 
 
 def codex_project_template_options(
