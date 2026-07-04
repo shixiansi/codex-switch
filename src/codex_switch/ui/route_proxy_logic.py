@@ -7,6 +7,11 @@ from codex_switch.chat import (
     default_wire_api_for_profile,
 )
 from codex_switch.models import (
+    AccountPoolGroup,
+    AccountPoolSettings,
+    DEFAULT_CLAUDE_FALLBACK_MODEL,
+    DEFAULT_CLAUDE_MODEL,
+    DEFAULT_CODEX_MODEL,
     Profile,
     ProjectRecord,
     RouteProxyRule,
@@ -20,6 +25,8 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    normalize_route_proxy_protocol,
+    normalize_route_proxy_upstream_source,
 )
 
 
@@ -188,3 +195,157 @@ def route_proxy_base_url_for_project(settings: RouteProxySettings, project: Proj
     if not settings.project_enabled(project.id):
         return None
     return settings.project_base_url(project.id)
+
+
+def route_proxy_rule_for_project_client(
+    settings: RouteProxySettings,
+    project: ProjectRecord,
+    client_type: str,
+) -> RouteProxyRule | None:
+    return next(
+        (
+            rule
+            for rule in settings.rules_for_project(project.id)
+            if rule.client_type == client_type
+        ),
+        None,
+    )
+
+
+def account_pool_group_for_project_client(
+    settings: RouteProxySettings,
+    account_pool_settings: AccountPoolSettings,
+    project: ProjectRecord,
+    client_type: str,
+) -> AccountPoolGroup | None:
+    rule = route_proxy_rule_for_project_client(settings, project, client_type)
+    if rule is None or rule.upstream_source != ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
+        return None
+    group = account_pool_settings.group_by_id(rule.account_pool_group_id)
+    if group is None or group.pool_type != client_type:
+        return None
+    return group
+
+
+def codex_model_override_for_project(
+    settings: RouteProxySettings,
+    account_pool_settings: AccountPoolSettings,
+    project: ProjectRecord,
+) -> str | None:
+    group = account_pool_group_for_project_client(
+        settings,
+        account_pool_settings,
+        project,
+        ROUTE_PROXY_CLIENT_CODEX,
+    )
+    if group is None:
+        return None
+    return (group.default_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+
+
+def claude_model_overrides_for_project(
+    settings: RouteProxySettings,
+    account_pool_settings: AccountPoolSettings,
+    project: ProjectRecord,
+) -> tuple[str | None, str | None]:
+    group = account_pool_group_for_project_client(
+        settings,
+        account_pool_settings,
+        project,
+        ROUTE_PROXY_CLIENT_CLAUDE,
+    )
+    if group is None:
+        return None, None
+    model = (group.claude_model or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
+    fallback = (group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL).strip() or DEFAULT_CLAUDE_FALLBACK_MODEL
+    return model, fallback
+
+
+def refresh_route_proxy_upstream_models(
+    settings: RouteProxySettings,
+    project: ProjectRecord,
+    codex_profile: Profile | None,
+    claude_profile: Profile | None,
+    *,
+    codex_pool_model: str | None = None,
+    claude_pool_model: str | None = None,
+) -> None:
+    codex_conversion_protocols = {
+        ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
+        ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+    }
+    for rule in settings.rules_for_project(project.id):
+        if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and codex_profile is not None:
+            rule.upstream_model = (
+                codex_pool_model or codex_profile.codex_display_model
+                if rule.upstream_protocol in codex_conversion_protocols
+                else ""
+            )
+        elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE and claude_profile is not None:
+            rule.upstream_model = (
+                claude_pool_model or claude_profile.claude_display_model
+                if rule.upstream_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
+                else ""
+            )
+
+
+def apply_route_proxy_project_rules(
+    settings: RouteProxySettings,
+    project: ProjectRecord,
+    *,
+    codex_protocol: str,
+    codex_source: str,
+    codex_account_pool_group_id: str,
+    claude_protocol: str,
+    claude_source: str,
+    claude_account_pool_group_id: str,
+    compact_model: str,
+    codex_profile: Profile | None,
+    claude_profile: Profile | None,
+    codex_pool_model: str | None = None,
+    claude_pool_model: str | None = None,
+) -> bool:
+    changed = False
+    normalized_codex_protocol = normalize_route_proxy_protocol(
+        codex_protocol,
+        ROUTE_PROXY_CLIENT_CODEX,
+    )
+    normalized_codex_source = normalize_route_proxy_upstream_source(codex_source)
+    normalized_claude_protocol = normalize_route_proxy_protocol(
+        claude_protocol,
+        ROUTE_PROXY_CLIENT_CLAUDE,
+    )
+    normalized_claude_source = normalize_route_proxy_upstream_source(claude_source)
+
+    for rule in settings.rules_for_project(project.id):
+        if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+            rule.upstream_source = normalized_codex_source
+            rule.account_pool_group_id = (
+                codex_account_pool_group_id
+                if normalized_codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+                else ""
+            )
+            rule.upstream_protocol = normalized_codex_protocol
+            rule.compact_model = compact_model
+            rule.manual_upstream_protocol = True
+            changed = True
+        elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+            rule.upstream_source = normalized_claude_source
+            rule.account_pool_group_id = (
+                claude_account_pool_group_id
+                if normalized_claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+                else ""
+            )
+            rule.upstream_protocol = normalized_claude_protocol
+            rule.manual_upstream_protocol = True
+            changed = True
+    if changed:
+        refresh_route_proxy_upstream_models(
+            settings,
+            project,
+            codex_profile,
+            claude_profile,
+            codex_pool_model=codex_pool_model,
+            claude_pool_model=claude_pool_model,
+        )
+    return changed

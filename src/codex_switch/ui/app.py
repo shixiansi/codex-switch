@@ -195,12 +195,18 @@ from codex_switch.ui.project_logic import (
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
+    account_pool_group_for_project_client,
+    apply_route_proxy_project_rules,
+    claude_model_overrides_for_project,
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS,
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
+    codex_model_override_for_project,
+    refresh_route_proxy_upstream_models,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
+    route_proxy_rule_for_project_client,
     route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui.repo_sync_logic import (
@@ -5430,58 +5436,40 @@ class CodexSwitchApp:
     def _refresh_route_proxy_upstream_models(self, project: ProjectRecord) -> None:
         codex_profile = self._profile_by_id(project_codex_profile_id(project))
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
-        codex_conversion_protocols = {
-            ROUTE_PROXY_PROTOCOL_OPENAI_CHAT_TO_RESPONSES,
-            ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
-        }
-        for rule in self.route_proxy_settings.rules_for_project(project.id):
-            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and codex_profile is not None:
-                codex_pool_model = self._codex_model_override_for_project(project)
-                rule.upstream_model = (
-                    codex_pool_model or codex_profile.codex_display_model
-                    if rule.upstream_protocol in codex_conversion_protocols
-                    else ""
-                )
-            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE and claude_profile is not None:
-                claude_pool_model, _fallback = self._claude_model_overrides_for_project(project)
-                rule.upstream_model = (
-                    claude_pool_model or claude_profile.claude_display_model
-                    if rule.upstream_protocol == ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI
-                    else ""
-                )
-
-    def _route_proxy_rule_for_project_client(self, project: ProjectRecord, client_type: str) -> RouteProxyRule | None:
-        return next(
-            (
-                rule
-                for rule in self.route_proxy_settings.rules_for_project(project.id)
-                if rule.client_type == client_type
-            ),
-            None,
+        claude_pool_model, _fallback = self._claude_model_overrides_for_project(project)
+        refresh_route_proxy_upstream_models(
+            self.route_proxy_settings,
+            project,
+            codex_profile,
+            claude_profile,
+            codex_pool_model=self._codex_model_override_for_project(project),
+            claude_pool_model=claude_pool_model,
         )
 
+    def _route_proxy_rule_for_project_client(self, project: ProjectRecord, client_type: str) -> RouteProxyRule | None:
+        return route_proxy_rule_for_project_client(self.route_proxy_settings, project, client_type)
+
     def _account_pool_group_for_project_client(self, project: ProjectRecord, client_type: str) -> AccountPoolGroup | None:
-        rule = self._route_proxy_rule_for_project_client(project, client_type)
-        if rule is None or rule.upstream_source != ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
-            return None
-        group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
-        if group is None or group.pool_type != client_type:
-            return None
-        return group
+        return account_pool_group_for_project_client(
+            self.route_proxy_settings,
+            self.account_pool_settings,
+            project,
+            client_type,
+        )
 
     def _codex_model_override_for_project(self, project: ProjectRecord) -> str | None:
-        group = self._account_pool_group_for_project_client(project, ROUTE_PROXY_CLIENT_CODEX)
-        if group is None:
-            return None
-        return (group.default_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+        return codex_model_override_for_project(
+            self.route_proxy_settings,
+            self.account_pool_settings,
+            project,
+        )
 
     def _claude_model_overrides_for_project(self, project: ProjectRecord) -> tuple[str | None, str | None]:
-        group = self._account_pool_group_for_project_client(project, ROUTE_PROXY_CLIENT_CLAUDE)
-        if group is None:
-            return None, None
-        model = (group.claude_model or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
-        fallback = (group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL).strip() or DEFAULT_CLAUDE_FALLBACK_MODEL
-        return model, fallback
+        return claude_model_overrides_for_project(
+            self.route_proxy_settings,
+            self.account_pool_settings,
+            project,
+        )
 
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
@@ -5532,15 +5520,10 @@ class CodexSwitchApp:
         project = self._selected_proxy_project()
         if project is None:
             return
-        codex_protocol = normalize_route_proxy_protocol(
-            self.proxy_codex_protocol_var.get(),
-            ROUTE_PROXY_CLIENT_CODEX,
-        )
-        codex_source = normalize_route_proxy_upstream_source(
-            CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
-                self.proxy_codex_upstream_source_var.get(),
-                self.proxy_codex_upstream_source_var.get(),
-            )
+        codex_protocol = self.proxy_codex_protocol_var.get()
+        codex_source = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
+            self.proxy_codex_upstream_source_var.get(),
+            self.proxy_codex_upstream_source_var.get(),
         )
         proxy_group_choices = getattr(self, "proxy_account_pool_group_choices", {})
         proxy_group_var = getattr(self, "proxy_account_pool_group_var", None)
@@ -5549,42 +5532,53 @@ class CodexSwitchApp:
         if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL and not account_pool_group_id:
             group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
             account_pool_group_id = group.id if group is not None else ""
-        claude_protocol = normalize_route_proxy_protocol(
-            self.proxy_claude_protocol_var.get(),
-            ROUTE_PROXY_CLIENT_CLAUDE,
-        )
-        claude_source = normalize_route_proxy_upstream_source(
-            CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
-                self.proxy_claude_upstream_source_var.get(),
-                self.proxy_claude_upstream_source_var.get(),
-            )
+        claude_protocol = self.proxy_claude_protocol_var.get()
+        claude_source = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
+            self.proxy_claude_upstream_source_var.get(),
+            self.proxy_claude_upstream_source_var.get(),
         )
         claude_group_choices = getattr(self, "proxy_claude_account_pool_group_choices", {})
         claude_group_var = getattr(self, "proxy_claude_account_pool_group_var", None)
         claude_group_label = claude_group_var.get() if claude_group_var is not None else ""
         claude_account_pool_group_id = claude_group_choices.get(claude_group_label, "")
         compact_model = self.proxy_codex_compact_model_var.get().strip()
-        changed = False
-        for rule in self.route_proxy_settings.rules_for_project(project.id):
-            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-                rule.upstream_source = codex_source
-                rule.account_pool_group_id = account_pool_group_id if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL else ""
-                rule.upstream_protocol = codex_protocol
-                rule.compact_model = compact_model
-                rule.manual_upstream_protocol = True
-                changed = True
-            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
-                rule.upstream_source = claude_source
-                rule.account_pool_group_id = (
-                    claude_account_pool_group_id
-                    if claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
-                    else ""
-                )
-                rule.upstream_protocol = claude_protocol
-                rule.manual_upstream_protocol = True
-                changed = True
-        if changed:
-            self._refresh_route_proxy_upstream_models(project)
+        codex_profile = self._profile_by_id(project_codex_profile_id(project))
+        claude_profile = self._profile_by_id(project_claude_profile_id(project))
+        codex_pool_group = (
+            self.account_pool_settings.group_by_id(account_pool_group_id)
+            if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+            else None
+        )
+        codex_pool_model = (
+            (codex_pool_group.default_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+            if codex_pool_group is not None
+            else None
+        )
+        claude_pool_group = (
+            self.account_pool_settings.group_by_id(claude_account_pool_group_id)
+            if claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+            else None
+        )
+        claude_pool_model = (
+            (claude_pool_group.claude_model or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
+            if claude_pool_group is not None
+            else None
+        )
+        apply_route_proxy_project_rules(
+            self.route_proxy_settings,
+            project,
+            codex_protocol=codex_protocol,
+            codex_source=codex_source,
+            codex_account_pool_group_id=account_pool_group_id,
+            claude_protocol=claude_protocol,
+            claude_source=claude_source,
+            claude_account_pool_group_id=claude_account_pool_group_id,
+            compact_model=compact_model,
+            codex_profile=codex_profile,
+            claude_profile=claude_profile,
+            codex_pool_model=codex_pool_model,
+            claude_pool_model=claude_pool_model,
+        )
 
     def start_route_proxy(self, show_errors: bool = True) -> None:
         if not self.save_route_proxy_settings(save_project_rules=show_errors):
