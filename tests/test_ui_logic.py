@@ -131,6 +131,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui.utils import is_github_repo_url, resolve_mcp_editor_text
+from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
 class _ValueVar:
@@ -222,6 +223,22 @@ def _make_minimal_app() -> CodexSwitchApp:
     app.refresh_skills_tab = lambda: None
     app.refresh_library_tab = lambda: None
     return app
+
+
+class WindowingTests(unittest.TestCase):
+    def test_drag_redraw_guard_is_noop_outside_windows(self) -> None:
+        with patch("codex_switch.ui.windowing.os.name", "posix"):
+            self.assertFalse(install_windows_drag_redraw_guard(object()))
+
+    def test_drag_redraw_guard_is_idempotent_after_install(self) -> None:
+        class Widget:
+            pass
+
+        widget = Widget()
+        setattr(widget, "_codex_switch_drag_redraw_guard", {"installed": True})
+
+        with patch("codex_switch.ui.windowing.os.name", "nt"):
+            self.assertTrue(install_windows_drag_redraw_guard(widget))
 
 
 class SoftwareUpdateTests(unittest.TestCase):

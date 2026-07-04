@@ -188,6 +188,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_url, is_http_url
+from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
 _SINGLE_INSTANCE_HANDLE = None
@@ -733,6 +734,7 @@ class CodexSwitchApp:
         self.root.geometry("1360x900")
         self.root.minsize(1180, 780)
         self.root.configure(bg=PALETTE["panel_bg"])
+        install_windows_drag_redraw_guard(self.root)
 
         self.project_root = Path.cwd()
         self.store = ProfileStore()
@@ -4709,6 +4711,7 @@ class CodexSwitchApp:
             labels.append(label)
             group_by_label[label] = group
         dialog = tk.Toplevel(self.root)
+        install_windows_drag_redraw_guard(dialog)
         dialog.title(title)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -5601,6 +5604,7 @@ class CodexSwitchApp:
 
     def open_skill_group_dialog(self, group: SkillGroup) -> None:
         dialog = tk.Toplevel(self.root)
+        install_windows_drag_redraw_guard(dialog)
         dialog.title(f"编辑 Skills 组 - {group.name}")
         dialog.transient(self.root)
         dialog.grab_set()
@@ -5884,6 +5888,7 @@ class CodexSwitchApp:
             labels.append(label)
             repo_by_label[label] = repo
         dialog = tk.Toplevel(self.root)
+        install_windows_drag_redraw_guard(dialog)
         dialog.title(title)
         dialog.transient(self.root)
         dialog.grab_set()

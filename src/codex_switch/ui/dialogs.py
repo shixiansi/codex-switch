@@ -39,6 +39,7 @@ from codex_switch.models import (
 from codex_switch.skills import SkillSource
 from codex_switch.ui.styles import PALETTE, make_button, ttk
 from codex_switch.ui.utils import compact_text, is_github_repo_url, is_http_url
+from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
 def next_api_provided_state_for_category(
@@ -69,6 +70,7 @@ class ChatSettingsDialog(tk.Toplevel):
         payload_templates: dict[str, str],
     ) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("聊天设置")
         self.geometry("760x620")
         self.minsize(680, 520)
@@ -193,6 +195,7 @@ class ModelBatchTestDialog(tk.Toplevel):
 
     def __init__(self, master: tk.Misc, *, profile_name: str, models: list[str], retest_command) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("模型批量测试")
         self.geometry("1040x640")
         self.minsize(760, 480)
@@ -437,6 +440,7 @@ class ModelBatchTestDialog(tk.Toplevel):
 class SuccessfulModelsDialog(tk.Toplevel):
     def __init__(self, master: tk.Misc, *, profile_name: str, models: list[str], copy_command) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("成功模型")
         self.geometry("640x460")
         self.minsize(520, 360)
@@ -545,6 +549,7 @@ class AccountPoolChannelDialog(tk.Toplevel):
         group: AccountPoolGroup | None = None,
     ) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("号池渠道")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
@@ -672,6 +677,7 @@ class AccountPoolChannelDialog(tk.Toplevel):
 class AccountPoolProfileChannelDialog(tk.Toplevel):
     def __init__(self, master: tk.Misc, profiles: list[Profile], *, group_type: str = ACCOUNT_POOL_GROUP_TYPE_CODEX) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("配置库号池")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
@@ -800,6 +806,7 @@ class ProfileDialog(tk.Toplevel):
         initial_vendor: str | None = None,
     ) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("配置编辑")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
@@ -1210,6 +1217,7 @@ class ProjectDialog(tk.Toplevel):
         initial_project_dir: str = "",
     ) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title("项目配置")
         self.resizable(False, False)
         self.configure(bg=PALETTE["app_bg"])
@@ -1537,6 +1545,7 @@ class McpSelectionDialog(tk.Toplevel):
         subtitle: str = "从已保存的 MCP 工具中选择本次要启用的服务。",
     ) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title(title)
         self.geometry("520x520")
         self.minsize(460, 360)
@@ -1617,6 +1626,7 @@ class McpConfigDialog(tk.Toplevel):
         validator=None,
     ) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         self.title(title)
         self.geometry("760x620")
         self.minsize(680, 520)
@@ -1691,6 +1701,7 @@ class McpServerDialog(tk.Toplevel):
 
     def __init__(self, master: tk.Misc, server_name: str = "", server_config: dict | None = None) -> None:
         super().__init__(master)
+        install_windows_drag_redraw_guard(self)
         is_edit = bool(server_name)
         self.title("编辑 MCP 工具" if is_edit else "新增 MCP 工具")
         self.geometry("760x720")
