@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
-from time import perf_counter
-import ctypes
-from ctypes import wintypes
-import hashlib
 import json
 import os
 import platform
@@ -146,6 +141,16 @@ from codex_switch.ui.global_logic import (
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
 )
+from codex_switch.ui.model_batch_logic import (
+    ModelBatchCache,
+    ModelBatchResult,
+    model_batch_caches_from_payload,
+    model_batch_caches_to_payload,
+    model_batch_targets,
+    ordered_model_batch_models,
+    run_model_batch_requests,
+    successful_model_batch_models,
+)
 from codex_switch.ui.styles import (
     BOOTSTRAP_THEME,
     BootstrapWindow,
@@ -187,13 +192,26 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_rules_for_project_profiles,
 )
+from codex_switch.ui.single_instance import _acquire_single_instance, _release_single_instance, _show_single_instance_message
+from codex_switch.ui.update_logic import (
+    DEFAULT_PROJECT_GITHUB_REF,
+    DEFAULT_SKILL_REPO_REF,
+    GitRemoteUpdate,
+    checksum_manifest_entries,
+    git_fetch_ref_candidates,
+    git_remote_ref_patterns,
+    is_git_commit_ref,
+    normalize_git_ref,
+    remote_commit_from_ls_remote,
+    same_git_commit,
+    software_update_error_detail,
+    verify_hot_update_checksums,
+)
 from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_url, is_http_url
 from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
-_SINGLE_INSTANCE_HANDLE = None
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-MODEL_BATCH_PROMPT = "ping"
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
     (LIBRARY_VIEW_ALL, "全部"),
@@ -236,187 +254,8 @@ PROJECT_METADATA_RELATIVE_PATHS = (
     Path("project-skills.json"),
     Path(".codex-switch") / "project.json",
 )
-HOT_UPDATE_CHECKSUM_MANIFEST_RELATIVE_PATHS = (
-    Path("codex-switch-checksums.json"),
-    Path(".codex-switch") / "checksums.json",
-)
-DEFAULT_PROJECT_GITHUB_REF = "HEAD"
-DEFAULT_SKILL_REPO_REF = "main"
 PROXY_LOG_RENDER_DELAY_MS = 80
 PROXY_STATE_FLUSH_DELAY_MS = 250
-
-
-def normalize_git_ref(ref: str | None, *, default: str) -> str:
-    normalized = str(ref or "").strip()
-    return normalized or default
-
-
-def is_git_commit_ref(ref: str) -> bool:
-    normalized = ref.strip()
-    return len(normalized) in (40, 64) and all(char in "0123456789abcdefABCDEF" for char in normalized)
-
-
-def same_git_commit(actual: str, expected: str) -> bool:
-    actual_normalized = actual.strip().casefold()
-    expected_normalized = expected.strip().casefold()
-    return bool(actual_normalized) and actual_normalized == expected_normalized
-
-
-def git_remote_ref_patterns(ref: str) -> list[str]:
-    normalized = normalize_git_ref(ref, default=DEFAULT_PROJECT_GITHUB_REF)
-    if is_git_commit_ref(normalized):
-        return []
-    if normalized == "HEAD":
-        return ["HEAD"]
-    if normalized.endswith("^{}"):
-        return [normalized]
-    if normalized.startswith("refs/tags/"):
-        return [f"{normalized}^{{}}", normalized]
-    if normalized.startswith("refs/"):
-        return [normalized]
-    return [f"refs/heads/{normalized}", f"refs/tags/{normalized}^{{}}", f"refs/tags/{normalized}", normalized]
-
-
-def git_fetch_ref_candidates(ref: str) -> list[str]:
-    normalized = normalize_git_ref(ref, default=DEFAULT_PROJECT_GITHUB_REF)
-    if normalized.endswith("^{}"):
-        normalized = normalized[:-3]
-    if normalized == "HEAD" or is_git_commit_ref(normalized) or normalized.startswith("refs/"):
-        return [normalized]
-    return [normalized, f"refs/heads/{normalized}", f"refs/tags/{normalized}"]
-
-
-def remote_commit_from_ls_remote(output: str, ref: str) -> str:
-    entries: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            entries.append((parts[0], parts[1]))
-    if not entries:
-        return ""
-    for pattern in git_remote_ref_patterns(ref):
-        for commit, remote_ref in entries:
-            if remote_ref == pattern:
-                return commit
-    return entries[0][0]
-
-
-def _normalize_checksum_manifest_path(value: object) -> str:
-    raw_path = str(value or "").strip().replace("\\", "/")
-    if not raw_path or raw_path.startswith("/"):
-        raise RuntimeError("Checksum manifest contains an unsafe path.")
-    parts = [part for part in raw_path.split("/") if part and part != "."]
-    if not parts or any(part == ".." for part in parts) or parts[0].endswith(":"):
-        raise RuntimeError("Checksum manifest contains an unsafe path.")
-    return Path(*parts).as_posix()
-
-
-def _normalize_sha256_digest(value: object) -> str:
-    digest = str(value or "").strip().casefold()
-    if digest.startswith("sha256:"):
-        digest = digest[len("sha256:") :]
-    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        raise RuntimeError("Checksum manifest contains an invalid SHA-256 digest.")
-    return digest
-
-
-def checksum_manifest_entries(payload: object) -> dict[str, str]:
-    if not isinstance(payload, dict):
-        raise RuntimeError("Checksum manifest must be a JSON object.")
-    algorithm = str(payload.get("algorithm") or "sha256").strip().casefold()
-    if algorithm != "sha256":
-        raise RuntimeError("Checksum manifest must use SHA-256.")
-    raw_entries = payload.get("sha256")
-    entries: dict[str, str] = {}
-    if isinstance(raw_entries, dict):
-        for raw_path, raw_digest in raw_entries.items():
-            entries[_normalize_checksum_manifest_path(raw_path)] = _normalize_sha256_digest(raw_digest)
-    elif isinstance(payload.get("files"), list):
-        for item in payload["files"]:
-            if not isinstance(item, dict):
-                raise RuntimeError("Checksum manifest file entries must be objects.")
-            entries[_normalize_checksum_manifest_path(item.get("path"))] = _normalize_sha256_digest(
-                item.get("sha256") or item.get("digest")
-            )
-    else:
-        raise RuntimeError("Checksum manifest must contain SHA-256 entries.")
-    if not entries:
-        raise RuntimeError("Checksum manifest must contain SHA-256 entries.")
-    return entries
-
-
-def hot_update_checksum_manifest_path(repo_root: Path) -> Path | None:
-    for relative_path in HOT_UPDATE_CHECKSUM_MANIFEST_RELATIVE_PATHS:
-        manifest_path = repo_root / relative_path
-        if manifest_path.is_file():
-            return manifest_path
-    return None
-
-
-def sha256_file_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file_obj:
-        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def verify_hot_update_checksums(repo_root: Path, required_paths: list[Path]) -> bool:
-    manifest_path = hot_update_checksum_manifest_path(repo_root)
-    if manifest_path is None:
-        return False
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Checksum manifest is unreadable: {exc}") from exc
-    checksums = checksum_manifest_entries(payload)
-    root = repo_root.resolve()
-    for relative_path in checksums:
-        target = (root / relative_path).resolve()
-        try:
-            target.relative_to(root)
-        except ValueError as exc:
-            raise RuntimeError("Checksum manifest contains an unsafe path.") from exc
-    for required_path in required_paths:
-        if not required_path.is_file():
-            continue
-        relative_path = required_path.resolve().relative_to(root).as_posix()
-        expected_digest = checksums.get(relative_path)
-        if expected_digest is None:
-            raise RuntimeError(f"Checksum manifest is missing {relative_path}.")
-        actual_digest = sha256_file_digest(required_path)
-        if actual_digest != expected_digest:
-            raise RuntimeError(f"Checksum mismatch for {relative_path}.")
-    return True
-
-
-@dataclass
-class ModelBatchResult:
-    status: str = "pending"
-    detail: str = ""
-    duration_ms: int | None = None
-
-
-@dataclass
-class ModelBatchCache:
-    models: list[str]
-    results: dict[str, ModelBatchResult]
-    completed: bool = False
-    tested_at: str | None = None
-
-
-@dataclass(frozen=True)
-class GitRemoteUpdate:
-    latest_commit: str
-    previous_commit: str
-
-    @property
-    def has_update(self) -> bool:
-        return bool(self.latest_commit) and self.latest_commit != self.previous_commit
-
-    @property
-    def short_latest(self) -> str:
-        return self.latest_commit[:12] if self.latest_commit else "-"
 
 
 @dataclass(frozen=True)
@@ -432,14 +271,6 @@ class GlobalApplyResult:
     codex_backup_dir: Path | None = None
     claude_backup_dir: Path | None = None
     claude_settings_path: Path | None = None
-
-
-def software_update_error_detail(error: object) -> str:
-    message = str(error or "").strip()
-    normalized = message.casefold()
-    if not message or normalized == "none" or normalized.endswith(": none") or normalized.endswith("- none"):
-        return "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。"
-    return message
 
 
 def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
@@ -467,264 +298,6 @@ def profile_library_sort_key(profile: Profile) -> tuple[int, str, str]:
         "无需签到": 2,
     }.get(profile.sign_in_status, 3)
     return sign_in_rank, profile.name.casefold(), profile.id
-
-
-def model_batch_targets(profile: Profile | None) -> list[str]:
-    if profile is None:
-        return []
-    models: list[str] = []
-    for model in profile.health.models:
-        model_name = str(model).strip()
-        if model_name and model_name not in models:
-            models.append(model_name)
-    return models
-
-
-def ordered_model_batch_models(models: list[str], results: dict[str, ModelBatchResult], completed: bool) -> list[str]:
-    if not completed:
-        return list(models)
-    order = {model: index for index, model in enumerate(models)}
-    return sorted(models, key=lambda model: (0 if results.get(model, ModelBatchResult()).status == "success" else 1, order.get(model, 0)))
-
-
-def successful_model_batch_models(cache: ModelBatchCache | None) -> list[str]:
-    if cache is None or not cache.completed:
-        return []
-    return [model for model in ordered_model_batch_models(cache.models, cache.results, True) if cache.results.get(model, ModelBatchResult()).status == "success"]
-
-
-def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:
-    if not isinstance(payload, dict):
-        return {}
-
-    caches: dict[str, ModelBatchCache] = {}
-    for profile_id, cache_payload in payload.items():
-        if not str(profile_id).strip() or not isinstance(cache_payload, dict):
-            continue
-        if not bool(cache_payload.get("completed", False)):
-            continue
-
-        raw_models = cache_payload.get("models", [])
-        if not isinstance(raw_models, list):
-            continue
-        models = [str(model).strip() for model in raw_models if str(model).strip()]
-        if not models:
-            continue
-
-        raw_results = cache_payload.get("results", {})
-        if not isinstance(raw_results, dict):
-            raw_results = {}
-        results: dict[str, ModelBatchResult] = {}
-        for model in models:
-            result_payload = raw_results.get(model, {})
-            if not isinstance(result_payload, dict):
-                result_payload = {}
-            status = str(result_payload.get("status", "pending") or "pending")
-            if status not in {"pending", "running", "success", "error"}:
-                status = "pending"
-            raw_duration_ms = result_payload.get("duration_ms")
-            try:
-                duration_ms = int(raw_duration_ms) if raw_duration_ms is not None else None
-            except (TypeError, ValueError):
-                duration_ms = None
-            if duration_ms is not None and duration_ms < 0:
-                duration_ms = None
-            results[model] = ModelBatchResult(
-                status=status,
-                detail=str(result_payload.get("detail", "") or ""),
-                duration_ms=duration_ms,
-            )
-
-        caches[str(profile_id)] = ModelBatchCache(
-            models=models,
-            results=results,
-            completed=True,
-            tested_at=str(cache_payload.get("tested_at") or "") or None,
-        )
-    return caches
-
-
-def model_batch_caches_to_payload(caches: dict[str, ModelBatchCache]) -> dict[str, dict]:
-    payload: dict[str, dict] = {}
-    for profile_id, cache in caches.items():
-        if not cache.completed:
-            continue
-        models = [str(model).strip() for model in cache.models if str(model).strip()]
-        if not models:
-            continue
-        results_payload: dict[str, dict] = {}
-        for model in models:
-            result = cache.results.get(model, ModelBatchResult())
-            results_payload[model] = {
-                "status": result.status,
-                "detail": result.detail,
-                "duration_ms": result.duration_ms,
-            }
-        payload[str(profile_id)] = {
-            "models": models,
-            "results": results_payload,
-            "completed": True,
-            "tested_at": cache.tested_at,
-        }
-    return payload
-
-
-def run_model_batch_requests(
-    chat_tester: ChatTester,
-    profile: Profile,
-    models: list[str],
-    wire_api: str,
-    payload_text: str | None,
-    on_start,
-    on_result,
-    *,
-    max_workers: int = DEFAULT_MODEL_BATCH_CONCURRENCY,
-) -> None:
-    if not models:
-        return
-
-    worker_count = max(1, min(max_workers, len(models)))
-
-    def test_model(model: str) -> tuple[str, str, str, int]:
-        started = perf_counter()
-        try:
-            result = chat_tester.send_message(
-                profile,
-                MODEL_BATCH_PROMPT,
-                model_override=model,
-                wire_api_override=wire_api,
-                payload_override_text=payload_text,
-            )
-            status = "success" if result.ok else "error"
-            detail = result.text
-            if result.detail:
-                detail = f"{detail}  {result.detail}"
-        except Exception:
-            status = "error"
-            detail = "测试异常"
-        duration_ms = int((perf_counter() - started) * 1000)
-        return model, status, detail, duration_ms
-
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        pending_models = iter(models)
-        future_by_model = {}
-
-        def submit_next() -> None:
-            try:
-                model = next(pending_models)
-            except StopIteration:
-                return
-            on_start(model)
-            future_by_model[executor.submit(test_model, model)] = model
-
-        for _ in range(worker_count):
-            submit_next()
-
-        while future_by_model:
-            done, _ = wait(future_by_model, return_when=FIRST_COMPLETED)
-            for future in done:
-                model = future_by_model.pop(future)
-                try:
-                    result_model, status, detail, duration_ms = future.result()
-                except Exception:
-                    result_model, status, detail, duration_ms = model, "error", "测试异常", 0
-                on_result(result_model, status, detail, duration_ms)
-                submit_next()
-
-
-def _has_visible_codex_window() -> bool:
-    if os.name != "nt":
-        return False
-    try:
-        user32 = ctypes.windll.user32
-        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.IsWindowVisible.argtypes = [wintypes.HWND]
-        user32.IsWindowVisible.restype = wintypes.BOOL
-        is_hung = getattr(user32, "IsHungAppWindow", None)
-        hwnd = user32.FindWindowW(None, "Codex Switch")
-        if not hwnd:
-            return False
-        if not user32.IsWindowVisible(hwnd):
-            return False
-        if is_hung and is_hung(hwnd):
-            return False
-        return True
-    except Exception:
-        return False
-
-
-def _activate_existing_codex_window() -> bool:
-    if os.name != "nt":
-        return False
-    try:
-        user32 = ctypes.windll.user32
-        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.IsWindowVisible.argtypes = [wintypes.HWND]
-        user32.IsWindowVisible.restype = wintypes.BOOL
-        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.ShowWindow.restype = wintypes.BOOL
-        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-        user32.SetForegroundWindow.restype = wintypes.BOOL
-        user32.BringWindowToTop.argtypes = [wintypes.HWND]
-        user32.BringWindowToTop.restype = wintypes.BOOL
-        is_hung = getattr(user32, "IsHungAppWindow", None)
-        hwnd = user32.FindWindowW(None, "Codex Switch")
-        if not hwnd:
-            return False
-        if not user32.IsWindowVisible(hwnd):
-            return False
-        if is_hung and is_hung(hwnd):
-            return False
-
-        SW_RESTORE = 9
-        user32.ShowWindow(hwnd, SW_RESTORE)
-        user32.SetForegroundWindow(hwnd)
-        user32.BringWindowToTop(hwnd)
-        return True
-    except Exception:
-        return False
-
-
-def _acquire_single_instance() -> bool:
-    global _SINGLE_INSTANCE_HANDLE
-    if os.name != "nt":
-        return True
-    try:
-        if _SINGLE_INSTANCE_HANDLE is not None:
-            return True
-        mutex_name = "Global\\CodexSwitchSingleInstance"
-        handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-        if not handle:
-            return True
-        if ctypes.windll.kernel32.GetLastError() == 183:
-            if _has_visible_codex_window():
-                ctypes.windll.kernel32.CloseHandle(handle)
-                return False
-        _SINGLE_INSTANCE_HANDLE = handle
-        return True
-    except Exception:
-        return True
-
-
-def _release_single_instance() -> None:
-    global _SINGLE_INSTANCE_HANDLE
-    if os.name != "nt" or _SINGLE_INSTANCE_HANDLE is None:
-        return
-    try:
-        ctypes.windll.kernel32.CloseHandle(_SINGLE_INSTANCE_HANDLE)
-    finally:
-        _SINGLE_INSTANCE_HANDLE = None
-
-
-def _show_single_instance_message() -> None:
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        messagebox.showinfo("Codex Switch", "Codex Switch 已经在运行。")
-    finally:
-        root.destroy()
 
 
 class CodexSwitchApp:
