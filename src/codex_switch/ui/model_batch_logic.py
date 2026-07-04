@@ -7,6 +7,7 @@ from time import perf_counter
 from codex_switch.chat import ChatTester
 from codex_switch.models import Profile
 from codex_switch.storage import DEFAULT_MODEL_BATCH_CONCURRENCY
+from codex_switch.ui.utils import compact_text
 
 
 MODEL_BATCH_PROMPT = "ping"
@@ -49,6 +50,25 @@ def successful_model_batch_models(cache: ModelBatchCache | None) -> list[str]:
     if cache is None or not cache.completed:
         return []
     return [model for model in ordered_model_batch_models(cache.models, cache.results, True) if cache.results.get(model, ModelBatchResult()).status == "success"]
+
+
+def model_batch_health_summary(cache: ModelBatchCache | None) -> str:
+    if cache is None:
+        return "未执行测试"
+    if not cache.completed:
+        finished = sum(1 for item in cache.results.values() if item.status in {"success", "error"})
+        success_count = sum(1 for item in cache.results.values() if item.status == "success")
+        return f"测试中，完成 {finished}/{len(cache.models)}，成功 {success_count}"
+    success_models = successful_model_batch_models(cache)
+    if not success_models:
+        return "无成功模型"
+    return compact_text(", ".join(success_models), 140)
+
+
+def model_batch_counts(cache: ModelBatchCache) -> tuple[int, int]:
+    success_count = sum(1 for item in cache.results.values() if item.status == "success")
+    error_count = sum(1 for item in cache.results.values() if item.status == "error")
+    return success_count, error_count
 
 
 def model_batch_caches_from_payload(payload) -> dict[str, ModelBatchCache]:

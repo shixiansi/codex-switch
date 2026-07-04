@@ -129,6 +129,7 @@ from codex_switch.ui.library_logic import (
     profiles_for_library_view,
     visible_profiles_for_filter,
 )
+from codex_switch.ui.model_batch_logic import model_batch_counts, model_batch_health_summary
 from codex_switch.ui.mcp_logic import (
     mcp_detail_display,
     mcp_contains_project_root,
@@ -873,6 +874,29 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(successful_model_batch_models(cache), ["m2"])
         cache.completed = False
         self.assertEqual(successful_model_batch_models(cache), [])
+
+    def test_model_batch_logic_helpers_render_summary_and_counts(self) -> None:
+        running = ModelBatchCache(
+            models=["m1", "m2"],
+            results={
+                "m1": ModelBatchResult(status="success"),
+                "m2": ModelBatchResult(status="running"),
+            },
+            completed=False,
+        )
+        completed = ModelBatchCache(
+            models=["m1", "m2"],
+            results={
+                "m1": ModelBatchResult(status="success"),
+                "m2": ModelBatchResult(status="error"),
+            },
+            completed=True,
+        )
+
+        self.assertEqual(model_batch_health_summary(None), "未执行测试")
+        self.assertIn("完成 1/2", model_batch_health_summary(running))
+        self.assertEqual(model_batch_health_summary(completed), "m1")
+        self.assertEqual(model_batch_counts(completed), (1, 1))
 
     def test_model_batch_cache_payload_roundtrip_completed_only(self) -> None:
         caches = {

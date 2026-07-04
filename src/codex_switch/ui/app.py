@@ -156,6 +156,8 @@ from codex_switch.ui.model_batch_logic import (
     ModelBatchResult,
     model_batch_caches_from_payload,
     model_batch_caches_to_payload,
+    model_batch_counts,
+    model_batch_health_summary,
     model_batch_targets,
     ordered_model_batch_models,
     run_model_batch_requests,
@@ -5003,18 +5005,7 @@ class CodexSwitchApp:
         return cache
 
     def _model_batch_health_summary(self, profile: Profile | None) -> str:
-        cache = self._model_batch_cache(profile)
-        if profile is None or cache is None:
-            return "未批量测试"
-        if not cache.completed:
-            finished = sum(1 for item in cache.results.values() if item.status in {"success", "error"})
-            success_count = sum(1 for item in cache.results.values() if item.status == "success")
-            return f"测试中：已完成 {finished}/{len(cache.models)}，成功 {success_count}"
-        success_models = successful_model_batch_models(cache)
-        if not success_models:
-            return "无成功模型"
-        return compact_text(", ".join(success_models), 140)
-
+        return model_batch_health_summary(self._model_batch_cache(profile))
     def _successful_models_for_profile(self, profile: Profile | None) -> list[str]:
         return successful_model_batch_models(self._model_batch_cache(profile))
 
@@ -5039,10 +5030,7 @@ class CodexSwitchApp:
             self.model_batch_button.state(["!disabled"])
 
     def _model_batch_counts(self, cache: ModelBatchCache) -> tuple[int, int]:
-        success_count = sum(1 for item in cache.results.values() if item.status == "success")
-        error_count = sum(1 for item in cache.results.values() if item.status == "error")
-        return success_count, error_count
-
+        return model_batch_counts(cache)
     def _refresh_model_batch_health_display(self, profile_id: str) -> None:
         if self.selected_profile_id == profile_id:
             profile = self._profile_by_id(profile_id)
