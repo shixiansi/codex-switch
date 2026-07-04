@@ -124,9 +124,11 @@ from codex_switch.ui.project_logic import (
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
+    route_proxy_account_pool_choices,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
     route_proxy_codex_protocol_for_profile,
+    route_proxy_detail_display,
     route_proxy_rules_for_project,
     route_proxy_rules_for_project_profiles,
 )
@@ -1254,6 +1256,85 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(app.route_proxy_settings.port, 15722)
         self.assertEqual(app.route_proxy_settings.account_pool_strategy, ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER)
         self.assertEqual(app.route_proxy_settings.upstream_timeout_seconds, 12)
+
+    def test_route_proxy_account_pool_choices_separates_codex_and_claude_groups(self) -> None:
+        settings = AccountPoolSettings()
+        default_group = settings.ensure_default_group()
+        second_codex = settings.add_group("backup-codex")
+        claude_group = settings.add_group("claude-pool", pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE)
+
+        choices = route_proxy_account_pool_choices(settings)
+
+        self.assertIn(default_group.id, choices.codex_choices.values())
+        self.assertIn(second_codex.id, choices.codex_choices.values())
+        self.assertIn(claude_group.id, choices.claude_choices.values())
+        self.assertEqual(choices.selected_codex_label, choices.codex_labels[0])
+        self.assertEqual(choices.selected_claude_label, choices.claude_labels[0])
+
+    def test_route_proxy_detail_display_uses_account_pool_labels_and_group_names(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", codex_model="gpt-real")
+        codex_profile.id = "codex-profile"
+        claude_profile = Profile.create(
+            "claude",
+            "https://claude.example.com",
+            "sk-claude",
+            vendor=VENDOR_CLAUDE,
+            claude_model="sonnet-real",
+        )
+        claude_profile.id = "claude-profile"
+        proxy_settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CODEX,
+                    primary_profile_id=codex_profile.id,
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id="codex-group",
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+                    compact_model="gpt-4.1-compact",
+                ),
+                RouteProxyRule.create(
+                    project_id=project.id,
+                    client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+                    primary_profile_id=claude_profile.id,
+                    upstream_source=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+                    account_pool_group_id="claude-group",
+                    upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+                ),
+            ]
+        )
+        account_pool_settings = AccountPoolSettings()
+        codex_group = account_pool_settings.ensure_default_group()
+        codex_group.id = "codex-group"
+        codex_group.name = "codex-pool"
+        claude_group = account_pool_settings.add_group("claude-pool", pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE)
+        claude_group.id = "claude-group"
+
+        choices = route_proxy_account_pool_choices(account_pool_settings)
+        profiles = {codex_profile.id: codex_profile, claude_profile.id: claude_profile}
+        detail = route_proxy_detail_display(
+            project,
+            proxy_settings,
+            account_pool_settings,
+            profile_by_id=lambda profile_id: profiles.get(profile_id),
+            codex_choices=choices.codex_choices,
+            claude_choices=choices.claude_choices,
+        )
+
+        self.assertEqual(detail.selected_project_text, f"{project.name}    {project.project_dir}")
+        self.assertEqual(detail.codex_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        self.assertEqual(detail.claude_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI)
+        self.assertEqual(detail.codex_compact_model, "gpt-4.1-compact")
+        self.assertEqual(detail.codex_group_label, choices.codex_labels[0])
+        self.assertEqual(detail.claude_group_label, choices.claude_labels[0])
+        self.assertIn("codex-pool", detail.selected_rules_text)
+        self.assertIn("claude-pool", detail.selected_rules_text)
 
     def test_refresh_stats_tab_renders_token_usage_summary(self) -> None:
         app = _make_minimal_app()

@@ -210,9 +210,12 @@ from codex_switch.ui.route_proxy_logic import (
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS,
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
     codex_model_override_for_project,
+    route_proxy_account_pool_choices,
     refresh_route_proxy_upstream_models,
+    route_proxy_detail_display,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
+    route_proxy_group_label_for_id,
     route_proxy_rule_for_project_client,
     route_proxy_rules_for_project_profiles,
 )
@@ -3469,102 +3472,49 @@ class CodexSwitchApp:
         self._render_proxy_log()
 
     def _refresh_proxy_account_pool_group_choices(self) -> None:
-        self.account_pool_settings.ensure_default_group()
-        self.proxy_account_pool_group_choices = {}
-        self.proxy_claude_account_pool_group_choices = {}
-        codex_labels: list[str] = []
-        claude_labels: list[str] = []
-        for group in self.account_pool_settings.groups:
-            label = self._account_pool_group_label(group)
-            if group.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
-                claude_labels.append(label)
-                self.proxy_claude_account_pool_group_choices[label] = group.id
-            else:
-                codex_labels.append(label)
-                self.proxy_account_pool_group_choices[label] = group.id
+        choices = route_proxy_account_pool_choices(
+            self.account_pool_settings,
+            current_codex_label=self.proxy_account_pool_group_var.get(),
+            current_claude_label=self.proxy_claude_account_pool_group_var.get(),
+        )
+        self.proxy_account_pool_group_choices = choices.codex_choices
+        self.proxy_claude_account_pool_group_choices = choices.claude_choices
         if hasattr(self, "proxy_account_pool_group_combo"):
-            self.proxy_account_pool_group_combo.configure(values=codex_labels)
+            self.proxy_account_pool_group_combo.configure(values=choices.codex_labels)
         if hasattr(self, "proxy_claude_account_pool_group_combo"):
-            self.proxy_claude_account_pool_group_combo.configure(values=claude_labels)
-        if codex_labels and self.proxy_account_pool_group_var.get() not in self.proxy_account_pool_group_choices:
-            self.proxy_account_pool_group_var.set(codex_labels[0])
-        elif not codex_labels:
-            self.proxy_account_pool_group_var.set("")
-        if claude_labels and self.proxy_claude_account_pool_group_var.get() not in self.proxy_claude_account_pool_group_choices:
-            self.proxy_claude_account_pool_group_var.set(claude_labels[0])
-        elif not claude_labels:
-            self.proxy_claude_account_pool_group_var.set("")
+            self.proxy_claude_account_pool_group_combo.configure(values=choices.claude_labels)
+        self.proxy_account_pool_group_var.set(choices.selected_codex_label)
+        self.proxy_claude_account_pool_group_var.set(choices.selected_claude_label)
 
     def _proxy_group_label_for_id(self, group_id: str, *, client_type: str = ROUTE_PROXY_CLIENT_CODEX) -> str:
         self._refresh_proxy_account_pool_group_choices()
-        group = self.account_pool_settings.group_by_id(group_id)
-        if group is None:
-            return ""
         choices = (
             self.proxy_claude_account_pool_group_choices
             if client_type == ROUTE_PROXY_CLIENT_CLAUDE
             else self.proxy_account_pool_group_choices
         )
-        return next(
-            (label for label, value in choices.items() if value == group.id),
-            "",
-        )
+        return route_proxy_group_label_for_id(group_id, choices)
 
     def _refresh_proxy_detail(self) -> None:
-        default_source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE]
-        project = self.get_selected_project()
-        if not project:
-            self.proxy_selected_project_var.set("未选择项目")
-            self.proxy_selected_rules_var.set("-")
-            self.proxy_codex_upstream_source_var.set(default_source_label)
-            self.proxy_claude_upstream_source_var.set(default_source_label)
-            self.proxy_codex_compact_model_var.set("")
-            return
-        self.proxy_selected_project_var.set(f"{project.name}    {project.project_dir}")
-        rules = self.route_proxy_settings.rules_for_project(project.id)
-        if not rules:
-            self.proxy_selected_rules_var.set("未启用代理。")
-            self.proxy_codex_upstream_source_var.set(default_source_label)
-            self.proxy_claude_upstream_source_var.set(default_source_label)
-            self.proxy_codex_compact_model_var.set("")
-            return
-        summaries: list[str] = []
-        for rule in rules:
-            source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, "默认配置")
-            group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
-            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-                group_label = self._proxy_group_label_for_id(rule.account_pool_group_id, client_type=ROUTE_PROXY_CLIENT_CODEX)
-                if group_label:
-                    self.proxy_account_pool_group_var.set(group_label)
-                self.proxy_codex_upstream_source_var.set(
-                    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
-                        normalize_route_proxy_upstream_source(rule.upstream_source),
-                        default_source_label,
-                    )
-                )
-                self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
-                self.proxy_codex_compact_model_var.set(rule.compact_model)
-            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
-                group_label = self._proxy_group_label_for_id(rule.account_pool_group_id, client_type=ROUTE_PROXY_CLIENT_CLAUDE)
-                if group_label:
-                    self.proxy_claude_account_pool_group_var.set(group_label)
-                self.proxy_claude_upstream_source_var.set(
-                    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
-                        normalize_route_proxy_upstream_source(rule.upstream_source),
-                        default_source_label,
-                    )
-                )
-                self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
-            profile = self._profile_by_id(rule.primary_profile_id)
-            profile_name = profile.name if profile else "配置已删除"
-            compact_suffix = f" / compact: {rule.compact_model}" if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and rule.compact_model else ""
-            if rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
-                group_name = group.name if group is not None else "号池组已删除"
-                source_label = f"{source_label}:{group_name}"
-                profile_name = group_name
-            source_suffix = f" / {source_label}"
-            summaries.append(f"{rule.client_type}{source_suffix} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
-        self.proxy_selected_rules_var.set("\n".join(summaries))
+        detail = route_proxy_detail_display(
+            self.get_selected_project(),
+            self.route_proxy_settings,
+            self.account_pool_settings,
+            profile_by_id=self._profile_by_id,
+            codex_choices=getattr(self, "proxy_account_pool_group_choices", {}),
+            claude_choices=getattr(self, "proxy_claude_account_pool_group_choices", {}),
+        )
+        self.proxy_selected_project_var.set(detail.selected_project_text)
+        self.proxy_selected_rules_var.set(detail.selected_rules_text)
+        self.proxy_codex_upstream_source_var.set(detail.codex_upstream_source_label)
+        self.proxy_claude_upstream_source_var.set(detail.claude_upstream_source_label)
+        self.proxy_codex_protocol_var.set(detail.codex_protocol)
+        self.proxy_claude_protocol_var.set(detail.claude_protocol)
+        self.proxy_codex_compact_model_var.set(detail.codex_compact_model)
+        if detail.codex_group_label:
+            self.proxy_account_pool_group_var.set(detail.codex_group_label)
+        if detail.claude_group_label:
+            self.proxy_claude_account_pool_group_var.set(detail.claude_group_label)
 
     def _render_proxy_log(self) -> None:
         self._proxy_log_render_pending = False

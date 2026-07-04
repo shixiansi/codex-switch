@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Callable
+
 from codex_switch.chat import (
     WIRE_API_ANTHROPIC_MESSAGES,
     WIRE_API_CHAT_COMPLETIONS,
     WIRE_API_RESPONSES,
     default_wire_api_for_profile,
 )
+from codex_switch.ui.account_pool_logic import account_pool_group_label
 from codex_switch.models import (
     AccountPoolGroup,
     AccountPoolSettings,
+    ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
     DEFAULT_CLAUDE_FALLBACK_MODEL,
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
@@ -51,6 +56,29 @@ CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES = {
     label: value
     for value, label in CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.items()
 }
+
+
+@dataclass(frozen=True)
+class RouteProxyAccountPoolChoices:
+    codex_choices: dict[str, str]
+    claude_choices: dict[str, str]
+    codex_labels: list[str]
+    claude_labels: list[str]
+    selected_codex_label: str
+    selected_claude_label: str
+
+
+@dataclass(frozen=True)
+class RouteProxyDetailDisplay:
+    selected_project_text: str
+    selected_rules_text: str
+    codex_upstream_source_label: str
+    claude_upstream_source_label: str
+    codex_protocol: str
+    claude_protocol: str
+    codex_compact_model: str
+    codex_group_label: str
+    claude_group_label: str
 
 
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
@@ -195,6 +223,43 @@ def route_proxy_base_url_for_project(settings: RouteProxySettings, project: Proj
     if not settings.project_enabled(project.id):
         return None
     return settings.project_base_url(project.id)
+
+
+def route_proxy_account_pool_choices(
+    account_pool_settings: AccountPoolSettings,
+    *,
+    current_codex_label: str = "",
+    current_claude_label: str = "",
+) -> RouteProxyAccountPoolChoices:
+    account_pool_settings.ensure_default_group()
+    codex_choices: dict[str, str] = {}
+    claude_choices: dict[str, str] = {}
+    codex_labels: list[str] = []
+    claude_labels: list[str] = []
+    for group in account_pool_settings.groups:
+        label = account_pool_group_label(group, account_pool_settings)
+        if group.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
+            claude_labels.append(label)
+            claude_choices[label] = group.id
+        else:
+            codex_labels.append(label)
+            codex_choices[label] = group.id
+    selected_codex_label = current_codex_label if current_codex_label in codex_choices else (codex_labels[0] if codex_labels else "")
+    selected_claude_label = (
+        current_claude_label if current_claude_label in claude_choices else (claude_labels[0] if claude_labels else "")
+    )
+    return RouteProxyAccountPoolChoices(
+        codex_choices=codex_choices,
+        claude_choices=claude_choices,
+        codex_labels=codex_labels,
+        claude_labels=claude_labels,
+        selected_codex_label=selected_codex_label,
+        selected_claude_label=selected_claude_label,
+    )
+
+
+def route_proxy_group_label_for_id(group_id: str, choices: dict[str, str]) -> str:
+    return next((label for label, value in choices.items() if value == group_id), "")
 
 
 def route_proxy_rule_for_project_client(
@@ -349,3 +414,90 @@ def apply_route_proxy_project_rules(
             claude_pool_model=claude_pool_model,
         )
     return changed
+
+
+def route_proxy_detail_display(
+    project: ProjectRecord | None,
+    settings: RouteProxySettings,
+    account_pool_settings: AccountPoolSettings,
+    *,
+    profile_by_id: Callable[[str], Profile | None],
+    codex_choices: dict[str, str],
+    claude_choices: dict[str, str],
+) -> RouteProxyDetailDisplay:
+    default_source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS[ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE]
+    if project is None:
+        return RouteProxyDetailDisplay(
+            selected_project_text="未选择项目",
+            selected_rules_text="-",
+            codex_upstream_source_label=default_source_label,
+            claude_upstream_source_label=default_source_label,
+            codex_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+            claude_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+            codex_compact_model="",
+            codex_group_label="",
+            claude_group_label="",
+        )
+
+    rules = settings.rules_for_project(project.id)
+    if not rules:
+        return RouteProxyDetailDisplay(
+            selected_project_text=f"{project.name}    {project.project_dir}",
+            selected_rules_text="未配置代理规则",
+            codex_upstream_source_label=default_source_label,
+            claude_upstream_source_label=default_source_label,
+            codex_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+            claude_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+            codex_compact_model="",
+            codex_group_label="",
+            claude_group_label="",
+        )
+
+    summaries: list[str] = []
+    codex_upstream_source_label = default_source_label
+    claude_upstream_source_label = default_source_label
+    codex_protocol = ROUTE_PROXY_PROTOCOL_OPENAI
+    claude_protocol = ROUTE_PROXY_PROTOCOL_ANTHROPIC
+    codex_compact_model = ""
+    codex_group_label = ""
+    claude_group_label = ""
+
+    for rule in rules:
+        source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(rule.upstream_source, "默认配置")
+        group = account_pool_settings.group_by_id(rule.account_pool_group_id)
+        if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+            codex_group_label = route_proxy_group_label_for_id(rule.account_pool_group_id, codex_choices)
+            codex_upstream_source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
+                normalize_route_proxy_upstream_source(rule.upstream_source),
+                default_source_label,
+            )
+            codex_protocol = rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI
+            codex_compact_model = rule.compact_model
+        elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+            claude_group_label = route_proxy_group_label_for_id(rule.account_pool_group_id, claude_choices)
+            claude_upstream_source_label = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.get(
+                normalize_route_proxy_upstream_source(rule.upstream_source),
+                default_source_label,
+            )
+            claude_protocol = rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC
+        profile = profile_by_id(rule.primary_profile_id)
+        profile_name = profile.name if profile is not None else "绑定配置已删除"
+        compact_suffix = f" / compact: {rule.compact_model}" if rule.client_type == ROUTE_PROXY_CLIENT_CODEX and rule.compact_model else ""
+        if rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL:
+            group_name = group.name if group is not None else "号池组已删除"
+            source_label = f"{source_label}:{group_name}"
+            profile_name = group_name
+        source_suffix = f" / {source_label}"
+        summaries.append(f"{rule.client_type}{source_suffix} / {rule.model_pattern} / {rule.upstream_protocol}{compact_suffix} -> {profile_name}")
+
+    return RouteProxyDetailDisplay(
+        selected_project_text=f"{project.name}    {project.project_dir}",
+        selected_rules_text="\n".join(summaries),
+        codex_upstream_source_label=codex_upstream_source_label,
+        claude_upstream_source_label=claude_upstream_source_label,
+        codex_protocol=codex_protocol,
+        claude_protocol=claude_protocol,
+        codex_compact_model=codex_compact_model,
+        codex_group_label=codex_group_label,
+        claude_group_label=claude_group_label,
+    )
