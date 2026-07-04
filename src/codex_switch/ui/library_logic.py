@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from codex_switch.models import CurrentCodexConfig
+
 from codex_switch.models import Profile, VENDOR_CLAUDE, VENDOR_CODEX, VENDOR_GENERIC, VENDOR_OTHER
 from codex_switch.ui.utils import compact_text, hidden_secret
 
@@ -37,6 +39,40 @@ class LibraryDetailDisplay:
     badge_state: str
     model_tags: list[str]
     empty_tags_text: str
+
+
+@dataclass(frozen=True)
+class GlobalTabDisplay:
+    total_text: str
+    healthy_text: str
+    degraded_text: str
+    error_text: str
+    codex_current_api_text: str
+    codex_current_models_text: str
+    claude_current_api_text: str
+    claude_current_models_text: str
+    current_paths_text: str
+    global_mcp_text: str
+
+
+@dataclass(frozen=True)
+class TestDetailDisplay:
+    selected_name: str
+    health_text: str
+    provider_text: str
+    model_text: str
+    api_text: str
+    key_text: str
+    wire_text: str
+    endpoint_text: str
+    checked_text: str
+    notes_text: str
+    result_text: str
+    success_models_text: str
+    badge_state: str
+    health_override_value: str
+    health_override_note_text: str
+    health_override_state: str
 
 
 def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
@@ -205,4 +241,94 @@ def build_library_detail_display(profile: Profile | None, *, status_text: dict[s
         badge_state=profile.effective_health_status,
         model_tags=list(profile.health.models),
         empty_tags_text="当前配置尚未返回模型列表。",
+    )
+
+
+def build_global_tab_display(
+    current_config: CurrentCodexConfig,
+    *,
+    counts: tuple[int, int, int, int],
+    claude_base_url: str,
+    claude_model: str,
+    claude_fallback_model: str,
+    claude_settings_path: str,
+    global_mcp_text: str,
+) -> GlobalTabDisplay:
+    total, healthy, degraded, error = counts
+    model_lines: list[str] = []
+    if current_config.model:
+        model_lines.append(f"主模型：{current_config.model}")
+    if current_config.review_model and current_config.review_model != current_config.model:
+        model_lines.append(f"评审模型：{current_config.review_model}")
+    codex_current_models_text = "\n".join(model_lines) if model_lines else "模型：-"
+    return GlobalTabDisplay(
+        total_text=str(total),
+        healthy_text=str(healthy),
+        degraded_text=str(degraded),
+        error_text=str(error),
+        codex_current_api_text=f"API 地址：{current_config.base_url or '-'}",
+        codex_current_models_text=codex_current_models_text,
+        claude_current_api_text=f"API 地址：{claude_base_url}",
+        claude_current_models_text=f"主模型：{claude_model}\n兜底模型：{claude_fallback_model}",
+        current_paths_text=(
+            f"Codex config.toml\n{current_config.config_path}\n\n"
+            f"Codex auth.json\n{current_config.auth_path}\n\n"
+            f"Claude settings.json\n{claude_settings_path}"
+        ),
+        global_mcp_text=global_mcp_text,
+    )
+
+
+def build_test_detail_display(
+    profile: Profile | None,
+    *,
+    status_text: dict[str, str],
+    key_summary,
+    model_summary,
+    success_models_text: str,
+    health_override_display_map: dict[str, str],
+) -> TestDetailDisplay:
+    if profile is None:
+        return TestDetailDisplay(
+            selected_name="未选择配置",
+            health_text="未知",
+            provider_text="-",
+            model_text="-",
+            api_text="-",
+            key_text="-",
+            wire_text="-",
+            endpoint_text="-",
+            checked_text="-",
+            notes_text="暂无备注",
+            result_text="未知",
+            success_models_text="未执行测试",
+            badge_state="unknown",
+            health_override_value=health_override_display_map[""],
+            health_override_note_text=health_override_note(None),
+            health_override_state="disabled",
+        )
+
+    checked_text = profile.health.checked_at or "-"
+    if profile.health.latency_ms is not None:
+        checked_text = f"{checked_text}    {profile.health.latency_ms} ms"
+    return TestDetailDisplay(
+        selected_name=profile.name,
+        health_text=health_status_text(profile, status_text),
+        provider_text=profile.provider_name,
+        model_text=model_summary(profile),
+        api_text=profile.base_url,
+        key_text=key_summary(profile),
+        wire_text=profile.wire_api,
+        endpoint_text=profile.health.endpoint or "-",
+        checked_text=checked_text,
+        notes_text=profile.notes or "暂无备注",
+        result_text=profile.health.detail or "未知",
+        success_models_text=success_models_text,
+        badge_state=profile.effective_health_status,
+        health_override_value=health_override_display_map.get(
+            profile.manual_health_status or "",
+            health_override_display_map[""],
+        ),
+        health_override_note_text=health_override_note(profile),
+        health_override_state="readonly",
     )

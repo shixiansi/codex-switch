@@ -116,6 +116,7 @@ from codex_switch.ui.hot_update_logic import (
 from codex_switch.ui.library_logic import (
     build_library_detail_display,
     build_library_tab_display,
+    build_test_detail_display,
     current_status_counts,
     health_override_note,
     health_status_text,
@@ -661,6 +662,37 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(detail.selected_name, claude.name)
         self.assertEqual(detail.badge_state, "degraded")
         self.assertEqual(detail.model_tags, ["sonnet"])
+
+    def test_library_logic_build_test_detail_display_formats_health_details(self) -> None:
+        profile = Profile.create("api", "https://api.example.com", "sk-api", vendor=VENDOR_CODEX)
+        profile.health = HealthResult(
+            status="healthy",
+            detail="all good",
+            models=["gpt-5"],
+            endpoint="/models",
+            checked_at="2026-07-05T12:00:00",
+            latency_ms=120,
+        )
+        profile.notes = "note"
+        profile.manual_health_status = "healthy"
+
+        detail = build_test_detail_display(
+            profile,
+            status_text={"healthy": "健康", "degraded": "降级", "error": "异常", "unknown": "未知"},
+            key_summary=profile_key_summary,
+            model_summary=profile_model_summary,
+            success_models_text="gpt-5",
+            health_override_display_map={"": "自动", "healthy": "健康"},
+        )
+
+        self.assertEqual(detail.selected_name, profile.name)
+        self.assertIn("健康", detail.health_text)
+        self.assertEqual(detail.endpoint_text, "/models")
+        self.assertIn("120 ms", detail.checked_text)
+        self.assertEqual(detail.result_text, "all good")
+        self.assertEqual(detail.success_models_text, "gpt-5")
+        self.assertEqual(detail.health_override_value, "健康")
+        self.assertEqual(detail.health_override_state, "readonly")
 
     def test_library_model_tags_show_first_twenty_and_summary(self) -> None:
         app = _make_minimal_app()

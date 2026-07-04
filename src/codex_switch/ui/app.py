@@ -169,8 +169,10 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_summary_text,
 )
 from codex_switch.ui.library_logic import (
+    build_global_tab_display,
     build_library_detail_display,
     build_library_tab_display,
+    build_test_detail_display,
     current_status_counts,
     health_override_note,
     health_status_text,
@@ -2997,35 +2999,31 @@ class CodexSwitchApp:
 
     def refresh_global_tab(self) -> None:
         self.current_config = self.manager.read_current_config()
-        total, healthy, degraded, error = self._current_status_counts()
-
-        self.global_total_var.set(str(total))
-        self.global_healthy_var.set(str(healthy))
-        self.global_degraded_var.set(str(degraded))
-        self.global_error_var.set(str(error))
-        self.codex_current_api_var.set(f"API 地址：{self.current_config.base_url or '-'}")
-
-        model_lines: list[str] = []
-        if self.current_config.model:
-            model_lines.append(f"主模型：{self.current_config.model}")
-        if self.current_config.review_model and self.current_config.review_model != self.current_config.model:
-            model_lines.append(f"评审模型：{self.current_config.review_model}")
-        self.codex_current_models_var.set("\n".join(model_lines) if model_lines else "模型：-")
-
         claude_base_url, claude_model, claude_fallback_model = claude_settings_env_values(
             self.claude_manager.load_settings(),
             base_url_key=CLAUDE_BASE_URL_ENV_KEY,
             model_key=CLAUDE_MODEL_ENV_KEY,
             fallback_model_key=CLAUDE_FALLBACK_MODEL_ENV_KEY,
         )
-        self.claude_current_api_var.set(f"API 地址：{claude_base_url}")
-        self.claude_current_models_var.set(f"主模型：{claude_model}\n兜底模型：{claude_fallback_model}")
-        self.current_path_var.set(
-            f"Codex config.toml\n{self.current_config.config_path}\n\n"
-            f"Codex auth.json\n{self.current_config.auth_path}\n\n"
-            f"Claude settings.json\n{self.claude_manager.settings_path}"
+        display = build_global_tab_display(
+            self.current_config,
+            counts=self._current_status_counts(),
+            claude_base_url=claude_base_url,
+            claude_model=claude_model,
+            claude_fallback_model=claude_fallback_model,
+            claude_settings_path=str(self.claude_manager.settings_path),
+            global_mcp_text=self._mcp_summary(self._effective_global_mcp_toml()),
         )
-        self.global_mcp_var.set(self._mcp_summary(self._effective_global_mcp_toml()))
+        self.global_total_var.set(display.total_text)
+        self.global_healthy_var.set(display.healthy_text)
+        self.global_degraded_var.set(display.degraded_text)
+        self.global_error_var.set(display.error_text)
+        self.codex_current_api_var.set(display.codex_current_api_text)
+        self.codex_current_models_var.set(display.codex_current_models_text)
+        self.claude_current_api_var.set(display.claude_current_api_text)
+        self.claude_current_models_var.set(display.claude_current_models_text)
+        self.current_path_var.set(display.current_paths_text)
+        self.global_mcp_var.set(display.global_mcp_text)
         self._sync_global_profile_choice()
 
     def refresh_library_tab(self) -> None:
@@ -5026,52 +5024,33 @@ class CodexSwitchApp:
 
     def _refresh_test_detail(self) -> None:
         profile = self.get_selected_profile()
-        if not profile:
-            self.test_selected_name_var.set("未选择测试配置")
-            self.test_detail_health_var.set("未检测")
-            self.test_detail_provider_var.set("-")
-            self.test_detail_model_var.set("-")
-            self.test_detail_api_var.set("-")
-            self.test_detail_key_var.set("-")
-            self.test_detail_wire_var.set("-")
-            self.test_detail_endpoint_var.set("-")
-            self.test_detail_checked_var.set("-")
-            self.test_detail_notes_var.set("暂无备注")
-            self.test_detail_result_var.set("未检测")
-            self.test_detail_success_models_var.set("未批量测试")
-            self._sync_success_models_button(None)
-            self.test_detail_badge.configure(bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
-            self.updating_health_override = True
-            self.health_override_var.set(HEALTH_OVERRIDE_DISPLAY[""])
-            self.health_override_note_var.set(self._health_override_note(None))
-            self.health_override_combo.configure(state="disabled")
-            self.updating_health_override = False
-            self._reset_model_batch_for_profile(None)
-            self._reset_chat_target(None)
-            return
-
-        self.test_selected_name_var.set(profile.name)
-        self.test_detail_health_var.set(self._health_status_text(profile))
-        self.test_detail_provider_var.set(profile.provider_name)
-        self.test_detail_model_var.set(self._profile_model_summary(profile))
-        self.test_detail_api_var.set(profile.base_url)
-        self.test_detail_key_var.set(self._profile_key_summary(profile))
-        self.test_detail_wire_var.set(profile.wire_api)
-        self.test_detail_endpoint_var.set(profile.health.endpoint or "-")
-        checked_text = profile.health.checked_at or "-"
-        if profile.health.latency_ms is not None:
-            checked_text = f"{checked_text}    {profile.health.latency_ms} ms"
-        self.test_detail_checked_var.set(checked_text)
-        self.test_detail_notes_var.set(profile.notes or "暂无备注")
-        self.test_detail_result_var.set(profile.health.detail or "未检测")
-        self.test_detail_success_models_var.set(self._model_batch_health_summary(profile))
+        detail = build_test_detail_display(
+            profile,
+            status_text=STATUS_TEXT,
+            key_summary=self._profile_key_summary,
+            model_summary=self._profile_model_summary,
+            success_models_text=self._model_batch_health_summary(profile),
+            health_override_display_map=HEALTH_OVERRIDE_DISPLAY,
+        )
+        self.test_selected_name_var.set(detail.selected_name)
+        self.test_detail_health_var.set(detail.health_text)
+        self.test_detail_provider_var.set(detail.provider_text)
+        self.test_detail_model_var.set(detail.model_text)
+        self.test_detail_api_var.set(detail.api_text)
+        self.test_detail_key_var.set(detail.key_text)
+        self.test_detail_wire_var.set(detail.wire_text)
+        self.test_detail_endpoint_var.set(detail.endpoint_text)
+        self.test_detail_checked_var.set(detail.checked_text)
+        self.test_detail_notes_var.set(detail.notes_text)
+        self.test_detail_result_var.set(detail.result_text)
+        self.test_detail_success_models_var.set(detail.success_models_text)
         self._sync_success_models_button(profile)
-        badge_fg, badge_bg = STATUS_COLORS.get(profile.effective_health_status, STATUS_COLORS["unknown"])
+        badge_fg, badge_bg = STATUS_COLORS.get(detail.badge_state, STATUS_COLORS["unknown"])
         self.test_detail_badge.configure(bg=badge_bg, fg=badge_fg)
         self.updating_health_override = True
-        self.health_override_var.set(HEALTH_OVERRIDE_DISPLAY.get(profile.manual_health_status or "", HEALTH_OVERRIDE_DISPLAY[""]))
-        self.health_override_note_var.set(self._health_override_note(profile))
-        self.health_override_combo.configure(state="readonly")
+        self.health_override_var.set(detail.health_override_value)
+        self.health_override_note_var.set(detail.health_override_note_text)
+        self.health_override_combo.configure(state=detail.health_override_state)
         self.updating_health_override = False
         self._reset_model_batch_for_profile(profile)
         self._reset_chat_target(profile)
