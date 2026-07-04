@@ -169,10 +169,13 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_summary_text,
 )
 from codex_switch.ui.mcp_logic import (
+    mcp_detail_display,
     mcp_contains_project_root,
     mcp_env_summary,
     mcp_list_summary,
+    mcp_server_rows,
     mcp_summary,
+    mcp_tab_display,
     render_mcp_preview,
     safe_mcp_server_names,
 )
@@ -2451,21 +2454,10 @@ class CodexSwitchApp:
         return render_mcp_preview(server_name, self.mcp_page_servers)
 
     def _refresh_mcp_detail(self) -> None:
-        server_name = self._mcp_selected_name()
-        if not server_name:
-            self.mcp_selected_name_var.set("未选择 MCP 工具")
-            self.mcp_selected_summary_var.set("选择左侧工具后查看配置预览。")
-            self._set_text_content(self.mcp_preview_text, "", disabled=True)
-            return
-
-        server_config = self.mcp_page_servers.get(server_name, {})
-        args_count = len(server_config.get("args", [])) if isinstance(server_config.get("args"), list) else 0
-        env_count = len(server_config.get("env", {})) if isinstance(server_config.get("env"), dict) else 0
-        self.mcp_selected_name_var.set(server_name)
-        self.mcp_selected_summary_var.set(
-            f"type: {server_config.get('type', '-') or '-'}    args: {args_count}    env: {env_count}"
-        )
-        self._set_text_content(self.mcp_preview_text, self._render_mcp_preview(server_name), disabled=True)
+        detail = mcp_detail_display(self._mcp_selected_name(), self.mcp_page_servers)
+        self.mcp_selected_name_var.set(detail.selected_name_text)
+        self.mcp_selected_summary_var.set(detail.summary_text)
+        self._set_text_content(self.mcp_preview_text, detail.preview_text, disabled=True)
 
     def _on_profile_selection_changed(self, _event: object | None = None) -> None:
         if self.suppress_selection_events:
@@ -3726,40 +3718,30 @@ class CodexSwitchApp:
                 self._set_text_content(self.mcp_preview_text, "", disabled=True)
                 return
 
+        display = mcp_tab_display(
+            self.mcp_page_servers,
+            selected_name=selected_name,
+            global_mcp_opt_out=self.global_mcp_opt_out,
+        )
         self.suppress_selection_events = True
         try:
             for item in self.mcp_tree.get_children():
                 self.mcp_tree.delete(item)
-            for server_name, server_config in sorted(self.mcp_page_servers.items()):
+            for row in display.rows:
                 self.mcp_tree.insert(
                     "",
                     "end",
-                    iid=server_name,
-                    values=(
-                        server_name,
-                        server_config.get("type", "-") or "-",
-                        compact_text(str(server_config.get("command", "-") or "-"), 24),
-                        self._mcp_list_summary(server_config.get("args")),
-                        compact_text(str(server_config.get("cwd", "-") or "-"), 24),
-                        self._mcp_env_summary(server_config.get("env")),
-                        "是" if self._mcp_contains_project_root(server_config) else "否",
-                    ),
+                    iid=row.server_name,
+                    values=row.values,
                 )
-            if selected_name in self.mcp_page_servers:
-                self.mcp_tree.selection_set(selected_name)
-                self.mcp_tree.focus(selected_name)
-                self.mcp_tree.see(selected_name)
-            elif self.mcp_page_servers:
-                first_name = sorted(self.mcp_page_servers.keys())[0]
-                self.mcp_tree.selection_set(first_name)
-                self.mcp_tree.focus(first_name)
+            if display.selected_name:
+                self.mcp_tree.selection_set(display.selected_name)
+                self.mcp_tree.focus(display.selected_name)
+                self.mcp_tree.see(display.selected_name)
         finally:
             self.suppress_selection_events = False
 
-        if self.global_mcp_opt_out:
-            self.mcp_hint_var.set("全局 MCP 已显式禁用。")
-        else:
-            self.mcp_hint_var.set(f"共 {len(self.mcp_page_servers)} 个 MCP 工具。")
+        self.mcp_hint_var.set(display.hint_text)
         self._refresh_mcp_detail()
 
     def refresh_skills_tab(self) -> None:

@@ -114,10 +114,13 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_summary_text,
 )
 from codex_switch.ui.mcp_logic import (
+    mcp_detail_display,
     mcp_contains_project_root,
     mcp_env_summary,
     mcp_list_summary,
+    mcp_server_rows,
     mcp_summary,
+    mcp_tab_display,
     render_mcp_preview,
     safe_mcp_server_names,
 )
@@ -959,6 +962,24 @@ command = "node"
         preview = render_mcp_preview("alpha", {"alpha": {"command": "python", "args": ["-m", "alpha"]}})
         self.assertIn("[mcp_servers.alpha]", preview)
         self.assertEqual(render_mcp_preview(None, {}), "")
+
+    def test_mcp_tab_display_and_detail_helpers_build_rows_and_selection(self) -> None:
+        page_servers = {
+            "beta": {"type": "stdio", "command": "node", "args": ["beta"], "cwd": "/tmp", "env": {"A": "1"}},
+            "alpha": {"type": "stdio", "command": "python", "args": ["-m", "alpha"], "cwd": "", "env": {}},
+        }
+
+        rows = mcp_server_rows(page_servers)
+        display = mcp_tab_display(page_servers, selected_name="missing", global_mcp_opt_out=False)
+        detail = mcp_detail_display("alpha", page_servers)
+
+        self.assertEqual([row.server_name for row in rows], ["alpha", "beta"])
+        self.assertEqual(display.selected_name, "alpha")
+        self.assertEqual(display.hint_text, "共 2 个 MCP 服务。")
+        self.assertEqual(display.rows[0].values[0], "alpha")
+        self.assertEqual(detail.selected_name_text, "alpha")
+        self.assertIn("type: stdio", detail.summary_text)
+        self.assertIn("[mcp_servers.alpha]", detail.preview_text)
 
     def test_hot_update_logic_helpers_append_render_and_summarize(self) -> None:
         events = append_hot_update_event(
