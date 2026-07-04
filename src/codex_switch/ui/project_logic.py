@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from codex_switch.models import Profile, ProjectRecord, SkillDefinition, SkillGroup
-from codex_switch.project_template import ProjectTemplateStatus
+from codex_switch.project_template import ProjectTemplateResult, ProjectTemplateStatus
 from codex_switch.skills import SkillSource, resolve_selected_skill_sources, skill_selection_summary
 from codex_switch.ui.utils import compact_text, project_start_script_paths
 
@@ -27,6 +27,35 @@ class ClaudeProjectTemplateOptions:
     project_mcp_toml: str
     agents_doc_text: str
     route_proxy_base_url: str | None
+
+
+@dataclass(frozen=True)
+class CodexTemplateExecutionPlan:
+    project_name: str
+    project_root: Path
+    codex_profile: Profile
+    claude_profile: Profile | None
+    global_mcp_toml: str
+    project_mcp_toml: str
+    agents_doc_text: str
+    route_proxy_base_url: str | None
+    codex_model_override: str | None
+    claude_model_override: str | None
+    claude_fallback_model_override: str | None
+    skill_sources: list[SkillSource]
+    skill_definitions: list[SkillDefinition]
+
+
+@dataclass(frozen=True)
+class ClaudeTemplateExecutionPlan:
+    project_name: str
+    project_root: Path
+    claude_profile: Profile
+    project_mcp_toml: str
+    agents_doc_text: str
+    route_proxy_base_url: str | None
+    model_override: str | None
+    fallback_model_override: str | None
 
 
 @dataclass(frozen=True)
@@ -297,6 +326,88 @@ def project_template_display(
         generated_text="尚未生成项目模板。",
         badge_text="未生成",
         badge_state="neutral",
+    )
+
+
+def build_codex_template_execution_plan(
+    project: ProjectRecord,
+    codex_profile: Profile,
+    claude_profile: Profile | None,
+    *,
+    project_mcp_toml: str,
+    agents_doc_text: str,
+    route_proxy_base_url: str | None,
+    available_skill_sources: list[SkillSource],
+    codex_model_override: str | None,
+    claude_model_override: str | None,
+    claude_fallback_model_override: str | None,
+) -> CodexTemplateExecutionPlan:
+    options = codex_project_template_options(
+        project,
+        project_mcp_toml=project_mcp_toml,
+        agents_doc_text=agents_doc_text,
+        route_proxy_base_url=route_proxy_base_url,
+        available_skill_sources=available_skill_sources,
+    )
+    return CodexTemplateExecutionPlan(
+        project_name=project.name,
+        project_root=options.project_root,
+        codex_profile=codex_profile,
+        claude_profile=claude_profile,
+        global_mcp_toml=options.global_mcp_toml,
+        project_mcp_toml=options.project_mcp_toml,
+        agents_doc_text=options.agents_doc_text,
+        route_proxy_base_url=options.route_proxy_base_url,
+        codex_model_override=codex_model_override,
+        claude_model_override=claude_model_override,
+        claude_fallback_model_override=claude_fallback_model_override,
+        skill_sources=options.skill_sources,
+        skill_definitions=options.skill_definitions,
+    )
+
+
+def build_claude_template_execution_plan(
+    project: ProjectRecord,
+    claude_profile: Profile,
+    *,
+    project_mcp_toml: str,
+    agents_doc_text: str,
+    route_proxy_base_url: str | None,
+    model_override: str | None,
+    fallback_model_override: str | None,
+) -> ClaudeTemplateExecutionPlan:
+    options = claude_project_template_options(
+        project,
+        project_mcp_toml=project_mcp_toml,
+        agents_doc_text=agents_doc_text,
+        route_proxy_base_url=route_proxy_base_url,
+    )
+    return ClaudeTemplateExecutionPlan(
+        project_name=project.name,
+        project_root=options.project_root,
+        claude_profile=claude_profile,
+        project_mcp_toml=options.project_mcp_toml,
+        agents_doc_text=options.agents_doc_text,
+        route_proxy_base_url=options.route_proxy_base_url,
+        model_override=model_override,
+        fallback_model_override=fallback_model_override,
+    )
+
+
+def codex_template_success_message(project_name: str, result: ProjectTemplateResult) -> str:
+    return (
+        f"已为项目“{project_name}”生成模板。\n\n"
+        f"启动脚本：\n{result.start_script_path}\n\n"
+        f"备份目录：\n{result.backup_dir}"
+    )
+
+
+def claude_template_success_message(project_name: str, result: ProjectTemplateResult) -> str:
+    generated = "\n".join(str(path) for path in result.generated_paths)
+    return (
+        f"已为项目“{project_name}”生成 Claude 模板。\n\n"
+        f"生成文件：\n{generated}\n\n"
+        f"备份目录：\n{result.backup_dir}"
     )
 
 

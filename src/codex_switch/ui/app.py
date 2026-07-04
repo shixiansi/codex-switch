@@ -191,8 +191,10 @@ from codex_switch.ui.styles import (
     ttk,
 )
 from codex_switch.ui.project_logic import (
-    claude_project_template_options,
-    codex_project_template_options,
+    claude_template_success_message,
+    build_claude_template_execution_plan,
+    build_codex_template_execution_plan,
+    codex_template_success_message,
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -6305,27 +6307,32 @@ class CodexSwitchApp:
         self._refresh_project_proxy_rules_before_action(project)
         project_mcp_toml = self._effective_project_mcp_toml(project)
         claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
-        template_options = codex_project_template_options(
+        plan = build_codex_template_execution_plan(
             project,
+            profile,
+            claude_profile,
             project_mcp_toml=project_mcp_toml,
             agents_doc_text=self.agents_doc_text,
             route_proxy_base_url=self._route_proxy_base_url_for_project(project),
             available_skill_sources=self._available_skill_sources(),
+            codex_model_override=self._codex_model_override_for_project(project),
+            claude_model_override=claude_model,
+            claude_fallback_model_override=claude_fallback_model,
         )
         try:
             result = self.project_template_service.generate(
-                template_options.project_root,
-                profile,
-                global_mcp_toml=template_options.global_mcp_toml,
-                project_mcp_toml=template_options.project_mcp_toml,
-                agents_doc_text=template_options.agents_doc_text,
-                claude_profile=claude_profile,
-                route_proxy_base_url=template_options.route_proxy_base_url,
-                codex_model_override=self._codex_model_override_for_project(project),
-                claude_model_override=claude_model,
-                claude_fallback_model_override=claude_fallback_model,
-                skill_sources=template_options.skill_sources,
-                skill_definitions=template_options.skill_definitions,
+                plan.project_root,
+                plan.codex_profile,
+                global_mcp_toml=plan.global_mcp_toml,
+                project_mcp_toml=plan.project_mcp_toml,
+                agents_doc_text=plan.agents_doc_text,
+                claude_profile=plan.claude_profile,
+                route_proxy_base_url=plan.route_proxy_base_url,
+                codex_model_override=plan.codex_model_override,
+                claude_model_override=plan.claude_model_override,
+                claude_fallback_model_override=plan.claude_fallback_model_override,
+                skill_sources=plan.skill_sources,
+                skill_definitions=plan.skill_definitions,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)
@@ -6335,7 +6342,7 @@ class CodexSwitchApp:
         self.status_var.set(f"已生成项目模板：{project.name}")
         messagebox.showinfo(
             "生成成功",
-            f"已为项目“{project.name}”生成模板。\n\n启动脚本：\n{result.start_script_path}\n\n备份目录：\n{result.backup_dir}",
+            codex_template_success_message(plan.project_name, result),
             parent=self.root,
         )
 
@@ -6350,21 +6357,24 @@ class CodexSwitchApp:
             return
         self._refresh_project_proxy_rules_before_action(project)
         claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
-        template_options = claude_project_template_options(
+        plan = build_claude_template_execution_plan(
             project,
+            profile,
             project_mcp_toml=self._effective_project_mcp_toml(project),
             agents_doc_text=self.agents_doc_text,
             route_proxy_base_url=self._route_proxy_base_url_for_project(project),
+            model_override=claude_model,
+            fallback_model_override=claude_fallback_model,
         )
         try:
             result = self.project_template_service.generate_claude_template(
-                template_options.project_root,
-                profile,
-                project_mcp_toml=template_options.project_mcp_toml,
-                agents_doc_text=template_options.agents_doc_text,
-                route_proxy_base_url=template_options.route_proxy_base_url,
-                model_override=claude_model,
-                fallback_model_override=claude_fallback_model,
+                plan.project_root,
+                plan.claude_profile,
+                project_mcp_toml=plan.project_mcp_toml,
+                agents_doc_text=plan.agents_doc_text,
+                route_proxy_base_url=plan.route_proxy_base_url,
+                model_override=plan.model_override,
+                fallback_model_override=plan.fallback_model_override,
             )
         except Exception as exc:
             messagebox.showerror("生成失败", f"写入 Claude 项目模板失败：\n{exc}", parent=self.root)
@@ -6372,10 +6382,9 @@ class CodexSwitchApp:
             return
         self.refresh_project_tab()
         self.status_var.set(f"已生成 Claude 项目模板：{project.name}")
-        generated = "\n".join(str(path) for path in result.generated_paths)
         messagebox.showinfo(
             "生成成功",
-            f"已为项目“{project.name}”生成 Claude 模板。\n\n生成文件：\n{generated}\n\n备份目录：\n{result.backup_dir}",
+            claude_template_success_message(plan.project_name, result),
             parent=self.root,
         )
 

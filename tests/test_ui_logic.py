@@ -59,6 +59,7 @@ from codex_switch.project_template import (
     CLAUDE_BASE_URL_ENV_KEY,
     CLAUDE_FALLBACK_MODEL_ENV_KEY,
     CLAUDE_MODEL_ENV_KEY,
+    ProjectTemplateResult,
     ProjectTemplateStatus,
 )
 from codex_switch.codex_config import PROJECT_ROOT_PLACEHOLDER
@@ -121,7 +122,11 @@ from codex_switch.ui.mcp_logic import (
     safe_mcp_server_names,
 )
 from codex_switch.ui.project_logic import (
+    build_claude_template_execution_plan,
+    build_codex_template_execution_plan,
+    claude_template_success_message,
     claude_project_template_options,
+    codex_template_success_message,
     codex_project_template_options,
     preferred_project_script_path,
     project_bound_profile_ids,
@@ -1057,6 +1062,81 @@ command = "node"
         self.assertEqual(claude_options.project_mcp_toml, "mcp-toml")
         self.assertEqual(claude_options.agents_doc_text, "# Agents\n")
         self.assertEqual(claude_options.route_proxy_base_url, "http://127.0.0.1:15721/project/p1")
+
+    def test_project_template_execution_plan_helpers_package_generation_inputs(self) -> None:
+        project_skill = SkillDefinition.create("prompt-helper", content="Use short answers.")
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            claude_profile_id="claude-profile",
+            skill_names=["frontend-dev"],
+            skills=[project_skill],
+        )
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex")
+        codex_profile.id = "codex-profile"
+        claude_profile = Profile.create(
+            "claude",
+            "https://claude.example.com",
+            "sk-claude",
+            vendor=VENDOR_CLAUDE,
+        )
+        claude_profile.id = "claude-profile"
+        frontend_skill = SkillSource("frontend-dev", "frontend-dev", Path.cwd() / "frontend-dev")
+
+        codex_plan = build_codex_template_execution_plan(
+            project,
+            codex_profile,
+            claude_profile,
+            project_mcp_toml="mcp = true",
+            agents_doc_text="AGENTS",
+            route_proxy_base_url="http://proxy.local",
+            available_skill_sources=[frontend_skill],
+            codex_model_override="gpt-5",
+            claude_model_override="sonnet",
+            claude_fallback_model_override="haiku",
+        )
+        claude_plan = build_claude_template_execution_plan(
+            project,
+            claude_profile,
+            project_mcp_toml="mcp = true",
+            agents_doc_text="AGENTS",
+            route_proxy_base_url="http://proxy.local",
+            model_override="sonnet",
+            fallback_model_override="haiku",
+        )
+
+        self.assertEqual(codex_plan.project_name, project.name)
+        self.assertEqual(codex_plan.codex_profile, codex_profile)
+        self.assertEqual(codex_plan.claude_profile, claude_profile)
+        self.assertEqual(codex_plan.route_proxy_base_url, "http://proxy.local")
+        self.assertEqual(codex_plan.codex_model_override, "gpt-5")
+        self.assertEqual(codex_plan.claude_model_override, "sonnet")
+        self.assertEqual(codex_plan.claude_fallback_model_override, "haiku")
+        self.assertEqual([skill.name for skill in codex_plan.skill_definitions], ["prompt-helper"])
+        self.assertEqual([source.name for source in codex_plan.skill_sources], ["frontend-dev"])
+        self.assertEqual(claude_plan.project_name, project.name)
+        self.assertEqual(claude_plan.claude_profile, claude_profile)
+        self.assertEqual(claude_plan.model_override, "sonnet")
+        self.assertEqual(claude_plan.fallback_model_override, "haiku")
+
+    def test_project_template_success_message_helpers_format_artifacts(self) -> None:
+        result = ProjectTemplateResult(
+            generated_paths=[Path("a.txt"), Path("b.txt")],
+            backup_dir=Path("backup"),
+            project_root=Path("project"),
+            start_script_path=Path("project/start-codex.ps1"),
+        )
+
+        codex_message = codex_template_success_message("Demo", result)
+        claude_message = claude_template_success_message("Demo", result)
+
+        self.assertIn("Demo", codex_message)
+        self.assertIn("start-codex.ps1", codex_message)
+        self.assertIn("backup", codex_message)
+        self.assertIn("Demo", claude_message)
+        self.assertIn("a.txt", claude_message)
+        self.assertIn("b.txt", claude_message)
+        self.assertIn("backup", claude_message)
 
     def test_route_proxy_rules_keep_claude_binding_for_openai_conversion(self) -> None:
         project = ProjectRecord.create(
