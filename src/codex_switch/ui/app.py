@@ -52,7 +52,6 @@ from codex_switch.models import (
     HealthResult,
     HOT_UPDATE_EVENT_LIMIT,
     HotUpdateEvent,
-    PROFILE_CATEGORY_IMAGE_GENERATION,
     Profile,
     ProjectRecord,
     RouteProxyEvent,
@@ -86,7 +85,6 @@ from codex_switch.models import (
     normalize_account_pool_recovery_interval_minutes,
     normalize_hot_update_interval_minutes,
     normalize_model_vendor_keywords,
-    normalize_profile_category,
     normalize_skill_type,
     now_iso,
     model_vendor_stats,
@@ -192,6 +190,19 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_rules_for_project_profiles,
 )
+from codex_switch.ui.skills_logic import (
+    MODEL_METADATA_RELATIVE_PATHS,
+    PROJECT_METADATA_RELATIVE_PATHS,
+    SkillMarketEntry,
+    apply_profile_metadata,
+    existing_repo_files,
+    import_skill_sources_to_group,
+    load_skill_market_entries,
+    profile_metadata_entries,
+    project_metadata_group_ids,
+    project_metadata_profile_ids,
+    skill_repo_checksum_required_paths,
+)
 from codex_switch.ui.single_instance import _acquire_single_instance, _release_single_instance, _show_single_instance_message
 from codex_switch.ui.update_logic import (
     DEFAULT_PROJECT_GITHUB_REF,
@@ -244,26 +255,8 @@ HOT_UPDATE_STATUS_LABELS = {
     "error": "错误",
     "summary": "完成",
 }
-MODEL_METADATA_RELATIVE_PATHS = (
-    Path("codex-switch-model-metadata.json"),
-    Path("model-metadata.json"),
-    Path(".codex-switch") / "model-metadata.json",
-)
-PROJECT_METADATA_RELATIVE_PATHS = (
-    Path("codex-switch-project.json"),
-    Path("project-skills.json"),
-    Path(".codex-switch") / "project.json",
-)
 PROXY_LOG_RENDER_DELAY_MS = 80
 PROXY_STATE_FLUSH_DELAY_MS = 250
-
-
-@dataclass(frozen=True)
-class SkillMarketEntry:
-    repo_id: str
-    repo_url: str
-    author: str
-    source: SkillSource
 
 
 @dataclass
@@ -3936,61 +3929,21 @@ class CodexSwitchApp:
         self._refresh_skill_group_detail()
         self._refresh_skill_project_detail()
 
-    def _github_repo_author(self, repo_url: str) -> str:
-        normalized = str(repo_url or "").rstrip("/")
-        parts = normalized.split("/")
-        if len(parts) < 2:
-            return "-"
-        return parts[-2] or "-"
-
-    def _skill_market_entry_text(self, entry: SkillMarketEntry) -> str:
-        return " ".join(
-            item
-            for item in (
-                entry.source.name,
-                entry.source.display_name,
-                entry.author,
-                entry.repo_url,
-                str(entry.source.source_path),
-            )
-            if item
-        ).casefold()
-
-    def _filtered_skill_market_entries(self, entries: list[SkillMarketEntry]) -> list[SkillMarketEntry]:
-        query_var = getattr(self, "skill_market_filter_var", None)
-        query = query_var.get().strip().casefold() if query_var is not None else ""
-        if not query:
-            return entries
-        return [entry for entry in entries if query in self._skill_market_entry_text(entry)]
-
     def _load_skill_market_entries(self, *, sync_remote: bool = False) -> tuple[list[SkillMarketEntry], list[str]]:
-        entries: list[SkillMarketEntry] = []
-        errors: list[str] = []
-        for repo in self.skill_market_repos:
-            try:
-                cache_dir = self._sync_skill_repo_cache(repo) if sync_remote else self._skill_repo_cache_dir(repo)
-                if not any(cache_dir.rglob("SKILL.md")):
-                    if sync_remote:
-                        raise RuntimeError("仓库中未发现 Skills。")
-                    continue
-                sources = discover_skill_sources([cache_dir])
-                self._verify_skill_repo_checksums(cache_dir, sources)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                errors.append(f"{repo.url}: {exc}")
-                continue
-            author = self._github_repo_author(repo.url)
-            entries.extend(
-                SkillMarketEntry(
-                    repo_id=repo.id,
-                    repo_url=repo.url,
-                    author=author,
-                    source=source,
-                )
-                for source in sources
-            )
+        query_var = getattr(self, "skill_market_filter_var", None)
+        query = query_var.get() if query_var is not None else ""
+        entries, errors = load_skill_market_entries(
+            self.skill_market_repos,
+            sync_remote=sync_remote,
+            query=query,
+            cache_dir_for_repo=self._skill_repo_cache_dir,
+            sync_repo_cache=self._sync_skill_repo_cache,
+            verify_repo_checksums=self._verify_skill_repo_checksums,
+        )
         if sync_remote and entries:
             self.persist_state()
-        return self._filtered_skill_market_entries(entries), errors
+        return entries, errors
+
 
     def refresh_skill_market_now(self) -> None:
         self.skill_market_force_sync = True
@@ -4166,38 +4119,16 @@ class CodexSwitchApp:
         self._verify_skill_repo_checksums(cache_dir, sources)
         return sources
 
-    def _existing_repo_files(self, repo_root: Path, relative_paths: tuple[Path, ...]) -> list[Path]:
-        return [
-            repo_root / relative_path
-            for relative_path in relative_paths
-            if (repo_root / relative_path).is_file()
-        ]
-
-    def _skill_repo_checksum_required_paths(self, repo_root: Path, sources: list[SkillSource]) -> list[Path]:
-        required_paths: list[Path] = []
-        root = repo_root.resolve()
-        for source in sources:
-            skill_file = source.source_path / "SKILL.md"
-            if not skill_file.is_file():
-                continue
-            try:
-                skill_file.resolve().relative_to(root)
-            except ValueError:
-                continue
-            required_paths.append(skill_file)
-        required_paths.extend(self._existing_repo_files(repo_root, MODEL_METADATA_RELATIVE_PATHS))
-        return required_paths
-
     def _verify_skill_repo_checksums(self, repo_root: Path, sources: list[SkillSource]) -> bool:
         return verify_hot_update_checksums(
             repo_root,
-            self._skill_repo_checksum_required_paths(repo_root, sources),
+            skill_repo_checksum_required_paths(repo_root, sources),
         )
 
     def _verify_project_repo_checksums(self, repo_root: Path) -> bool:
         return verify_hot_update_checksums(
             repo_root,
-            self._existing_repo_files(repo_root, PROJECT_METADATA_RELATIVE_PATHS),
+            existing_repo_files(repo_root, PROJECT_METADATA_RELATIVE_PATHS),
         )
 
     def _selected_skill_repo_preview_sources(self) -> list[SkillSource]:
@@ -4547,7 +4478,7 @@ class CodexSwitchApp:
         group = self._choose_skill_group("安装选中 Skill")
         if group is None:
             return
-        updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
+        updated_group, imported_count = import_skill_sources_to_group(group, sources)
         if not imported_count:
             messagebox.showinfo("提示", "选中的 Skills 已存在于目标组。", parent=self.root)
             return
@@ -4633,165 +4564,8 @@ class CodexSwitchApp:
         self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
         return cache_dir
 
-    def _import_skill_sources_to_group(
-        self,
-        group: SkillGroup,
-        sources: list[SkillSource],
-        *,
-        replace_existing_from_root: Path | None = None,
-    ) -> tuple[SkillGroup, int]:
-        existing_skills = list(group.skills)
-        if replace_existing_from_root is not None:
-            root_text = str(replace_existing_from_root).casefold()
-            existing_skills = [
-                skill
-                for skill in existing_skills
-                if not skill.source_path or not str(skill.source_path).casefold().startswith(root_text)
-            ]
-        existing_names = {skill.name for skill in existing_skills}
-        imported: list[SkillDefinition] = []
-        for source in sources:
-            if source.name in existing_names:
-                continue
-            try:
-                content = (source.source_path / "SKILL.md").read_text(encoding="utf-8")
-            except OSError:
-                content = ""
-            imported.append(
-                SkillDefinition.create(
-                    source.name,
-                    content=content,
-                    source_path=str(source.source_path),
-                )
-            )
-            existing_names.add(source.name)
-        return replace(group, skills=[*existing_skills, *imported]), len(imported)
-
-    def _metadata_text(self, payload: dict, key: str, default: str) -> str:
-        if key not in payload:
-            return default
-        value = str(payload.get(key) or "").strip()
-        return value or default
-
-    def _metadata_bool(self, payload: dict, key: str, default: bool) -> bool:
-        if key not in payload:
-            return default
-        value = payload.get(key)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().casefold()
-            if normalized in {"1", "true", "yes", "on"}:
-                return True
-            if normalized in {"0", "false", "no", "off"}:
-                return False
-        return bool(value)
-
-    def _metadata_model_names(self, payload: object) -> list[str]:
-        if not isinstance(payload, list):
-            return []
-        models: list[str] = []
-        for item in payload:
-            if isinstance(item, dict):
-                raw_name = item.get("name") or item.get("id") or item.get("model")
-            else:
-                raw_name = item
-            name = str(raw_name or "").strip()
-            if name and name not in models:
-                models.append(name)
-        return models
-
-    def _profile_metadata_entries(self, payload: dict) -> list[dict]:
-        entries: list[dict] = []
-        for key in ("profiles", "profile_metadata", "profile_models"):
-            raw_entries = payload.get(key)
-            if isinstance(raw_entries, list):
-                entries.extend(item for item in raw_entries if isinstance(item, dict))
-            elif isinstance(raw_entries, dict):
-                for profile_key, value in raw_entries.items():
-                    if isinstance(value, dict):
-                        entry = dict(value)
-                        entry.setdefault("id", profile_key)
-                        entry.setdefault("name", profile_key)
-                    else:
-                        entry = {"id": profile_key, "name": profile_key, "models": value}
-                    entries.append(entry)
-        return entries
-
-    def _profile_metadata_index(self, profiles: list[Profile], entry: dict) -> int | None:
-        profile_id = str(entry.get("id") or entry.get("profile_id") or "").strip()
-        if profile_id:
-            for index, profile in enumerate(profiles):
-                if profile.id == profile_id:
-                    return index
-        profile_name = str(entry.get("name") or entry.get("profile_name") or "").strip()
-        if not profile_name:
-            return None
-        matches = [
-            index
-            for index, profile in enumerate(profiles)
-            if profile.name == profile_name
-        ]
-        return matches[0] if len(matches) == 1 else None
-
-    def _profile_with_metadata(self, profile: Profile, entry: dict) -> Profile:
-        category = (
-            normalize_profile_category(entry.get("category"))
-            if "category" in entry
-            else normalize_profile_category(profile.category)
-        )
-        api_provided = self._metadata_bool(entry, "api_provided", profile.api_provided)
-        if category != PROFILE_CATEGORY_IMAGE_GENERATION:
-            api_provided = True
-
-        model = self._metadata_text(entry, "model", "")
-        codex_model = self._metadata_text(entry, "codex_model", "")
-        claude_model = self._metadata_text(entry, "claude_model", "")
-        claude_fallback_model = self._metadata_text(
-            entry,
-            "claude_fallback_model",
-            profile.claude_fallback_model,
-        )
-        if not codex_model:
-            codex_model = model if profile.vendor != VENDOR_CLAUDE and model else profile.codex_model
-        if not claude_model:
-            claude_model = model if profile.vendor == VENDOR_CLAUDE and model else profile.claude_model
-
-        health = profile.health
-        for models_key in ("models", "available_models", "model_list"):
-            if models_key in entry:
-                health = replace(health, models=self._metadata_model_names(entry.get(models_key)))
-                break
-
-        api_keys = list(profile.api_keys) if api_provided else []
-        return replace(
-            profile,
-            model=codex_model,
-            codex_model=codex_model,
-            claude_model=claude_model,
-            claude_fallback_model=claude_fallback_model,
-            provider_name=self._metadata_text(entry, "provider_name", profile.provider_name),
-            category=category,
-            api_provided=api_provided,
-            api_keys=api_keys,
-            active_api_key_index=profile.active_api_key_index if api_keys else 0,
-            health=health,
-        )
-
     def _load_profile_metadata_from_payload(self, payload: dict) -> bool:
-        entries = self._profile_metadata_entries(payload)
-        if not entries:
-            return False
-        profiles = list(self.profiles)
-        changed = False
-        for entry in entries:
-            index = self._profile_metadata_index(profiles, entry)
-            if index is None:
-                continue
-            updated = self._profile_with_metadata(profiles[index], entry)
-            if updated != profiles[index]:
-                profiles[index] = updated
-                changed = True
+        profiles, changed = apply_profile_metadata(self.profiles, payload)
         if changed:
             self.profiles = profiles
             if hasattr(self, "global_codex_profile_id") and hasattr(self, "global_claude_profile_id"):
@@ -4818,60 +4592,12 @@ class CodexSwitchApp:
                 if updated_keywords != self.model_vendor_keywords:
                     self.model_vendor_keywords = updated_keywords
                     changed = True
-            if self._profile_metadata_entries(payload):
+            if profile_metadata_entries(payload):
                 handled = True
                 changed = self._load_profile_metadata_from_payload(payload) or changed
             if handled:
                 return changed
         return False
-
-    def _project_metadata_group_ids(self, payload: dict) -> list[str] | None:
-        raw_group_ids = payload.get("skill_group_ids")
-        if raw_group_ids is None:
-            raw_group_ids = payload.get("skill_groups")
-        if not isinstance(raw_group_ids, list):
-            return None
-        requested = [
-            str(item).strip()
-            for item in raw_group_ids
-            if str(item).strip()
-        ]
-        known_group_ids = {group.id for group in self.skill_groups}
-        if any(group_id not in known_group_ids for group_id in requested):
-            return None
-        group_ids: list[str] = []
-        for group_id in requested:
-            if group_id not in group_ids:
-                group_ids.append(group_id)
-        return group_ids
-
-    def _project_metadata_profile_id(self, payload: dict, key: str, current_id: str, supports_profile) -> str:
-        raw_profile_id = payload.get(key)
-        if raw_profile_id is None:
-            raw_profile_id = payload.get("profile_id")
-        candidate_id = str(raw_profile_id or "").strip()
-        if not candidate_id:
-            return current_id
-        profile = self._profile_by_id(candidate_id)
-        if profile is None or not supports_profile(profile):
-            return current_id
-        return profile.id
-
-    def _project_metadata_profile_ids(self, payload: dict, project: ProjectRecord) -> tuple[str, str]:
-        return (
-            self._project_metadata_profile_id(
-                payload,
-                "codex_profile_id",
-                project_codex_profile_id(project),
-                profile_supports_codex,
-            ),
-            self._project_metadata_profile_id(
-                payload,
-                "claude_profile_id",
-                project_claude_profile_id(project),
-                profile_supports_claude,
-            ),
-        )
 
     def _load_project_metadata_from_repo(self, project: ProjectRecord, repo_root: Path) -> tuple[ProjectRecord, bool]:
         for relative_path in PROJECT_METADATA_RELATIVE_PATHS:
@@ -4892,7 +4618,7 @@ class CodexSwitchApp:
             if not has_group_metadata and not has_profile_metadata:
                 continue
             if has_group_metadata:
-                group_ids = self._project_metadata_group_ids(payload)
+                group_ids = project_metadata_group_ids(payload, {group.id for group in self.skill_groups})
                 if group_ids is None:
                     continue
                 skills, names = self._expanded_skills_for_group_ids(group_ids)
@@ -4900,7 +4626,13 @@ class CodexSwitchApp:
                 group_ids = project.skill_group_ids
                 skills = list(project.skills)
                 names = None if project.skill_names is None else list(project.skill_names)
-            codex_profile_id, claude_profile_id = self._project_metadata_profile_ids(payload, project)
+            codex_profile_id, claude_profile_id = project_metadata_profile_ids(
+                payload,
+                project,
+                profile_by_id=lambda profile_id: self._profile_by_id(profile_id),
+                supports_codex=profile_supports_codex,
+                supports_claude=profile_supports_claude,
+            )
             profile_id = codex_profile_id or claude_profile_id or project.profile_id
             if (
                 project.skill_group_ids == group_ids
@@ -4944,7 +4676,7 @@ class CodexSwitchApp:
                 messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
         metadata_updated = self._load_model_metadata_from_repo(cache_dir)
-        updated_group, imported_count = self._import_skill_sources_to_group(
+        updated_group, imported_count = import_skill_sources_to_group(
             group,
             sources,
             replace_existing_from_root=cache_dir,
@@ -4975,7 +4707,7 @@ class CodexSwitchApp:
         group = self._choose_skill_group("安装 Skill")
         if group is None:
             return
-        updated_group, imported_count = self._import_skill_sources_to_group(group, [entry.source])
+        updated_group, imported_count = import_skill_sources_to_group(group, [entry.source])
         if not imported_count:
             messagebox.showinfo("提示", "该 Skill 已存在于目标组。", parent=self.root)
             return
@@ -5510,7 +5242,7 @@ class CodexSwitchApp:
             messagebox.showerror("安装失败", str(exc), parent=self.root)
             return False
         metadata_updated = self._load_model_metadata_from_repo(cache_dir)
-        updated_group, imported_count = self._import_skill_sources_to_group(group, sources)
+        updated_group, imported_count = import_skill_sources_to_group(group, sources)
         synced_repo = self._skill_repo_by_id(repo.id) or repo
         updated_repo = replace(synced_repo, installed_group_id=group.id)
         self.skill_market_repos = [updated_repo if item.id == updated_repo.id else item for item in self.skill_market_repos]
