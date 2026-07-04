@@ -190,6 +190,14 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_rules_for_project_profiles,
 )
+from codex_switch.ui.repo_sync_logic import (
+    git_local_commit as repo_git_local_commit,
+    git_remote_commit as repo_git_remote_commit,
+    project_remote_update as repo_project_remote_update,
+    skill_repo_remote_update as repo_skill_repo_remote_update,
+    sync_project_checkout as repo_sync_project_checkout,
+    sync_repo_cache as repo_sync_repo_cache,
+)
 from codex_switch.ui.skills_logic import (
     MODEL_METADATA_RELATIVE_PATHS,
     PROJECT_METADATA_RELATIVE_PATHS,
@@ -4334,50 +4342,31 @@ class CodexSwitchApp:
         self.status_var.set("已删除 Skills 仓库。")
 
     def _git_remote_commit(self, url: str, ref: str) -> str:
-        normalized_ref = normalize_git_ref(ref, default=DEFAULT_PROJECT_GITHUB_REF)
-        if is_git_commit_ref(normalized_ref):
-            return normalized_ref.casefold()
-        patterns = git_remote_ref_patterns(normalized_ref)
-        completed = subprocess.run(
-            ["git", "ls-remote", url, *patterns],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
+        return repo_git_remote_commit(
+            url,
+            ref,
+            default_ref=DEFAULT_PROJECT_GITHUB_REF,
+            run_command=subprocess.run,
         )
-        if completed.returncode != 0 or not completed.stdout.strip():
-            detail = completed.stderr.strip() or "远端没有返回提交信息。"
-            raise RuntimeError(detail)
-        commit = remote_commit_from_ls_remote(completed.stdout, normalized_ref)
-        if not commit:
-            raise RuntimeError("远端没有返回提交信息。")
-        return commit
 
     def _git_local_commit(self, git_root: Path) -> str:
-        if not (git_root / ".git").exists():
-            return ""
-        completed = subprocess.run(
-            ["git", "-C", str(git_root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-        return completed.stdout.strip() if completed.returncode == 0 else ""
+        return repo_git_local_commit(git_root, run_command=subprocess.run)
 
     def _skill_repo_remote_update(self, repo: SkillMarketRepo) -> GitRemoteUpdate:
-        repo_ref = normalize_git_ref(repo.branch, default=DEFAULT_SKILL_REPO_REF)
-        latest_commit = self._git_remote_commit(repo.url, repo_ref)
-        previous_commit = repo.last_sync_commit or self._git_local_commit(self._skill_repo_cache_dir(repo))
-        return GitRemoteUpdate(latest_commit=latest_commit, previous_commit=previous_commit)
+        return repo_skill_repo_remote_update(
+            repo,
+            default_ref=DEFAULT_SKILL_REPO_REF,
+            cache_dir=self._skill_repo_cache_dir(repo),
+            run_command=subprocess.run,
+        )
 
     def _project_remote_update(self, project: ProjectRecord) -> GitRemoteUpdate:
-        latest_commit = self._git_remote_commit(
-            project.github_repo,
-            normalize_git_ref(project.github_ref, default=DEFAULT_PROJECT_GITHUB_REF),
+        return repo_project_remote_update(
+            project,
+            default_ref=DEFAULT_PROJECT_GITHUB_REF,
+            project_root=project_root_path(project),
+            run_command=subprocess.run,
         )
-        previous_commit = project.github_last_sync_commit or self._git_local_commit(project_root_path(project))
-        return GitRemoteUpdate(latest_commit=latest_commit, previous_commit=previous_commit)
 
     def _set_skill_repo_commit(self, repo: SkillMarketRepo, latest_commit: str) -> SkillMarketRepo:
         if repo.last_sync_commit == latest_commit:
@@ -4492,74 +4481,17 @@ class CodexSwitchApp:
     def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
         return self.store.root_dir / "skill-market" / repo.id
 
-    def _run_git_cache_command(self, args: list[str], *, timeout: int, fallback_error: str) -> None:
-        completed = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip() or fallback_error
-            raise RuntimeError(detail)
-
-    def _fetch_skill_repo_ref(self, cache_dir: Path, ref: str) -> None:
-        last_detail = ""
-        for candidate in git_fetch_ref_candidates(ref):
-            completed = subprocess.run(
-                ["git", "-C", str(cache_dir), "fetch", "--depth", "1", "origin", candidate],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-            if completed.returncode == 0:
-                return
-            last_detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(last_detail or "git fetch 失败。")
-
     def _sync_skill_repo_cache(self, repo: SkillMarketRepo, expected_commit: str | None = None) -> Path:
         cache_dir = self._skill_repo_cache_dir(repo)
-        cache_root = cache_dir.parent
-        cache_root.mkdir(parents=True, exist_ok=True)
         repo_ref = normalize_git_ref(repo.branch, default=DEFAULT_SKILL_REPO_REF)
         target_commit = expected_commit or self._git_remote_commit(repo.url, repo_ref)
-        if not (cache_dir / ".git").exists():
-            self._run_git_cache_command(
-                ["git", "init", str(cache_dir)],
-                timeout=20,
-                fallback_error="初始化仓库缓存失败。",
-            )
-            self._run_git_cache_command(
-                ["git", "-C", str(cache_dir), "remote", "add", "origin", repo.url],
-                timeout=20,
-                fallback_error="设置远端地址失败。",
-            )
-        else:
-            self._run_git_cache_command(
-                ["git", "-C", str(cache_dir), "remote", "set-url", "origin", repo.url],
-                timeout=20,
-                fallback_error="更新远端地址失败。",
-            )
-        self._fetch_skill_repo_ref(cache_dir, repo_ref)
-        self._run_git_cache_command(
-            ["git", "-C", str(cache_dir), "checkout", "--detach", "--force", target_commit],
-            timeout=120,
-            fallback_error="切换仓库 ref 失败。",
+        synced_commit = repo_sync_repo_cache(
+            cache_dir,
+            remote_url=repo.url,
+            ref=repo_ref,
+            target_commit=target_commit,
+            run_command=subprocess.run,
         )
-        commit = subprocess.run(
-            ["git", "-C", str(cache_dir), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-        synced_commit = commit.stdout.strip() if commit.returncode == 0 else ""
-        if not synced_commit:
-            raise RuntimeError("无法确认仓库同步后的 HEAD。")
-        if expected_commit and not same_git_commit(synced_commit, expected_commit):
-            raise RuntimeError("仓库同步后的 HEAD 与检测到的远端提交不一致，请重新检查更新。")
         updated = replace(repo, last_sync_commit=synced_commit)
         self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
         return cache_dir
@@ -4725,19 +4657,6 @@ class CodexSwitchApp:
         self.projects = [updated if item.id == updated.id else item for item in self.projects]
         return updated
 
-    def _fetch_project_ref(self, project_root: Path, url: str, ref: str) -> bool:
-        for candidate in git_fetch_ref_candidates(ref):
-            completed = subprocess.run(
-                ["git", "-C", str(project_root), "fetch", url, candidate],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-            if completed.returncode == 0:
-                return True
-        return False
-
     def _apply_project_update(self, project: ProjectRecord, latest_commit: str, *, automatic: bool) -> bool:
         project_root = project_root_path(project)
         if not (project_root / ".git").exists():
@@ -4745,54 +4664,18 @@ class CodexSwitchApp:
                 messagebox.showinfo("提示", "项目目录不是 Git 仓库，无法自动拉取。", parent=self.root)
             return False
         github_ref = normalize_git_ref(project.github_ref, default=DEFAULT_PROJECT_GITHUB_REF)
-        pull_args = ["git", "-C", str(project_root), "pull", "--ff-only"]
-        if github_ref != DEFAULT_PROJECT_GITHUB_REF:
-            pull_args.extend([project.github_repo, github_ref])
-        completed = subprocess.run(
-            pull_args,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        if completed.returncode != 0:
-            if github_ref == DEFAULT_PROJECT_GITHUB_REF or not project.github_repo:
-                detail = completed.stderr.strip() or completed.stdout.strip() or "git pull 失败。"
-                if not automatic:
-                    messagebox.showerror("更新失败", detail, parent=self.root)
-                return False
-            if not self._fetch_project_ref(project_root, project.github_repo, github_ref):
-                detail = completed.stderr.strip() or completed.stdout.strip() or "git fetch 失败。"
-                if not automatic:
-                    messagebox.showerror("更新失败", detail, parent=self.root)
-                return False
-            checkout = subprocess.run(
-                ["git", "-C", str(project_root), "checkout", "--detach", latest_commit],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
+        try:
+            synced_commit = repo_sync_project_checkout(
+                project_root,
+                remote_url=project.github_repo,
+                ref=github_ref,
+                latest_commit=latest_commit,
+                default_ref=DEFAULT_PROJECT_GITHUB_REF,
+                run_command=subprocess.run,
             )
-            if checkout.returncode != 0:
-                detail = checkout.stderr.strip() or checkout.stdout.strip() or "切换项目 ref 失败。"
-                if not automatic:
-                    messagebox.showerror("更新失败", detail, parent=self.root)
-                return False
-        local_commit = subprocess.run(
-            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-        synced_commit = local_commit.stdout.strip() if local_commit.returncode == 0 else ""
-        if not synced_commit:
+        except RuntimeError as exc:
             if not automatic:
-                messagebox.showerror("更新失败", "无法确认项目更新后的 HEAD。", parent=self.root)
-            return False
-        if not same_git_commit(synced_commit, latest_commit):
-            if not automatic:
-                messagebox.showerror("更新失败", "项目更新后的 HEAD 与检测到的远端提交不一致，请重新检查更新。", parent=self.root)
+                messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
         try:
             self._verify_project_repo_checksums(project_root)
@@ -4819,7 +4702,7 @@ class CodexSwitchApp:
         self.refresh_skills_tab()
         if not automatic:
             metadata_text = "，项目元数据已同步" if project_metadata_updated else ""
-            self.status_var.set(f"已更新项目代码：{project.name} @ {synced_commit[:12]}{metadata_text}")
+            self.status_var.set(f"已更新项目源码：{project.name} @ {synced_commit[:12]}{metadata_text}")
         return True
 
     def check_selected_project_update(self) -> None:
