@@ -24,6 +24,7 @@ from codex_switch.models import (
     HotUpdateEvent,
     Profile,
     ProjectRecord,
+    RouteProxyEvent,
     RouteProxyRule,
     RouteProxySettings,
     ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
@@ -154,6 +155,17 @@ class _FakeTree:
 
     def insert(self, _parent: str, _index: str, iid: str | None = None, values: tuple[str, ...] = ()) -> None:
         self.rows.append((iid or str(len(self.rows)), values))
+
+
+class _DelayedRoot:
+    def __init__(self) -> None:
+        self.callbacks: list[tuple[int, object]] = []
+
+    def winfo_exists(self) -> bool:
+        return True
+
+    def after(self, delay_ms: int, callback) -> None:
+        self.callbacks.append((delay_ms, callback))
 
 
 def _file_sha256(path: Path) -> str:
@@ -542,6 +554,16 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual([tag.grid_calls[-1]["row"] for tag in tags], [0, 0, 0, 1, 1])
         self.assertEqual([tag.grid_calls[-1]["column"] for tag in tags], [0, 1, 2, 0, 1])
+        grid_counts = [len(tag.grid_calls) for tag in tags]
+
+        app._layout_library_model_tags(600)
+
+        self.assertEqual([len(tag.grid_calls) for tag in tags], grid_counts)
+
+        app._layout_library_model_tags(190)
+
+        self.assertEqual([tag.grid_calls[-1]["row"] for tag in tags], [0, 1, 2, 3, 4])
+        self.assertEqual([tag.grid_calls[-1]["column"] for tag in tags], [0, 0, 0, 0, 0])
 
     def test_global_profile_ids_are_resolved_per_target(self) -> None:
         codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
@@ -1185,6 +1207,77 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(app.stats_day_tree.rows[0][1][0], today_iso())
         self.assertEqual(app.stats_project_tree.rows[0][1][0], "Demo Project")
         self.assertEqual(app.stats_api_tree.rows[0][1][0], "代理: Main API")
+
+    def test_route_proxy_events_coalesce_log_renders(self) -> None:
+        app = _make_minimal_app()
+        app.root = _DelayedRoot()
+        app.route_proxy_settings = RouteProxySettings()
+        render_count = 0
+
+        def render_proxy_log() -> None:
+            nonlocal render_count
+            render_count += 1
+            app._proxy_log_render_pending = False
+
+        app._render_proxy_log = render_proxy_log
+
+        app._record_route_proxy_event(RouteProxyEvent.create(level="info", message="first"))
+        app._record_route_proxy_event(RouteProxyEvent.create(level="info", message="second"))
+
+        self.assertEqual(len(app.root.callbacks), 1)
+        self.assertEqual(len(app.route_proxy_settings.events), 2)
+
+        app.root.callbacks[0][1]()
+
+        self.assertEqual(render_count, 1)
+        self.assertFalse(app._proxy_log_render_pending)
+
+    def test_route_proxy_usage_updates_coalesce_state_flushes(self) -> None:
+        app = _make_minimal_app()
+        app.root = _DelayedRoot()
+        app.route_proxy_settings = RouteProxySettings()
+        app.stats_refresh_count = 0
+        app.refresh_stats_tab = lambda: setattr(app, "stats_refresh_count", app.stats_refresh_count + 1)
+        first = RouteProxySettings()
+        second = RouteProxySettings()
+
+        app._record_route_proxy_token_usage(first)
+        app._record_route_proxy_token_usage(second)
+
+        self.assertEqual(len(app.root.callbacks), 1)
+        self.assertIs(app.route_proxy_settings, second)
+        self.assertEqual(app.persist_count, 0)
+
+        app.root.callbacks[0][1]()
+
+        self.assertEqual(app.persist_count, 1)
+        self.assertEqual(app.stats_refresh_count, 1)
+        self.assertFalse(app._route_proxy_token_usage_update_pending)
+
+    def test_account_pool_updates_coalesce_state_flushes(self) -> None:
+        app = _make_minimal_app()
+        app.root = _DelayedRoot()
+        app.account_pool_settings = AccountPoolSettings()
+        app.account_pool_refresh_count = 0
+        app.proxy_refresh_count = 0
+        app.refresh_account_pool_tab = lambda: setattr(app, "account_pool_refresh_count", app.account_pool_refresh_count + 1)
+        app.refresh_proxy_tab = lambda: setattr(app, "proxy_refresh_count", app.proxy_refresh_count + 1)
+        first = AccountPoolSettings()
+        second = AccountPoolSettings()
+
+        app._record_account_pool_update(first)
+        app._record_account_pool_update(second)
+
+        self.assertEqual(len(app.root.callbacks), 1)
+        self.assertIs(app.account_pool_settings, second)
+        self.assertEqual(app.persist_count, 0)
+
+        app.root.callbacks[0][1]()
+
+        self.assertEqual(app.persist_count, 1)
+        self.assertEqual(app.account_pool_refresh_count, 1)
+        self.assertEqual(app.proxy_refresh_count, 1)
+        self.assertFalse(app._account_pool_update_pending)
 
     def test_project_skill_groups_sync_to_flat_project_skills(self) -> None:
         skill = SkillDefinition.create("python-helper", content="old")

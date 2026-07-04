@@ -241,6 +241,8 @@ HOT_UPDATE_CHECKSUM_MANIFEST_RELATIVE_PATHS = (
 )
 DEFAULT_PROJECT_GITHUB_REF = "HEAD"
 DEFAULT_SKILL_REPO_REF = "main"
+PROXY_LOG_RENDER_DELAY_MS = 80
+PROXY_STATE_FLUSH_DELAY_MS = 250
 
 
 def normalize_git_ref(ref: str | None, *, default: str) -> str:
@@ -818,6 +820,9 @@ class CodexSwitchApp:
             recovery_checker=self.account_pool_validator,
             token_usage_callback=self._record_route_proxy_token_usage,
         )
+        self._proxy_log_render_pending = False
+        self._route_proxy_token_usage_update_pending = False
+        self._account_pool_update_pending = False
 
         self.current_config: CurrentCodexConfig | None = None
         self.chat_profile_id: str | None = None
@@ -2442,6 +2447,9 @@ class CodexSwitchApp:
         if width <= 1:
             return
         left_width = max(280, int((width - 10) * 0.25))
+        if getattr(self, "_test_layout_left_width", None) == left_width:
+            return
+        self._test_layout_left_width = left_width
         left.configure(width=left_width)
 
     def _create_info_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, wraplength: int = 320) -> None:
@@ -3644,6 +3652,8 @@ class CodexSwitchApp:
                 child.destroy()
         self.library_model_tag_models = []
         self.library_model_tag_widgets = []
+        self._library_model_tag_layout_columns = 0
+        self._library_model_tag_layout_count = -1
 
         if not normalized_models:
             self.library_models_summary_var.set(empty_text)
@@ -3700,8 +3710,14 @@ class CodexSwitchApp:
         gap = 8
         available_width = max(tag_width, width - 12)
         column_count = max(1, available_width // (tag_width + gap))
-        for column in range(column_count):
-            self.library_model_tags_frame.columnconfigure(column, weight=1)
+        tag_count = len(self.library_model_tag_widgets)
+        previous_columns = getattr(self, "_library_model_tag_layout_columns", 0)
+        if previous_columns == column_count and getattr(self, "_library_model_tag_layout_count", -1) == tag_count:
+            return
+        self._library_model_tag_layout_columns = column_count
+        self._library_model_tag_layout_count = tag_count
+        for column in range(max(previous_columns, column_count)):
+            self.library_model_tags_frame.columnconfigure(column, weight=1 if column < column_count else 0)
         for index, (_model, tag) in enumerate(self.library_model_tag_widgets):
             tag.grid(row=index // column_count, column=index % column_count, sticky="w", padx=6, pady=6)
 
@@ -3957,6 +3973,7 @@ class CodexSwitchApp:
         self.proxy_selected_rules_var.set("\n".join(summaries))
 
     def _render_proxy_log(self) -> None:
+        self._proxy_log_render_pending = False
         if not hasattr(self, "proxy_log_text"):
             return
         lines = [
@@ -4415,16 +4432,27 @@ class CodexSwitchApp:
         width = max(int(getattr(event, "width", 0) or self.skill_market_canvas.winfo_width()), 1)
         self.skill_market_canvas.itemconfigure(self.skill_market_window, width=width)
         columns = max(1, width // 260)
-        for index, child in enumerate(self.skill_market_frame.winfo_children()):
+        children = self.skill_market_frame.winfo_children()
+        previous_columns = getattr(self, "_skill_market_layout_columns", 0)
+        if previous_columns == columns and getattr(self, "_skill_market_layout_count", -1) == len(children):
+            return
+        self._skill_market_layout_columns = columns
+        self._skill_market_layout_count = len(children)
+        for index, child in enumerate(children):
             child.grid_configure(row=index // columns, column=index % columns, sticky="ew", padx=6, pady=6)
-        for column in range(columns):
-            self.skill_market_frame.columnconfigure(column, weight=1, uniform="skill_market")
+        for column in range(max(previous_columns, columns)):
+            if column < columns:
+                self.skill_market_frame.columnconfigure(column, weight=1, uniform="skill_market")
+            else:
+                self.skill_market_frame.columnconfigure(column, weight=0, uniform="")
 
     def _render_skill_market_cards(self, entries: list[SkillMarketEntry]) -> None:
         if not hasattr(self, "skill_market_frame"):
             return
         for child in self.skill_market_frame.winfo_children():
             child.destroy()
+        self._skill_market_layout_columns = 0
+        self._skill_market_layout_count = -1
         if not entries:
             empty = tk.Label(
                 self.skill_market_frame,
@@ -5647,15 +5675,26 @@ class CodexSwitchApp:
     ) -> None:
         canvas.itemconfigure(window_id, width=max(width, 1))
         columns = max(1, int(width) // 240)
-        for index, child in enumerate(cards_frame.winfo_children()):
+        children = cards_frame.winfo_children()
+        previous_columns = getattr(cards_frame, "_codex_switch_layout_columns", 0)
+        if previous_columns == columns and getattr(cards_frame, "_codex_switch_layout_count", -1) == len(children):
+            return
+        setattr(cards_frame, "_codex_switch_layout_columns", columns)
+        setattr(cards_frame, "_codex_switch_layout_count", len(children))
+        for index, child in enumerate(children):
             child.grid_configure(row=index // columns, column=index % columns, sticky="ew", padx=6, pady=6)
-        for column in range(columns):
-            cards_frame.columnconfigure(column, weight=1, uniform="skill_group_dialog")
+        for column in range(max(previous_columns, columns)):
+            if column < columns:
+                cards_frame.columnconfigure(column, weight=1, uniform="skill_group_dialog")
+            else:
+                cards_frame.columnconfigure(column, weight=0, uniform="")
 
     def _render_skill_group_dialog_cards(self, group: SkillGroup, cards_frame: tk.Frame) -> None:
         current = self._skill_group_by_id(group.id) or group
         for child in cards_frame.winfo_children():
             child.destroy()
+        setattr(cards_frame, "_codex_switch_layout_columns", 0)
+        setattr(cards_frame, "_codex_switch_layout_count", -1)
         if not current.skills:
             tk.Label(
                 cards_frame,
@@ -6259,14 +6298,21 @@ class CodexSwitchApp:
 
     def _record_route_proxy_event(self, event: RouteProxyEvent) -> None:
         self.route_proxy_settings.append_event(event)
-        self.root.after(0, self._render_proxy_log)
+        if getattr(self, "_proxy_log_render_pending", False):
+            return
+        self._proxy_log_render_pending = True
+        self.root.after(PROXY_LOG_RENDER_DELAY_MS, self._render_proxy_log)
 
     def _record_route_proxy_token_usage(self, settings: RouteProxySettings) -> None:
         self.route_proxy_settings = settings
         if hasattr(self, "root") and self.root.winfo_exists():
-            self.root.after(0, self._apply_route_proxy_token_usage_update)
+            if getattr(self, "_route_proxy_token_usage_update_pending", False):
+                return
+            self._route_proxy_token_usage_update_pending = True
+            self.root.after(PROXY_STATE_FLUSH_DELAY_MS, self._apply_route_proxy_token_usage_update)
 
     def _apply_route_proxy_token_usage_update(self) -> None:
+        self._route_proxy_token_usage_update_pending = False
         self.persist_state()
         self.refresh_stats_tab()
 
@@ -6380,9 +6426,13 @@ class CodexSwitchApp:
     def _record_account_pool_update(self, settings: AccountPoolSettings) -> None:
         self.account_pool_settings = settings
         if hasattr(self, "root") and self.root.winfo_exists():
-            self.root.after(0, self._apply_account_pool_update)
+            if getattr(self, "_account_pool_update_pending", False):
+                return
+            self._account_pool_update_pending = True
+            self.root.after(PROXY_STATE_FLUSH_DELAY_MS, self._apply_account_pool_update)
 
     def _apply_account_pool_update(self) -> None:
+        self._account_pool_update_pending = False
         self.persist_state()
         self.refresh_account_pool_tab()
         self.refresh_proxy_tab()
