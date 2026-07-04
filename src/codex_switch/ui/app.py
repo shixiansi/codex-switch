@@ -210,7 +210,10 @@ from codex_switch.ui.route_proxy_logic import (
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS,
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
     codex_model_override_for_project,
+    normalize_route_proxy_settings_form,
     route_proxy_account_pool_choices,
+    route_proxy_project_rows,
+    route_proxy_status_text,
     refresh_route_proxy_upstream_models,
     route_proxy_detail_display,
     refresh_route_proxy_rules_for_project,
@@ -3442,28 +3445,29 @@ class CodexSwitchApp:
             str(normalize_route_proxy_upstream_timeout_seconds(self.route_proxy_settings.upstream_timeout_seconds))
         )
         self.proxy_status_var.set(
-            f"代理运行中：{self.route_proxy_settings.base_url}"
-            if self.route_proxy_server.is_running
-            else f"代理未启动：{self.route_proxy_settings.base_url}"
+            route_proxy_status_text(
+                self.route_proxy_settings,
+                is_running=self.route_proxy_server.is_running,
+            )
+        )
+        rows = route_proxy_project_rows(
+            self.route_proxy_settings,
+            self.projects,
+            profile_by_id=self._profile_by_id,
+            project_codex_profile_id=project_codex_profile_id,
+            project_claude_profile_id=project_claude_profile_id,
+            project_account_pool_group_name=self._project_account_pool_group_name,
         )
         self.suppress_selection_events = True
         try:
             for item in self.proxy_project_tree.get_children():
                 self.proxy_project_tree.delete(item)
-            for project in self.projects:
-                codex_profile = self._profile_by_id(project_codex_profile_id(project))
-                claude_profile = self._profile_by_id(project_claude_profile_id(project))
+            for row in rows:
                 self.proxy_project_tree.insert(
                     "",
                     "end",
-                    iid=project.id,
-                    values=(
-                        project.name,
-                        compact_text(codex_profile.name if codex_profile else "配置已删除", 16),
-                        compact_text(claude_profile.name if claude_profile else "配置已删除", 16),
-                        compact_text(self._project_account_pool_group_name(project.id), 14),
-                        "已启用" if self.route_proxy_settings.project_enabled(project.id) else "未启用",
-                    ),
+                    iid=row.project_id,
+                    values=row.values,
                 )
         finally:
             self.suppress_selection_events = False
@@ -5426,23 +5430,22 @@ class CodexSwitchApp:
         self.refresh_stats_tab()
 
     def save_route_proxy_settings(self, *, save_project_rules: bool = True) -> bool:
-        self.route_proxy_settings.host = self.proxy_host_var.get().strip() or self.route_proxy_settings.host
-        raw_port = self.proxy_port_var.get().strip() or str(self.route_proxy_settings.port)
         try:
-            int(raw_port)
-        except ValueError:
-            messagebox.showerror("保存失败", "代理端口必须是数字。", parent=self.root)
-            return False
-        self.route_proxy_settings.port = normalize_route_proxy_port(raw_port)
-        self.route_proxy_settings.account_pool_strategy = normalize_route_proxy_account_pool_strategy(
-            ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES.get(
-                self.proxy_account_pool_strategy_var.get(),
-                self.proxy_account_pool_strategy_var.get(),
+            form = normalize_route_proxy_settings_form(
+                self.route_proxy_settings,
+                host_value=self.proxy_host_var.get(),
+                port_value=self.proxy_port_var.get(),
+                strategy_label=self.proxy_account_pool_strategy_var.get(),
+                strategy_values=ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES,
+                upstream_timeout_value=self.proxy_upstream_timeout_var.get(),
             )
-        )
-        self.route_proxy_settings.upstream_timeout_seconds = normalize_route_proxy_upstream_timeout_seconds(
-            self.proxy_upstream_timeout_var.get()
-        )
+        except ValueError as exc:
+            messagebox.showerror("更新失败", str(exc), parent=self.root)
+            return False
+        self.route_proxy_settings.host = form.host
+        self.route_proxy_settings.port = form.port
+        self.route_proxy_settings.account_pool_strategy = form.account_pool_strategy
+        self.route_proxy_settings.upstream_timeout_seconds = form.upstream_timeout_seconds
         if save_project_rules:
             self._save_selected_route_proxy_project_rules()
         self.persist_state()

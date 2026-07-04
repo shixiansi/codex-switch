@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from codex_switch.ui.utils import compact_text
 from codex_switch.chat import (
     WIRE_API_ANTHROPIC_MESSAGES,
     WIRE_API_CHAT_COMPLETIONS,
@@ -30,8 +31,11 @@ from codex_switch.models import (
     ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
     ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
     ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE,
+    normalize_route_proxy_account_pool_strategy,
     normalize_route_proxy_protocol,
+    normalize_route_proxy_port,
     normalize_route_proxy_upstream_source,
+    normalize_route_proxy_upstream_timeout_seconds,
 )
 
 
@@ -79,6 +83,20 @@ class RouteProxyDetailDisplay:
     codex_compact_model: str
     codex_group_label: str
     claude_group_label: str
+
+
+@dataclass(frozen=True)
+class RouteProxyProjectRow:
+    project_id: str
+    values: tuple[str, str, str, str, str]
+
+
+@dataclass(frozen=True)
+class RouteProxySettingsForm:
+    host: str
+    port: int
+    account_pool_strategy: str
+    upstream_timeout_seconds: int
 
 
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
@@ -260,6 +278,65 @@ def route_proxy_account_pool_choices(
 
 def route_proxy_group_label_for_id(group_id: str, choices: dict[str, str]) -> str:
     return next((label for label, value in choices.items() if value == group_id), "")
+
+
+def route_proxy_status_text(settings: RouteProxySettings, *, is_running: bool) -> str:
+    if is_running:
+        return f"代理运行中：{settings.base_url}"
+    return f"代理未启动：{settings.base_url}"
+
+
+def route_proxy_project_rows(
+    settings: RouteProxySettings,
+    projects: list[ProjectRecord],
+    *,
+    profile_by_id: Callable[[str | None], Profile | None],
+    project_codex_profile_id: Callable[[ProjectRecord], str],
+    project_claude_profile_id: Callable[[ProjectRecord], str],
+    project_account_pool_group_name: Callable[[str], str],
+) -> list[RouteProxyProjectRow]:
+    rows: list[RouteProxyProjectRow] = []
+    for project in projects:
+        codex_profile = profile_by_id(project_codex_profile_id(project))
+        claude_profile = profile_by_id(project_claude_profile_id(project))
+        rows.append(
+            RouteProxyProjectRow(
+                project_id=project.id,
+                values=(
+                    project.name,
+                    compact_text(codex_profile.name if codex_profile else "绑定配置已删除", 16),
+                    compact_text(claude_profile.name if claude_profile else "绑定配置已删除", 16),
+                    compact_text(project_account_pool_group_name(project.id), 14),
+                    "已启用" if settings.project_enabled(project.id) else "未启用",
+                ),
+            )
+        )
+    return rows
+
+
+def normalize_route_proxy_settings_form(
+    settings: RouteProxySettings,
+    *,
+    host_value: str,
+    port_value: str,
+    strategy_label: str,
+    strategy_values: dict[str, str],
+    upstream_timeout_value,
+) -> RouteProxySettingsForm:
+    host = host_value.strip() or settings.host
+    raw_port = port_value.strip() or str(settings.port)
+    try:
+        int(raw_port)
+    except ValueError as exc:
+        raise ValueError("路由端口必须是数字。") from exc
+    return RouteProxySettingsForm(
+        host=host,
+        port=normalize_route_proxy_port(raw_port),
+        account_pool_strategy=normalize_route_proxy_account_pool_strategy(
+            strategy_values.get(strategy_label, strategy_label)
+        ),
+        upstream_timeout_seconds=normalize_route_proxy_upstream_timeout_seconds(upstream_timeout_value),
+    )
 
 
 def route_proxy_rule_for_project_client(
