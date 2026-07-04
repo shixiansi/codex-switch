@@ -39,7 +39,6 @@ from codex_switch.models import (
     AccountPoolGroup,
     AccountPoolSettings,
     ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
-    ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
     ACCOUNT_POOL_GROUP_TYPE_CLAUDE,
     ACCOUNT_POOL_GROUP_TYPE_CODEX,
     ACCOUNT_POOL_GROUP_TYPE_LABELS,
@@ -48,7 +47,6 @@ from codex_switch.models import (
     DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL,
     DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
-    effective_account_pool_wire_api,
     HealthResult,
     HOT_UPDATE_EVENT_LIMIT,
     HotUpdateEvent,
@@ -131,6 +129,21 @@ from codex_switch.ui.dialogs import (
     ProfileDialog,
     ProjectDialog,
     SuccessfulModelsDialog,
+)
+from codex_switch.ui.account_pool_logic import (
+    ACCOUNT_POOL_SOURCE_FILTER_ALL,
+    ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
+    ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
+    account_pool_channel_by_id,
+    account_pool_channel_from_result,
+    account_pool_group_label,
+    account_pool_group_type_from_label,
+    account_pool_project_count,
+    account_pool_source_label,
+    account_pool_visible_channels,
+    check_account_pool_channel,
+    project_account_pool_group_name,
+    project_uses_account_pool,
 )
 from codex_switch.ui.global_logic import (
     claude_settings_env_values,
@@ -523,7 +536,7 @@ class CodexSwitchApp:
         self.account_pool_selected_name_var = tk.StringVar(value="未选择渠道")
         self.account_pool_selected_detail_var = tk.StringVar(value="-")
         self.account_pool_group_choices: dict[str, str] = {}
-        self.account_pool_source_filter_var = tk.StringVar(value="全部")
+        self.account_pool_source_filter_var = tk.StringVar(value=ACCOUNT_POOL_SOURCE_FILTER_ALL)
 
         self.mcp_hint_var = tk.StringVar(value="尚未加载 MCP 配置。")
         self.mcp_selected_name_var = tk.StringVar(value="未选择 MCP 工具")
@@ -1406,7 +1419,11 @@ class CodexSwitchApp:
         self.account_pool_source_filter_combo = ttk.Combobox(
             group_bar,
             textvariable=self.account_pool_source_filter_var,
-            values=("全部", "临时号池", "配置库号池"),
+            values=(
+                ACCOUNT_POOL_SOURCE_FILTER_ALL,
+                ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
+                ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
+            ),
             state="readonly",
             width=12,
         )
@@ -3562,7 +3579,7 @@ class CodexSwitchApp:
         self._set_text_content(self.proxy_log_text, "\n".join(lines) if lines else "暂无代理日志。", disabled=True)
 
     def _account_pool_channel_by_id(self, channel_id: str | None) -> AccountPoolChannel | None:
-        return next((channel for channel in self.account_pool_settings.channels if channel.id == channel_id), None)
+        return account_pool_channel_by_id(self.account_pool_settings, channel_id)
 
     def _selected_account_pool_group(self) -> AccountPoolGroup | None:
         self.account_pool_settings.ensure_default_group()
@@ -3577,17 +3594,10 @@ class CodexSwitchApp:
         return group.id if group is not None else ""
 
     def _account_pool_group_type_from_label(self, label: str) -> str:
-        for group_type, group_label in ACCOUNT_POOL_GROUP_TYPE_LABELS.items():
-            if group_label == label:
-                return group_type
-        return ACCOUNT_POOL_GROUP_TYPE_CODEX
+        return account_pool_group_type_from_label(label)
 
     def _account_pool_group_label(self, group: AccountPoolGroup) -> str:
-        state = "启用" if group.enabled else "停用"
-        type_label = ACCOUNT_POOL_GROUP_TYPE_LABELS.get(group.pool_type, "Codex")
-        normal_count = len(self.account_pool_settings.normal_channels_for_group(group.id))
-        failed_count = len(self.account_pool_settings.failed_channels_for_group(group.id))
-        return f"{group.name}    {type_label} / {state} / 正常 {normal_count} / 异常 {failed_count}"
+        return account_pool_group_label(group, self.account_pool_settings)
 
     def _refresh_account_pool_group_choices(self) -> None:
         self.account_pool_settings.ensure_default_group()
@@ -3618,19 +3628,14 @@ class CodexSwitchApp:
             )
 
     def _account_pool_source_label(self, channel: AccountPoolChannel) -> str:
-        if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
-            return "配置库号池"
-        return "临时号池"
+        return account_pool_source_label(channel)
 
     def _account_pool_visible_channels(self) -> list[AccountPoolChannel]:
-        group_id = self._selected_account_pool_group_id()
-        channels = self.account_pool_settings.channels_for_group(group_id)
-        source_filter = self.account_pool_source_filter_var.get()
-        if source_filter == "临时号池":
-            return [channel for channel in channels if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY]
-        if source_filter == "配置库号池":
-            return [channel for channel in channels if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE]
-        return channels
+        return account_pool_visible_channels(
+            self.account_pool_settings,
+            self._selected_account_pool_group_id(),
+            self.account_pool_source_filter_var.get(),
+        )
 
     def _selected_account_pool_channel(self) -> AccountPoolChannel | None:
         if not hasattr(self, "account_pool_tree"):
@@ -3641,31 +3646,17 @@ class CodexSwitchApp:
         return self._account_pool_channel_by_id(selection[0])
 
     def _project_uses_account_pool(self, project_id: str) -> bool:
-        return any(
-            rule.enabled
-            and rule.project_id == project_id
-            and rule.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
-            for rule in self.route_proxy_settings.rules
-        )
+        return project_uses_account_pool(self.route_proxy_settings, project_id)
 
     def _project_account_pool_group_name(self, project_id: str) -> str:
-        rule = next(
-            (
-                item
-                for item in self.route_proxy_settings.rules
-                if item.enabled
-                and item.project_id == project_id
-                and item.upstream_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
-            ),
-            None,
+        return project_account_pool_group_name(
+            self.route_proxy_settings,
+            self.account_pool_settings,
+            project_id,
         )
-        if rule is None:
-            return "否"
-        group = self.account_pool_settings.group_by_id(rule.account_pool_group_id)
-        return group.name if group is not None else "组已删除"
 
     def _account_pool_project_count(self) -> int:
-        return sum(1 for project in self.projects if self._project_uses_account_pool(project.id))
+        return account_pool_project_count(self.projects, self.route_proxy_settings)
 
     def refresh_account_pool_tab(self) -> None:
         self.account_pool_settings.ensure_default_group()
@@ -5714,72 +5705,18 @@ class CodexSwitchApp:
         result: dict,
         existing: AccountPoolChannel | None = None,
     ) -> AccountPoolChannel:
-        group_id = existing.group_id if existing is not None else self._selected_account_pool_group_id()
-        channel = AccountPoolChannel.create(
-            name=result["name"],
-            base_url=result["base_url"],
-            api_key=result["api_key"],
-            group_id=group_id,
-            source_type=result.get("source_type", existing.source_type if existing else ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY),
-            source_profile_id=result.get("source_profile_id", existing.source_profile_id if existing else ""),
-            source_profile_name=result.get("source_profile_name", existing.source_profile_name if existing else ""),
-            source_api_key_index=result.get("source_api_key_index", existing.source_api_key_index if existing else 0),
-            wire_api=result["wire_api"],
-            default_model=result["default_model"],
-            custom_headers=result.get("custom_headers", existing.custom_headers if existing else None),
+        return account_pool_channel_from_result(
+            result,
+            selected_group_id=self._selected_account_pool_group_id(),
+            existing=existing,
         )
-        if existing is not None:
-            channel.id = existing.id
-        return channel
 
     def _check_account_pool_channel(self, channel: AccountPoolChannel) -> HealthResult:
-        group = self.account_pool_settings.group_by_id(channel.group_id)
-        group_type = group.pool_type if group is not None else ACCOUNT_POOL_GROUP_TYPE_CODEX
-        wire_api = effective_account_pool_wire_api(group_type, channel.wire_api)
-        if group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
-            model = (group.claude_model if group is not None else channel.default_model).strip() or DEFAULT_CLAUDE_MODEL
-            profile = Profile.create(
-                channel.name,
-                channel.base_url,
-                channel.api_key,
-                model=model,
-                vendor=VENDOR_CLAUDE,
-                claude_model=model,
-                claude_fallback_model=(
-                    (group.claude_fallback_model if group is not None else "").strip()
-                    or DEFAULT_CLAUDE_FALLBACK_MODEL
-                ),
-                wire_api=wire_api,
-                custom_headers=channel.custom_headers,
-            )
-        else:
-            model = (group.default_model if group is not None else channel.default_model).strip() or DEFAULT_CODEX_MODEL
-            profile = Profile.create(
-                channel.name,
-                channel.base_url,
-                channel.api_key,
-                model=model,
-                vendor=VENDOR_CODEX,
-                codex_model=model,
-                wire_api=wire_api,
-                custom_headers=channel.custom_headers,
-            )
         validator = getattr(self, "account_pool_validator", None) or getattr(self, "health_checker", None)
-        if validator is not None:
-            try:
-                return validator.check(
-                    profile,
-                    model=model,
-                    wire_api=wire_api,
-                    allow_codex_client_restricted=(group_type == ACCOUNT_POOL_GROUP_TYPE_CODEX),
-                )
-            except TypeError:
-                return validator.check(profile)
-        return AccountPoolSessionValidator().check(
-            profile,
-            model=model,
-            wire_api=wire_api,
-            allow_codex_client_restricted=(group_type == ACCOUNT_POOL_GROUP_TYPE_CODEX),
+        return check_account_pool_channel(
+            channel,
+            settings=self.account_pool_settings,
+            validator=validator,
         )
 
     def _mark_channel_from_success(self, channel: AccountPoolChannel, result: HealthResult) -> None:
