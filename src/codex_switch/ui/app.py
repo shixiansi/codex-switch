@@ -213,10 +213,12 @@ from codex_switch.ui.styles import (
     ttk,
 )
 from codex_switch.ui.project_logic import (
-    claude_template_success_message,
+    build_project_binding_sync_plan,
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
+    claude_template_success_message,
     codex_template_success_message,
+    project_binding_sync_status,
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -234,7 +236,6 @@ from codex_switch.ui.project_logic import (
     project_codex_script_paths,
     project_codex_vscode_launch_plan,
     project_codex_vscode_command,
-    project_custom_run_command,
     project_custom_run_launch_plan,
     project_github_label,
     project_github_update_label,
@@ -245,6 +246,7 @@ from codex_switch.ui.project_logic import (
     project_tab_display,
     project_template_display,
     project_text_file_path,
+    updated_project_from_dialog,
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
@@ -5857,21 +5859,29 @@ class CodexSwitchApp:
         sync_codex: bool = True,
         sync_claude: bool = True,
     ) -> bool:
+        plan = build_project_binding_sync_plan(
+            project,
+            route_proxy_base_url=self._route_proxy_base_url_for_project(project),
+            codex_profile=self._profile_by_id(project_codex_profile_id(project)),
+            codex_model_override=self._codex_model_override_for_project(project),
+            claude_profile=self._profile_by_id(project_claude_profile_id(project)),
+            claude_model_override=self._claude_model_overrides_for_project(project)[0],
+            claude_fallback_model_override=self._claude_model_overrides_for_project(project)[1],
+            sync_codex=sync_codex,
+            sync_claude=sync_claude,
+        )
         updated_paths: list[Path] = []
-        route_proxy_base_url = self._route_proxy_base_url_for_project(project)
-        project_root = project_root_path(project)
-        if sync_codex:
-            codex_profile = self._profile_by_id(project_codex_profile_id(project))
-            if codex_profile is None:
+        if plan.sync_codex:
+            if plan.codex_profile is None:
                 messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
                 return False
             try:
                 updated_paths.extend(
                     self.project_template_service.sync_api_binding(
-                        project_root,
-                        codex_profile,
-                        route_proxy_base_url=route_proxy_base_url,
-                        model_override=self._codex_model_override_for_project(project),
+                        plan.project_root,
+                        plan.codex_profile,
+                        route_proxy_base_url=plan.route_proxy_base_url,
+                        model_override=plan.codex_model_override,
                     )
                 )
             except Exception as exc:
@@ -5879,20 +5889,18 @@ class CodexSwitchApp:
                 self.status_var.set("Codex API 配置同步失败")
                 return False
 
-        if sync_claude:
-            claude_profile = self._profile_by_id(project_claude_profile_id(project))
-            if claude_profile is None:
+        if plan.sync_claude:
+            if plan.claude_profile is None:
                 messagebox.showerror("无法同步", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
                 return False
-            claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
             try:
                 updated_paths.extend(
                     self.project_template_service.sync_claude_binding(
-                        project_root,
-                        claude_profile,
-                        route_proxy_base_url=route_proxy_base_url,
-                        model_override=claude_model,
-                        fallback_model_override=claude_fallback_model,
+                        plan.project_root,
+                        plan.claude_profile,
+                        route_proxy_base_url=plan.route_proxy_base_url,
+                        model_override=plan.claude_model_override,
+                        fallback_model_override=plan.claude_fallback_model_override,
                     )
                 )
             except Exception as exc:
@@ -5900,10 +5908,7 @@ class CodexSwitchApp:
                 self.status_var.set("Claude settings.local.json 同步失败")
                 return False
 
-        if updated_paths:
-            self.status_var.set(f"已同步项目配置：{project.name}")
-        else:
-            self.status_var.set(f"已更新项目：{project.name}")
+        self.status_var.set(project_binding_sync_status(project.name, updated_paths))
         return True
 
     def edit_project(self) -> None:
@@ -5926,30 +5931,14 @@ class CodexSwitchApp:
         if duplicate and duplicate.id != project.id:
             messagebox.showerror("重复项目", "该项目目录已经绑定到另一个项目。", parent=self.root)
             return
-        updated = replace(
+        update = updated_project_from_dialog(
             project,
-            name=dialog.result["name"],
-            project_dir=dialog.result["project_dir"],
-            profile_id=dialog.result["profile_id"],
-            codex_profile_id=dialog.result["codex_profile_id"],
-            claude_profile_id=dialog.result["claude_profile_id"],
-            run_command=dialog.result["run_command"],
-            mcp_server_names=dialog.result["mcp_server_names"],
-            skill_names=dialog.result["skill_names"],
-            skill_group_ids=dialog.result["skill_group_ids"],
-            skills=dialog.result["skills"],
-            github_repo=dialog.result["github_repo"],
-            github_ref=dialog.result["github_ref"],
-            github_last_sync_commit=(
-                ""
-                if dialog.result["github_repo"] != project.github_repo or dialog.result["github_ref"] != project.github_ref
-                else project.github_last_sync_commit
-            ),
-            github_auto_update=dialog.result["github_auto_update"],
+            dialog.result,
             updated_at=now_iso(),
         )
-        api_binding_changed = project_codex_binding_changed(project, updated)
-        claude_binding_changed = project_claude_binding_changed(project, updated)
+        updated = update.project
+        api_binding_changed = update.codex_binding_changed
+        claude_binding_changed = update.claude_binding_changed
         route_proxy_rules_changed = False
         if api_binding_changed or claude_binding_changed:
             route_proxy_rules_changed = self._refresh_route_proxy_rules_for_project(updated)

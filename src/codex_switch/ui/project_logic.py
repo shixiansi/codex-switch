@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -94,6 +94,28 @@ class ProjectLaunchPlan:
     success_status: str
     required_path: Path | None = None
     missing_message: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectEditUpdate:
+    project: ProjectRecord
+    codex_binding_changed: bool
+    claude_binding_changed: bool
+
+
+@dataclass(frozen=True)
+class ProjectBindingSyncPlan:
+    project_root: Path
+    route_proxy_base_url: str | None
+    codex_profile: Profile | None
+    codex_model_override: str | None
+    claude_profile: Profile | None
+    claude_model_override: str | None
+    claude_fallback_model_override: str | None
+    sync_codex: bool
+    sync_claude: bool
+
+
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -202,6 +224,67 @@ def project_claude_cmd_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
         cwd=project_root_path(project),
         success_status=f"已打开 Claude CMD：{project.name}",
     )
+
+
+def updated_project_from_dialog(project: ProjectRecord, result: dict, *, updated_at: str) -> ProjectEditUpdate:
+    updated = replace(
+        project,
+        name=result["name"],
+        project_dir=result["project_dir"],
+        profile_id=result["profile_id"],
+        codex_profile_id=result["codex_profile_id"],
+        claude_profile_id=result["claude_profile_id"],
+        run_command=result["run_command"],
+        mcp_server_names=result["mcp_server_names"],
+        skill_names=result["skill_names"],
+        skill_group_ids=result["skill_group_ids"],
+        skills=result["skills"],
+        github_repo=result["github_repo"],
+        github_ref=result["github_ref"],
+        github_last_sync_commit=(
+            ""
+            if result["github_repo"] != project.github_repo or result["github_ref"] != project.github_ref
+            else project.github_last_sync_commit
+        ),
+        github_auto_update=result["github_auto_update"],
+        updated_at=updated_at,
+    )
+    return ProjectEditUpdate(
+        project=updated,
+        codex_binding_changed=project_codex_binding_changed(project, updated),
+        claude_binding_changed=project_claude_binding_changed(project, updated),
+    )
+
+
+def build_project_binding_sync_plan(
+    project: ProjectRecord,
+    *,
+    route_proxy_base_url: str | None,
+    codex_profile: Profile | None,
+    codex_model_override: str | None,
+    claude_profile: Profile | None,
+    claude_model_override: str | None,
+    claude_fallback_model_override: str | None,
+    sync_codex: bool,
+    sync_claude: bool,
+) -> ProjectBindingSyncPlan:
+    return ProjectBindingSyncPlan(
+        project_root=project_root_path(project),
+        route_proxy_base_url=route_proxy_base_url,
+        codex_profile=codex_profile,
+        codex_model_override=codex_model_override,
+        claude_profile=claude_profile,
+        claude_model_override=claude_model_override,
+        claude_fallback_model_override=claude_fallback_model_override,
+        sync_codex=sync_codex,
+        sync_claude=sync_claude,
+    )
+
+
+def project_binding_sync_status(project_name: str, updated_paths: list[Path]) -> str:
+    if updated_paths:
+        return f"已同步项目配置：{project_name}"
+    return f"已更新项目：{project_name}"
 
 
 def resolve_selected_project_id(projects: list[ProjectRecord], selected_project_id: str | None) -> str | None:

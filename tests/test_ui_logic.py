@@ -143,6 +143,7 @@ from codex_switch.ui.mcp_logic import (
 )
 from codex_switch.ui.skills_logic import build_skills_tab_display
 from codex_switch.ui.project_logic import (
+    build_project_binding_sync_plan,
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
     claude_template_success_message,
@@ -150,6 +151,7 @@ from codex_switch.ui.project_logic import (
     codex_template_success_message,
     codex_project_template_options,
     preferred_project_script_path,
+    project_binding_sync_status,
     project_bound_profile_ids,
     project_claude_binding_changed,
     project_claude_cmd_launch_plan,
@@ -169,6 +171,7 @@ from codex_switch.ui.project_logic import (
     project_tab_display,
     project_root_path,
     project_text_file_path,
+    updated_project_from_dialog,
     project_vscode_launch_plan,
     project_vscode_open_command,
 )
@@ -998,6 +1001,60 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(project_claude_binding_changed(project, replace(project, claude_profile_id="new-claude")))
         self.assertTrue(project_codex_binding_changed(project, replace(project, project_dir=str(Path.cwd() / "next"))))
         self.assertTrue(project_claude_binding_changed(project, replace(project, project_dir=str(Path.cwd() / "next"))))
+
+    def test_project_edit_update_and_binding_sync_helpers_build_expected_data(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "legacy-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+            github_repo="https://github.com/example/project",
+            github_ref="main",
+            github_last_sync_commit="oldcommit",
+        )
+        result = {
+            "name": "renamed",
+            "project_dir": str(Path.cwd() / "next"),
+            "profile_id": "legacy-profile",
+            "codex_profile_id": "new-codex",
+            "claude_profile_id": "new-claude",
+            "run_command": "npm run dev",
+            "mcp_server_names": ["alpha"],
+            "skill_names": ["frontend-dev"],
+            "skill_group_ids": [],
+            "skills": [],
+            "github_repo": "https://github.com/example/project",
+            "github_ref": "release",
+            "github_auto_update": True,
+        }
+
+        update = updated_project_from_dialog(project, result, updated_at="2026-07-05T00:00:00")
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex")
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        plan = build_project_binding_sync_plan(
+            update.project,
+            route_proxy_base_url="http://proxy.local",
+            codex_profile=codex_profile,
+            codex_model_override="gpt-5",
+            claude_profile=claude_profile,
+            claude_model_override="sonnet",
+            claude_fallback_model_override="haiku",
+            sync_codex=True,
+            sync_claude=False,
+        )
+
+        self.assertEqual(update.project.name, "renamed")
+        self.assertEqual(update.project.github_last_sync_commit, "")
+        self.assertTrue(update.codex_binding_changed)
+        self.assertTrue(update.claude_binding_changed)
+        self.assertEqual(plan.project_root, Path(result["project_dir"]))
+        self.assertEqual(plan.route_proxy_base_url, "http://proxy.local")
+        self.assertEqual(plan.codex_profile, codex_profile)
+        self.assertEqual(plan.codex_model_override, "gpt-5")
+        self.assertEqual(plan.claude_profile, claude_profile)
+        self.assertFalse(plan.sync_claude)
+        self.assertEqual(project_binding_sync_status("Demo", [Path("a.txt")]), "已同步项目配置：Demo")
+        self.assertEqual(project_binding_sync_status("Demo", []), "已更新项目：Demo")
 
     def test_project_launch_helpers_build_paths_and_commands(self) -> None:
         with workspace_tempdir() as temp_dir:
