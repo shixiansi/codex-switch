@@ -257,6 +257,7 @@ from codex_switch.ui.project_logic import (
     project_vscode_launch_plan,
     project_mcp_selection_summary,
     project_from_dialog_result,
+    project_detail_display,
     project_root_path,
     project_skill_selection_summary,
     project_tab_display,
@@ -3462,61 +3463,52 @@ class CodexSwitchApp:
     def _refresh_project_detail(self) -> None:
         project = self.get_selected_project()
         if not project:
-            self.project_selected_name_var.set("\u672a\u9009\u62e9\u9879\u76ee")
-            self.project_selected_dir_var.set("-")
-            self.project_selected_codex_profile_var.set("-")
-            self.project_selected_claude_profile_var.set("-")
-            self.project_selected_codex_model_var.set("-")
-            self.project_selected_claude_model_var.set("-")
-            self.project_selected_codex_key_var.set("-")
-            self.project_selected_claude_key_var.set("-")
-            self.project_backup_var.set("-")
-            self.project_generated_var.set("-")
-            self.project_script_var.set("-")
-            self.project_run_var.set("-")
-            self.project_github_var.set("-")
-            self.project_github_update_var.set("-")
-            self.project_mcp_var.set("-")
-            self.project_skills_var.set("-")
-            self.project_status_badge.configure(text="\u672a\u751f\u6210", bg=PALETTE["neutral_soft"], fg=PALETTE["neutral_text"])
-            return
+            display = project_detail_display(project)
+        else:
+            codex_profile = self._profile_by_id(project_codex_profile_id(project))
+            claude_profile = self._profile_by_id(project_claude_profile_id(project))
+            codex_profile_texts = project_codex_profile_texts(
+                codex_profile,
+                key_summary=self._profile_key_summary,
+            )
+            claude_profile_texts = project_claude_profile_texts(
+                claude_profile,
+                key_summary=self._profile_key_summary,
+            )
+            project_root = project_root_path(project)
+            template = project_template_display(
+                project_root_exists=project_root.exists(),
+                status=self.project_template_service.inspect(project_root) if project_root.exists() else None,
+            )
+            display = project_detail_display(
+                project,
+                github_text=project_github_label(project, default_ref=DEFAULT_PROJECT_GITHUB_REF),
+                github_update_text=project_github_update_label(project),
+                script_text=str(self._get_project_script_path(project)),
+                run_text=project.run_command or "未配置",
+                mcp_text=self._project_mcp_selection_summary(project),
+                skills_text=self._project_skill_selection_summary(project),
+                codex_profile_texts=codex_profile_texts,
+                claude_profile_texts=claude_profile_texts,
+                template_display=template,
+            )
 
-        self.project_selected_name_var.set(project.name)
-        self.project_selected_dir_var.set(project.project_dir)
-        self.project_run_var.set(project.run_command or "\u672a\u914d\u7f6e")
-        self.project_github_var.set(
-            project_github_label(project, default_ref=DEFAULT_PROJECT_GITHUB_REF)
-        )
-        self.project_github_update_var.set(project_github_update_label(project))
-        self.project_script_var.set(str(self._get_project_script_path(project)))
-        self.project_mcp_var.set(self._project_mcp_selection_summary(project))
-        self.project_skills_var.set(self._project_skill_selection_summary(project))
-
-        codex_profile = self._profile_by_id(project_codex_profile_id(project))
-        claude_profile = self._profile_by_id(project_claude_profile_id(project))
-        codex_profile_text, codex_model_text, codex_key_text = project_codex_profile_texts(
-            codex_profile,
-            key_summary=self._profile_key_summary,
-        )
-        claude_profile_text, claude_model_text, claude_key_text = project_claude_profile_texts(
-            claude_profile,
-            key_summary=self._profile_key_summary,
-        )
-        self.project_selected_codex_profile_var.set(codex_profile_text)
-        self.project_selected_codex_model_var.set(codex_model_text)
-        self.project_selected_codex_key_var.set(codex_key_text)
-        self.project_selected_claude_profile_var.set(claude_profile_text)
-        self.project_selected_claude_model_var.set(claude_model_text)
-        self.project_selected_claude_key_var.set(claude_key_text)
-
-        project_root = project_root_path(project)
-        status = self.project_template_service.inspect(project_root) if project_root.exists() else None
-        display = project_template_display(
-            project_root_exists=project_root.exists(),
-            status=status,
-        )
+        self.project_selected_name_var.set(display.selected_name_text)
+        self.project_selected_dir_var.set(display.selected_dir_text)
+        self.project_selected_codex_profile_var.set(display.selected_codex_profile_text)
+        self.project_selected_claude_profile_var.set(display.selected_claude_profile_text)
+        self.project_selected_codex_model_var.set(display.selected_codex_model_text)
+        self.project_selected_claude_model_var.set(display.selected_claude_model_text)
+        self.project_selected_codex_key_var.set(display.selected_codex_key_text)
+        self.project_selected_claude_key_var.set(display.selected_claude_key_text)
         self.project_backup_var.set(display.backup_text)
         self.project_generated_var.set(display.generated_text)
+        self.project_script_var.set(display.script_text)
+        self.project_run_var.set(display.run_text)
+        self.project_github_var.set(display.github_text)
+        self.project_github_update_var.set(display.github_update_text)
+        self.project_mcp_var.set(display.mcp_text)
+        self.project_skills_var.set(display.skills_text)
         badge_colors = {
             "success": (PALETTE["success_soft"], PALETTE["success"]),
             "warning": (PALETTE["warning_soft"], PALETTE["warning"]),

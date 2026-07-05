@@ -191,7 +191,9 @@ from codex_switch.ui.project_logic import (
     project_custom_run_launch_plan,
     project_duplicate_dir_error,
     project_from_dialog_result,
+    project_detail_display,
     project_tab_display,
+    project_template_display,
     project_root_path,
     project_text_file_path,
     project_with_metadata_update,
@@ -1250,6 +1252,31 @@ class UiFilterTests(unittest.TestCase):
         self.assertIsNotNone(updated)
         self.assertEqual(updated.skill_group_ids, ["group-2"])
         self.assertEqual(updated.profile_id, "new-codex")
+
+    def test_project_detail_display_covers_empty_and_filled_states(self) -> None:
+        empty = project_detail_display(None)
+        self.assertEqual(empty.selected_name_text, "未选择项目")
+        self.assertEqual(empty.badge_text, "未生成")
+
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id", name="Demo")
+        filled = project_detail_display(
+            project,
+            github_text="repo@HEAD",
+            github_update_text="auto / abc",
+            script_text="start.ps1",
+            run_text="npm run dev",
+            mcp_text="mcp summary",
+            skills_text="skills summary",
+            codex_profile_texts=("codex", "gpt-5", "key"),
+            claude_profile_texts=("claude", "sonnet", "key"),
+            template_display=project_template_display(project_root_exists=True, status=None),
+        )
+
+        self.assertEqual(filled.selected_name_text, "Demo")
+        self.assertEqual(filled.github_text, "repo@HEAD")
+        self.assertEqual(filled.script_text, "start.ps1")
+        self.assertEqual(filled.selected_codex_model_text, "gpt-5")
+        self.assertEqual(filled.selected_claude_model_text, "sonnet")
 
     def test_project_launch_helpers_build_paths_and_commands(self) -> None:
         with workspace_tempdir() as temp_dir:

@@ -77,6 +77,28 @@ class ProjectTemplateDisplay:
 
 
 @dataclass(frozen=True)
+class ProjectDetailDisplay:
+    selected_name_text: str
+    selected_dir_text: str
+    selected_codex_profile_text: str
+    selected_claude_profile_text: str
+    selected_codex_model_text: str
+    selected_claude_model_text: str
+    selected_codex_key_text: str
+    selected_claude_key_text: str
+    backup_text: str
+    generated_text: str
+    script_text: str
+    run_text: str
+    github_text: str
+    github_update_text: str
+    mcp_text: str
+    skills_text: str
+    badge_text: str
+    badge_state: str
+
+
+@dataclass(frozen=True)
 class ProjectTreeRow:
     project_id: str
     values: tuple[str, str, str, str, str]
@@ -601,6 +623,71 @@ def project_template_display(
         generated_text="尚未生成项目模板。",
         badge_text="未生成",
         badge_state="neutral",
+    )
+
+
+def project_detail_display(
+    project: ProjectRecord | None,
+    *,
+    github_text: str = "-",
+    github_update_text: str = "-",
+    script_text: str = "-",
+    run_text: str = "-",
+    mcp_text: str = "-",
+    skills_text: str = "-",
+    codex_profile_texts: tuple[str, str, str] = ("-", "-", "-"),
+    claude_profile_texts: tuple[str, str, str] = ("-", "-", "-"),
+    template_display: ProjectTemplateDisplay | None = None,
+) -> ProjectDetailDisplay:
+    if project is None:
+        return ProjectDetailDisplay(
+            selected_name_text="未选择项目",
+            selected_dir_text="-",
+            selected_codex_profile_text="-",
+            selected_claude_profile_text="-",
+            selected_codex_model_text="-",
+            selected_claude_model_text="-",
+            selected_codex_key_text="-",
+            selected_claude_key_text="-",
+            backup_text="-",
+            generated_text="-",
+            script_text="-",
+            run_text="-",
+            github_text="-",
+            github_update_text="-",
+            mcp_text="-",
+            skills_text="-",
+            badge_text="未生成",
+            badge_state="neutral",
+        )
+
+    codex_profile_text, codex_model_text, codex_key_text = codex_profile_texts
+    claude_profile_text, claude_model_text, claude_key_text = claude_profile_texts
+    template = template_display or ProjectTemplateDisplay(
+        backup_text="-",
+        generated_text="-",
+        badge_text="未生成",
+        badge_state="neutral",
+    )
+    return ProjectDetailDisplay(
+        selected_name_text=project.name,
+        selected_dir_text=project.project_dir,
+        selected_codex_profile_text=codex_profile_text,
+        selected_claude_profile_text=claude_profile_text,
+        selected_codex_model_text=codex_model_text,
+        selected_claude_model_text=claude_model_text,
+        selected_codex_key_text=codex_key_text,
+        selected_claude_key_text=claude_key_text,
+        backup_text=template.backup_text,
+        generated_text=template.generated_text,
+        script_text=script_text,
+        run_text=run_text,
+        github_text=github_text,
+        github_update_text=github_update_text,
+        mcp_text=mcp_text,
+        skills_text=skills_text,
+        badge_text=template.badge_text,
+        badge_state=template.badge_state,
     )
 
 
