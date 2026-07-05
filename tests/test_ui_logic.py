@@ -152,6 +152,8 @@ from codex_switch.ui.library_logic import (
 )
 from codex_switch.ui.model_batch_logic import model_batch_counts, model_batch_health_summary
 from codex_switch.ui.mcp_logic import (
+    build_mcp_persist_state,
+    load_mcp_tab_state,
     mcp_collection_after_delete,
     mcp_collection_after_upsert,
     mcp_detail_display,
@@ -1537,6 +1539,44 @@ command = "node"
         self.assertNotIn("beta", renamed.page_servers)
         self.assertIn("delta", renamed.page_servers)
         self.assertNotIn("alpha", deleted.page_servers)
+
+    def test_mcp_load_and_persist_helpers_handle_parse_and_saved_selection(self) -> None:
+        loaded = load_mcp_tab_state(
+            """
+[mcp_servers.alpha]
+type = "stdio"
+command = "python"
+args = ["-m", "alpha"]
+""".strip(),
+            selected_name="missing",
+            global_mcp_opt_out=False,
+        )
+        errored = load_mcp_tab_state(
+            "[mcp_servers.alpha",
+            selected_name=None,
+            global_mcp_opt_out=False,
+        )
+        persisted = build_mcp_persist_state(
+            {
+                "alpha": {"type": "stdio", "command": "python"},
+                "beta": {"type": "stdio", "command": "node"},
+            },
+            ["beta", "missing"],
+        )
+        empty_persisted = build_mcp_persist_state({}, None)
+
+        self.assertIsNone(loaded.error_text)
+        self.assertIsNotNone(loaded.display)
+        self.assertEqual(sorted(loaded.page_servers), ["alpha"])
+        self.assertEqual(loaded.display.selected_name, "alpha")
+        self.assertIn("解析失败", errored.error_text or "")
+        self.assertEqual(errored.page_servers, {})
+        self.assertIsNone(errored.display)
+        self.assertEqual(persisted.global_mcp_server_names, ["beta"])
+        self.assertFalse(persisted.global_mcp_opt_out)
+        self.assertIn("[mcp_servers.alpha]", persisted.global_mcp_toml)
+        self.assertIsNone(empty_persisted.global_mcp_server_names)
+        self.assertTrue(empty_persisted.global_mcp_opt_out)
 
     def test_skills_tab_display_builds_repo_group_project_rows_and_hints(self) -> None:
         group = SkillGroup.create("frontend", skills=[SkillDefinition.create("skill-a", content="a")], description="UI helpers")

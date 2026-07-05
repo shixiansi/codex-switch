@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from codex_switch.codex_config import (
     PROJECT_ROOT_PLACEHOLDER,
     mcp_server_names_from_toml,
+    parse_mcp_servers_toml,
     render_mcp_servers_toml,
 )
 from codex_switch.ui.utils import compact_text
@@ -34,6 +35,20 @@ class McpDetailDisplay:
 class McpMutationResult:
     page_servers: dict[str, dict]
     selected_name: str | None
+
+
+@dataclass(frozen=True)
+class McpPageLoadResult:
+    page_servers: dict[str, dict]
+    display: McpTabDisplay | None
+    error_text: str | None
+
+
+@dataclass(frozen=True)
+class McpPersistState:
+    global_mcp_toml: str
+    global_mcp_server_names: list[str] | None
+    global_mcp_opt_out: bool
 
 
 def safe_mcp_server_names(raw_toml: str | None) -> list[str]:
@@ -137,6 +152,31 @@ def mcp_detail_display(server_name: str | None, page_servers: dict[str, dict]) -
     )
 
 
+def load_mcp_tab_state(
+    raw_toml: str | None,
+    *,
+    selected_name: str | None,
+    global_mcp_opt_out: bool,
+) -> McpPageLoadResult:
+    try:
+        page_servers = parse_mcp_servers_toml(raw_toml or "")
+    except ValueError as exc:
+        return McpPageLoadResult(
+            page_servers={},
+            display=None,
+            error_text=f"MCP 配置解析失败：{exc}",
+        )
+    return McpPageLoadResult(
+        page_servers=page_servers,
+        display=mcp_tab_display(
+            page_servers,
+            selected_name=selected_name,
+            global_mcp_opt_out=global_mcp_opt_out,
+        ),
+        error_text=None,
+    )
+
+
 def mcp_name_conflict_error(
     page_servers: dict[str, dict],
     server_name: str,
@@ -175,4 +215,26 @@ def mcp_collection_after_delete(
     return McpMutationResult(
         page_servers=updated_servers,
         selected_name=next_name,
+    )
+
+
+def build_mcp_persist_state(
+    page_servers: dict[str, dict],
+    global_mcp_server_names: list[str] | None,
+) -> McpPersistState:
+    if global_mcp_server_names is not None:
+        filtered_names = [
+            server_name
+            for server_name in global_mcp_server_names
+            if server_name in page_servers
+        ]
+        return McpPersistState(
+            global_mcp_toml=render_mcp_servers_toml(page_servers),
+            global_mcp_server_names=filtered_names,
+            global_mcp_opt_out=not bool(filtered_names),
+        )
+    return McpPersistState(
+        global_mcp_toml=render_mcp_servers_toml(page_servers),
+        global_mcp_server_names=None,
+        global_mcp_opt_out=not bool(page_servers),
     )

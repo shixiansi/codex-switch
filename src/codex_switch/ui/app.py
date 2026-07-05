@@ -29,8 +29,6 @@ from codex_switch.codex_config import (
     CodexConfigManager,
     PROJECT_ROOT_PLACEHOLDER,
     load_default_global_mcp_toml,
-    parse_mcp_servers_toml,
-    render_mcp_servers_toml,
 )
 from codex_switch.health import HealthChecker
 from codex_switch.models import (
@@ -201,6 +199,8 @@ from codex_switch.ui.library_logic import (
     visible_profiles_for_filter,
 )
 from codex_switch.ui.mcp_logic import (
+    build_mcp_persist_state,
+    load_mcp_tab_state,
     mcp_collection_after_delete,
     mcp_collection_after_upsert,
     mcp_detail_display,
@@ -3501,22 +3501,27 @@ class CodexSwitchApp:
 
     def refresh_mcp_tab(self, *, reload_from_state: bool = True) -> None:
         selected_name = self._mcp_selected_name()
+        display = None
         if reload_from_state:
-            try:
-                self.mcp_page_servers = parse_mcp_servers_toml(self._global_mcp_source_toml())
-            except ValueError as exc:
-                self.mcp_page_servers = {}
-                self.mcp_hint_var.set(f"MCP 配置解析失败：{exc}")
+            load_result = load_mcp_tab_state(
+                self._global_mcp_source_toml(),
+                selected_name=selected_name,
+                global_mcp_opt_out=self.global_mcp_opt_out,
+            )
+            self.mcp_page_servers = load_result.page_servers
+            if load_result.error_text:
+                self.mcp_hint_var.set(load_result.error_text)
                 for item in self.mcp_tree.get_children():
                     self.mcp_tree.delete(item)
                 self._set_text_content(self.mcp_preview_text, "", disabled=True)
                 return
-
-        display = mcp_tab_display(
-            self.mcp_page_servers,
-            selected_name=selected_name,
-            global_mcp_opt_out=self.global_mcp_opt_out,
-        )
+            display = load_result.display
+        if display is None:
+            display = mcp_tab_display(
+                self.mcp_page_servers,
+                selected_name=selected_name,
+                global_mcp_opt_out=self.global_mcp_opt_out,
+            )
         self.suppress_selection_events = True
         try:
             replace_treeview_rows(
@@ -5510,17 +5515,13 @@ class CodexSwitchApp:
         self.status_var.set(f"已删除 MCP 工具：{server_name}")
 
     def save_mcp_servers(self) -> None:
-        self.global_mcp_toml = render_mcp_servers_toml(self.mcp_page_servers)
-        available_names = sorted(self.mcp_page_servers)
-        if self.global_mcp_server_names is not None:
-            self.global_mcp_server_names = [
-                server_name
-                for server_name in self.global_mcp_server_names
-                if server_name in self.mcp_page_servers
-            ]
-            self.global_mcp_opt_out = not bool(self.global_mcp_server_names)
-        else:
-            self.global_mcp_opt_out = not bool(available_names)
+        persist_state = build_mcp_persist_state(
+            self.mcp_page_servers,
+            self.global_mcp_server_names,
+        )
+        self.global_mcp_toml = persist_state.global_mcp_toml
+        self.global_mcp_server_names = persist_state.global_mcp_server_names
+        self.global_mcp_opt_out = persist_state.global_mcp_opt_out
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_project_tab()
