@@ -152,6 +152,7 @@ from codex_switch.ui.mcp_logic import (
 )
 from codex_switch.ui.skills_logic import build_skills_tab_display
 from codex_switch.ui.project_logic import (
+    build_project_edit_application,
     build_project_binding_sync_plan,
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
@@ -176,9 +177,12 @@ from codex_switch.ui.project_logic import (
     project_codex_script_paths,
     project_codex_vscode_launch_plan,
     project_codex_vscode_command,
+    project_collection_after_add,
     project_collection_after_delete,
+    project_collection_after_replace,
     project_custom_run_command,
     project_custom_run_launch_plan,
+    project_duplicate_dir_error,
     project_from_dialog_result,
     project_tab_display,
     project_root_path,
@@ -1112,6 +1116,14 @@ class UiFilterTests(unittest.TestCase):
             )
         )
 
+        other_project = ProjectRecord.create(str(Path.cwd() / "other"), "profile-x", name="Other")
+        self.assertEqual(project_duplicate_dir_error(other_project), "该项目目录已经添加过了。")
+        self.assertEqual(
+            project_duplicate_dir_error(other_project, current_project_id="current-id"),
+            "该项目目录已经绑定到另一个项目。",
+        )
+        self.assertIsNone(project_duplicate_dir_error(other_project, current_project_id=other_project.id))
+
     def test_project_from_dialog_result_creates_project_with_expected_fields(self) -> None:
         result = {
             "project_dir": str(Path.cwd() / "demo"),
@@ -1141,19 +1153,56 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(project.codex_profile_id, "codex-profile")
         self.assertEqual(project.claude_profile_id, "claude-profile")
 
-    def test_project_collection_after_delete_updates_selected_project(self) -> None:
+    def test_project_collection_helpers_update_selected_project(self) -> None:
         first = ProjectRecord.create(str(Path.cwd() / "first"), "profile-a", name="First")
         second = ProjectRecord.create(str(Path.cwd() / "second"), "profile-b", name="Second")
+        third = replace(second, name="Third")
 
-        update = project_collection_after_delete(
+        add_update = project_collection_after_add([first], second)
+        replace_update = project_collection_after_replace([first, second], third)
+
+        delete_update = project_collection_after_delete(
             [first, second],
             selected_project_id=first.id,
             deleted_project_id=first.id,
         )
 
-        self.assertEqual(update.projects, [second])
-        self.assertEqual(update.selected_project_id, second.id)
+        self.assertEqual(add_update.projects, [first, second])
+        self.assertEqual(add_update.selected_project_id, second.id)
+        self.assertEqual(replace_update.projects, [first, third])
+        self.assertEqual(replace_update.selected_project_id, third.id)
+        self.assertEqual(delete_update.projects, [second])
+        self.assertEqual(delete_update.selected_project_id, second.id)
         self.assertEqual(project_binding_sync_status("Demo", []), "已更新项目：Demo")
+
+    def test_build_project_edit_application_uses_binding_change_flags(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "legacy-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        result = {
+            "name": "renamed",
+            "project_dir": str(Path.cwd() / "next"),
+            "profile_id": "legacy-profile",
+            "codex_profile_id": "new-codex",
+            "claude_profile_id": "new-claude",
+            "run_command": "npm run dev",
+            "mcp_server_names": ["alpha"],
+            "skill_names": ["frontend-dev"],
+            "skill_group_ids": [],
+            "skills": [],
+            "github_repo": "",
+            "github_ref": "HEAD",
+            "github_auto_update": False,
+        }
+
+        application = build_project_edit_application(project, result, updated_at="2026-07-05T00:00:00")
+
+        self.assertEqual(application.project.name, "renamed")
+        self.assertTrue(application.sync_codex)
+        self.assertTrue(application.sync_claude)
 
     def test_project_launch_helpers_build_paths_and_commands(self) -> None:
         with workspace_tempdir() as temp_dir:

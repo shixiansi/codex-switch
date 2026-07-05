@@ -217,6 +217,7 @@ from codex_switch.ui.styles import (
     ttk,
 )
 from codex_switch.ui.project_logic import (
+    build_project_edit_application,
     build_project_binding_sync_plan,
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
@@ -224,7 +225,10 @@ from codex_switch.ui.project_logic import (
     codex_template_success_message,
     project_binding_sync_status,
     project_add_prerequisite_error,
+    project_collection_after_add,
     project_collection_after_delete,
+    project_collection_after_replace,
+    project_duplicate_dir_error,
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -5750,12 +5754,14 @@ class CodexSwitchApp:
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        if self._project_by_dir(dialog.result["project_dir"]):
-            messagebox.showerror("重复项目", "该项目目录已经添加过了。", parent=self.root)
+        duplicate_error = project_duplicate_dir_error(self._project_by_dir(dialog.result["project_dir"]))
+        if duplicate_error:
+            messagebox.showerror("重复项目", duplicate_error, parent=self.root)
             return
         project = project_from_dialog_result(dialog.result)
-        self.projects.append(project)
-        self.selected_project_id = project.id
+        collection = project_collection_after_add(self.projects, project)
+        self.projects = collection.projects
+        self.selected_project_id = collection.selected_project_id
         self.persist_state()
         self.refresh_project_tab()
         self.status_var.set(f"已新增项目：{project.name}")
@@ -5835,23 +5841,27 @@ class CodexSwitchApp:
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        duplicate = self._project_by_dir(dialog.result["project_dir"])
-        if duplicate and duplicate.id != project.id:
-            messagebox.showerror("重复项目", "该项目目录已经绑定到另一个项目。", parent=self.root)
+        duplicate_error = project_duplicate_dir_error(
+            self._project_by_dir(dialog.result["project_dir"]),
+            current_project_id=project.id,
+        )
+        if duplicate_error:
+            messagebox.showerror("重复项目", duplicate_error, parent=self.root)
             return
-        update = updated_project_from_dialog(
+        application = build_project_edit_application(
             project,
             dialog.result,
             updated_at=now_iso(),
         )
-        updated = update.project
-        api_binding_changed = update.codex_binding_changed
-        claude_binding_changed = update.claude_binding_changed
+        updated = application.project
+        api_binding_changed = application.sync_codex
+        claude_binding_changed = application.sync_claude
         route_proxy_rules_changed = False
         if api_binding_changed or claude_binding_changed:
             route_proxy_rules_changed = self._refresh_route_proxy_rules_for_project(updated)
-        self.projects = [updated if item.id == updated.id else item for item in self.projects]
-        self.selected_project_id = updated.id
+        collection = project_collection_after_replace(self.projects, updated)
+        self.projects = collection.projects
+        self.selected_project_id = collection.selected_project_id
         self.persist_state()
         self.refresh_project_tab()
         if route_proxy_rules_changed:

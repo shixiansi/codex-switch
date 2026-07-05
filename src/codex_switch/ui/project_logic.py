@@ -104,6 +104,13 @@ class ProjectEditUpdate:
 
 
 @dataclass(frozen=True)
+class ProjectEditApplication:
+    project: ProjectRecord
+    sync_codex: bool
+    sync_claude: bool
+
+
+@dataclass(frozen=True)
 class ProjectCollectionUpdate:
     projects: list[ProjectRecord]
     selected_project_id: str | None
@@ -247,6 +254,20 @@ def project_add_prerequisite_error(
     return None
 
 
+def project_duplicate_dir_error(
+    duplicate: ProjectRecord | None,
+    *,
+    current_project_id: str | None = None,
+) -> str | None:
+    if duplicate is None:
+        return None
+    if current_project_id is None:
+        return "该项目目录已经添加过了。"
+    if duplicate.id != current_project_id:
+        return "该项目目录已经绑定到另一个项目。"
+    return None
+
+
 def project_from_dialog_result(result: dict) -> ProjectRecord:
     return ProjectRecord.create(
         project_dir=result["project_dir"],
@@ -265,6 +286,26 @@ def project_from_dialog_result(result: dict) -> ProjectRecord:
     )
 
 
+def project_collection_after_add(
+    projects: list[ProjectRecord],
+    project: ProjectRecord,
+) -> ProjectCollectionUpdate:
+    return ProjectCollectionUpdate(
+        projects=[*projects, project],
+        selected_project_id=project.id,
+    )
+
+
+def project_collection_after_replace(
+    projects: list[ProjectRecord],
+    updated_project: ProjectRecord,
+) -> ProjectCollectionUpdate:
+    return ProjectCollectionUpdate(
+        projects=[updated_project if project.id == updated_project.id else project for project in projects],
+        selected_project_id=updated_project.id,
+    )
+
+
 def project_collection_after_delete(
     projects: list[ProjectRecord],
     *,
@@ -278,6 +319,20 @@ def project_collection_after_delete(
     return ProjectCollectionUpdate(
         projects=remaining_projects,
         selected_project_id=resolved_selected_id,
+    )
+
+
+def build_project_edit_application(
+    project: ProjectRecord,
+    result: dict,
+    *,
+    updated_at: str,
+) -> ProjectEditApplication:
+    update = updated_project_from_dialog(project, result, updated_at=updated_at)
+    return ProjectEditApplication(
+        project=update.project,
+        sync_codex=update.codex_binding_changed,
+        sync_claude=update.claude_binding_changed,
     )
 
 
