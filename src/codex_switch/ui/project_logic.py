@@ -149,6 +149,15 @@ class ProjectEditApplication:
 
 
 @dataclass(frozen=True)
+class ProjectEditExecutionPlan:
+    project: ProjectRecord
+    collection: ProjectCollectionUpdate
+    sync_codex: bool
+    sync_claude: bool
+    route_proxy_rules_changed: bool
+
+
+@dataclass(frozen=True)
 class ProjectMetadataUpdateResult:
     handled: bool
     project: ProjectRecord
@@ -461,6 +470,27 @@ def build_project_edit_application(
         project=update.project,
         sync_codex=update.codex_binding_changed,
         sync_claude=update.claude_binding_changed,
+    )
+
+
+def build_project_edit_execution_plan(
+    project: ProjectRecord,
+    result: dict,
+    *,
+    projects: list[ProjectRecord],
+    updated_at: str,
+    refresh_route_proxy_rules: Callable[[ProjectRecord], bool],
+) -> ProjectEditExecutionPlan:
+    application = build_project_edit_application(project, result, updated_at=updated_at)
+    route_proxy_rules_changed = False
+    if application.sync_codex or application.sync_claude:
+        route_proxy_rules_changed = refresh_route_proxy_rules(application.project)
+    return ProjectEditExecutionPlan(
+        project=application.project,
+        collection=project_collection_after_replace(projects, application.project),
+        sync_codex=application.sync_codex,
+        sync_claude=application.sync_claude,
+        route_proxy_rules_changed=route_proxy_rules_changed,
     )
 
 

@@ -207,6 +207,7 @@ from codex_switch.ui.skills_logic import (
 from codex_switch.ui.project_logic import (
     build_project_detail_display_for_project,
     build_project_edit_application,
+    build_project_edit_execution_plan,
     build_project_binding_sync_plan,
     execute_project_binding_sync,
     project_binding_sync_tasks,
@@ -1631,6 +1632,61 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(application.project.name, "renamed")
         self.assertTrue(application.sync_codex)
         self.assertTrue(application.sync_claude)
+
+    def test_build_project_edit_execution_plan_refreshes_route_proxy_only_when_bindings_change(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "legacy-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        other = ProjectRecord.create(str(Path.cwd() / "other"), "profile-x", name="Other")
+        refresh_calls: list[str] = []
+        changed_result = {
+            "name": "renamed",
+            "project_dir": str(Path.cwd() / "next"),
+            "profile_id": "legacy-profile",
+            "codex_profile_id": "new-codex",
+            "claude_profile_id": "new-claude",
+            "run_command": "npm run dev",
+            "mcp_server_names": ["alpha"],
+            "skill_names": ["frontend-dev"],
+            "skill_group_ids": [],
+            "skills": [],
+            "github_repo": "",
+            "github_ref": "HEAD",
+            "github_auto_update": False,
+        }
+        unchanged_result = dict(changed_result)
+        unchanged_result["project_dir"] = project.project_dir
+        unchanged_result["codex_profile_id"] = project.codex_profile_id
+        unchanged_result["claude_profile_id"] = project.claude_profile_id
+
+        changed_plan = build_project_edit_execution_plan(
+            project,
+            changed_result,
+            projects=[other, project],
+            updated_at="2026-07-06T00:00:00",
+            refresh_route_proxy_rules=lambda item: refresh_calls.append(item.id) or True,
+        )
+        unchanged_plan = build_project_edit_execution_plan(
+            project,
+            unchanged_result,
+            projects=[project],
+            updated_at="2026-07-06T00:00:00",
+            refresh_route_proxy_rules=lambda _item: (_ for _ in ()).throw(AssertionError("should not refresh")),
+        )
+
+        self.assertEqual(changed_plan.project.name, "renamed")
+        self.assertTrue(changed_plan.sync_codex)
+        self.assertTrue(changed_plan.sync_claude)
+        self.assertTrue(changed_plan.route_proxy_rules_changed)
+        self.assertEqual(changed_plan.collection.projects[1].name, "renamed")
+        self.assertEqual(changed_plan.collection.selected_project_id, changed_plan.project.id)
+        self.assertEqual(refresh_calls, [changed_plan.project.id])
+        self.assertFalse(unchanged_plan.sync_codex)
+        self.assertFalse(unchanged_plan.sync_claude)
+        self.assertFalse(unchanged_plan.route_proxy_rules_changed)
 
     def test_project_with_metadata_update_returns_none_when_nothing_changes(self) -> None:
         skill = SkillDefinition.create("helper", content="content")

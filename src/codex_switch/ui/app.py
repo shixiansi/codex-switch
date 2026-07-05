@@ -238,6 +238,7 @@ from codex_switch.ui.styles import (
 from codex_switch.ui.project_logic import (
     build_project_detail_display_for_project,
     build_project_edit_application,
+    build_project_edit_execution_plan,
     build_project_binding_sync_plan,
     execute_project_binding_sync,
     build_claude_template_run_spec,
@@ -4404,36 +4405,31 @@ class CodexSwitchApp:
         if duplicate_error:
             messagebox.showerror("重复项目", duplicate_error, parent=self.root)
             return
-        application = build_project_edit_application(
+        plan = build_project_edit_execution_plan(
             project,
             dialog.result,
+            projects=self.projects,
             updated_at=now_iso(),
+            refresh_route_proxy_rules=self._refresh_route_proxy_rules_for_project,
         )
-        updated = application.project
-        api_binding_changed = application.sync_codex
-        claude_binding_changed = application.sync_claude
-        route_proxy_rules_changed = False
-        if api_binding_changed or claude_binding_changed:
-            route_proxy_rules_changed = self._refresh_route_proxy_rules_for_project(updated)
-        collection = project_collection_after_replace(self.projects, updated)
-        self.projects = collection.projects
-        self.selected_project_id = collection.selected_project_id
+        self.projects = plan.collection.projects
+        self.selected_project_id = plan.collection.selected_project_id
         self.persist_state()
         self.refresh_project_tab()
-        if route_proxy_rules_changed:
+        if plan.route_proxy_rules_changed:
             self.refresh_proxy_tab()
-        if api_binding_changed or claude_binding_changed:
+        if plan.sync_codex or plan.sync_claude:
             if self._sync_project_api_binding(
-                updated,
-                sync_codex=api_binding_changed,
-                sync_claude=claude_binding_changed,
+                plan.project,
+                sync_codex=plan.sync_codex,
+                sync_claude=plan.sync_claude,
             ):
                 self.refresh_project_tab()
-                if route_proxy_rules_changed:
+                if plan.route_proxy_rules_changed:
                     self.refresh_proxy_tab()
-                    self.status_var.set(f"已同步项目配置并刷新路由代理：{updated.name}")
+                    self.status_var.set(f"已同步项目配置并刷新路由代理：{plan.project.name}")
             return
-        self.status_var.set(f"已更新项目：{updated.name}")
+        self.status_var.set(f"已更新项目：{plan.project.name}")
 
     def delete_project(self) -> None:
         project = self.get_selected_project()
