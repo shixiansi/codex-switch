@@ -329,6 +329,8 @@ from codex_switch.ui.skills_logic import (
     skill_repo_checksum_required_paths,
     skill_group_with_added_skill,
     skill_group_with_deleted_skill,
+    skill_group_name_error,
+    skill_group_with_metadata,
     skill_group_with_replaced_skill,
     sync_projects_from_skill_groups,
 )
@@ -4394,8 +4396,12 @@ class CodexSwitchApp:
         name = simpledialog.askstring("Skills组", "组名：", parent=self.root)
         if not name:
             return
+        name_error = skill_group_name_error(name)
+        if name_error:
+            messagebox.showinfo("提示", name_error, parent=self.root)
+            return
         description = simpledialog.askstring("Skills组", "描述：", parent=self.root) or ""
-        group = SkillGroup.create(name, description=description)
+        group = SkillGroup.create(name.strip(), description=description)
         self.skill_groups.append(group)
         self.persist_state()
         self.refresh_skills_tab()
@@ -4464,11 +4470,12 @@ class CodexSwitchApp:
                 dialog.destroy()
                 return
             name = name_var.get().strip()
-            if not name:
-                messagebox.showinfo("提示", "组名不能为空。", parent=dialog)
+            name_error = skill_group_name_error(name)
+            if name_error:
+                messagebox.showinfo("提示", name_error, parent=dialog)
                 return
-            updated = replace(current, name=name, description=description_var.get().strip())
-            self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+            updated = skill_group_with_metadata(current, name=name, description=description_var.get())
+            self.skill_groups = replace_skill_group(self.skill_groups, updated)
             self._sync_projects_from_skill_groups()
             self.persist_state()
             self.refresh_project_tab()

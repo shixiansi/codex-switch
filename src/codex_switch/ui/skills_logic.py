@@ -439,8 +439,18 @@ def replace_skill_group(groups: list[SkillGroup], updated_group: SkillGroup) -> 
     return [updated_group if group.id == updated_group.id else group for group in groups]
 
 
+def skill_group_name_error(name: str) -> str | None:
+    if not name.strip():
+        return "组名不能为空。"
+    return None
+
+
 def remove_skill_group(groups: list[SkillGroup], group_id: str) -> list[SkillGroup]:
     return [group for group in groups if group.id != group_id]
+
+
+def skill_group_with_metadata(group: SkillGroup, *, name: str, description: str) -> SkillGroup:
+    return replace(group, name=name.strip(), description=description.strip())
 
 
 def skill_group_with_added_skill(group: SkillGroup, skill: SkillDefinition) -> SkillGroup:

@@ -170,6 +170,8 @@ from codex_switch.ui.skills_logic import (
     replace_skill_group,
     skill_group_with_added_skill,
     skill_group_with_deleted_skill,
+    skill_group_name_error,
+    skill_group_with_metadata,
     skill_group_with_replaced_skill,
     sync_projects_from_skill_groups,
 )
@@ -2494,6 +2496,11 @@ command = "node"
         self.assertEqual(groups_after_replace[0].skills[0].name, "python-helper")
         self.assertEqual(groups_after_delete, [])
         self.assertEqual(projects_after_delete[0].skill_group_ids, [])
+
+        self.assertEqual(skill_group_name_error("   "), "组名不能为空。")
+        renamed_group = skill_group_with_metadata(group, name="  新组名  ", description="  新描述  ")
+        self.assertEqual(renamed_group.name, "新组名")
+        self.assertEqual(renamed_group.description, "新描述")
 
         updated_skill = SkillDefinition.create("python-helper", content="new")
         extra_skill = SkillDefinition.create("review-helper", content="review")
