@@ -208,6 +208,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_codex_protocol_for_profile,
     route_proxy_detail_display,
+    route_proxy_tab_display,
     resolve_route_proxy_project_rule_form,
     route_proxy_rules_for_project,
     route_proxy_rules_for_project_profiles,
@@ -2173,6 +2174,38 @@ command = "node"
         self.assertEqual(detail.claude_group_label, choices.claude_labels[0])
         self.assertIn("codex-pool", detail.selected_rules_text)
         self.assertIn("claude-pool", detail.selected_rules_text)
+
+    def test_route_proxy_tab_display_builds_status_and_rows(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+        )
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex")
+        codex_profile.id = "codex-profile"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude_profile.id = "claude-profile"
+        settings = RouteProxySettings(port=15721)
+
+        display = route_proxy_tab_display(
+            settings,
+            [project],
+            is_running=True,
+            profile_by_id=lambda profile_id: {
+                "codex-profile": codex_profile,
+                "claude-profile": claude_profile,
+            }.get(profile_id),
+            project_codex_profile_id=project_codex_profile_id,
+            project_claude_profile_id=project_claude_profile_id,
+            project_account_pool_group_name=lambda _project_id: "否",
+        )
+
+        self.assertEqual(display.host, settings.host)
+        self.assertEqual(display.port_text, "15721")
+        self.assertIn("代理运行中", display.status_text)
+        self.assertEqual(len(display.rows), 1)
+        self.assertEqual(display.rows[0].values[0], project.name)
 
     def test_refresh_stats_tab_renders_token_usage_summary(self) -> None:
         app = _make_minimal_app()

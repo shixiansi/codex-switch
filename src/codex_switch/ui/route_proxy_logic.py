@@ -24,6 +24,8 @@ from codex_switch.models import (
     RouteProxySettings,
     ROUTE_PROXY_CLIENT_CLAUDE,
     ROUTE_PROXY_CLIENT_CODEX,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC,
     ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
     ROUTE_PROXY_PROTOCOL_OPENAI,
@@ -60,6 +62,13 @@ CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES = {
     label: value
     for value, label in CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS.items()
 }
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS = {
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN: "轮询分发",
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER: "失败后切换",
+}
+ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES = {
+    label: value for value, label in ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS.items()
+}
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,16 @@ class RouteProxyDetailDisplay:
 class RouteProxyProjectRow:
     project_id: str
     values: tuple[str, str, str, str, str]
+
+
+@dataclass(frozen=True)
+class RouteProxyTabDisplay:
+    host: str
+    port_text: str
+    strategy_label: str
+    upstream_timeout_text: str
+    status_text: str
+    rows: list[RouteProxyProjectRow]
 
 
 @dataclass(frozen=True)
@@ -332,6 +351,34 @@ def route_proxy_project_rows(
             )
         )
     return rows
+
+
+def route_proxy_tab_display(
+    settings: RouteProxySettings,
+    projects: list[ProjectRecord],
+    *,
+    is_running: bool,
+    profile_by_id: Callable[[str | None], Profile | None],
+    project_codex_profile_id: Callable[[ProjectRecord], str],
+    project_claude_profile_id: Callable[[ProjectRecord], str],
+    project_account_pool_group_name: Callable[[str], str],
+) -> RouteProxyTabDisplay:
+    strategy = normalize_route_proxy_account_pool_strategy(settings.account_pool_strategy)
+    return RouteProxyTabDisplay(
+        host=settings.host,
+        port_text=str(settings.port),
+        strategy_label=ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS[strategy],
+        upstream_timeout_text=str(normalize_route_proxy_upstream_timeout_seconds(settings.upstream_timeout_seconds)),
+        status_text=route_proxy_status_text(settings, is_running=is_running),
+        rows=route_proxy_project_rows(
+            settings,
+            projects,
+            profile_by_id=profile_by_id,
+            project_codex_profile_id=project_codex_profile_id,
+            project_claude_profile_id=project_claude_profile_id,
+            project_account_pool_group_name=project_account_pool_group_name,
+        ),
+    )
 
 
 def normalize_route_proxy_settings_form(

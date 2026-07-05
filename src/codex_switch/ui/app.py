@@ -274,15 +274,16 @@ from codex_switch.ui.route_proxy_logic import (
     build_route_proxy_project_enable_plan,
     claude_model_overrides_for_project,
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES,
     CODEX_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_LABELS,
     CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
     codex_model_override_for_project,
     normalize_route_proxy_settings_form,
     route_proxy_account_pool_choices,
-    route_proxy_project_rows,
     resolve_route_proxy_project_rule_form,
-    route_proxy_status_text,
+    route_proxy_tab_display,
     refresh_route_proxy_upstream_models,
     route_proxy_detail_display,
     refresh_route_proxy_rules_for_project,
@@ -341,13 +342,6 @@ LIBRARY_PROFILE_VIEW_TABS = (
 )
 LIBRARY_PROFILE_VIEW_VALUES = {view for view, _label in LIBRARY_PROFILE_VIEW_TABS}
 LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
-ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS = {
-    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_ROUND_ROBIN: "轮询分发",
-    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_FAILOVER: "失败后切换",
-}
-ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES = {
-    label: value for value, label in ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS.items()
-}
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
 PROXY_LOG_RENDER_DELAY_MS = 80
 PROXY_STATE_FLUSH_DELAY_MS = 250
@@ -3263,34 +3257,25 @@ class CodexSwitchApp:
         if not hasattr(self, "proxy_project_tree"):
             return
         self._refresh_proxy_account_pool_group_choices()
-        self.proxy_host_var.set(self.route_proxy_settings.host)
-        self.proxy_port_var.set(str(self.route_proxy_settings.port))
-        strategy = normalize_route_proxy_account_pool_strategy(self.route_proxy_settings.account_pool_strategy)
-        self.proxy_account_pool_strategy_var.set(
-            ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS[strategy]
-        )
-        self.proxy_upstream_timeout_var.set(
-            str(normalize_route_proxy_upstream_timeout_seconds(self.route_proxy_settings.upstream_timeout_seconds))
-        )
-        self.proxy_status_var.set(
-            route_proxy_status_text(
-                self.route_proxy_settings,
-                is_running=self.route_proxy_server.is_running,
-            )
-        )
-        rows = route_proxy_project_rows(
+        display = route_proxy_tab_display(
             self.route_proxy_settings,
             self.projects,
+            is_running=self.route_proxy_server.is_running,
             profile_by_id=self._profile_by_id,
             project_codex_profile_id=project_codex_profile_id,
             project_claude_profile_id=project_claude_profile_id,
             project_account_pool_group_name=self._project_account_pool_group_name,
         )
+        self.proxy_host_var.set(display.host)
+        self.proxy_port_var.set(display.port_text)
+        self.proxy_account_pool_strategy_var.set(display.strategy_label)
+        self.proxy_upstream_timeout_var.set(display.upstream_timeout_text)
+        self.proxy_status_var.set(display.status_text)
         self.suppress_selection_events = True
         try:
             for item in self.proxy_project_tree.get_children():
                 self.proxy_project_tree.delete(item)
-            for row in rows:
+            for row in display.rows:
                 self.proxy_project_tree.insert(
                     "",
                     "end",
