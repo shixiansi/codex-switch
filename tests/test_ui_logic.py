@@ -155,7 +155,9 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
     project_binding_sync_tasks,
+    build_claude_template_run_spec,
     build_claude_template_execution_plan,
+    build_codex_template_run_spec,
     build_codex_template_execution_plan,
     claude_template_success_message,
     claude_project_template_options,
@@ -1619,6 +1621,18 @@ command = "node"
         self.assertEqual(claude_plan.claude_profile, claude_profile)
         self.assertEqual(claude_plan.model_override, "sonnet")
         self.assertEqual(claude_plan.fallback_model_override, "haiku")
+
+        codex_spec = build_codex_template_run_spec(codex_plan)
+        claude_spec = build_claude_template_run_spec(claude_plan)
+
+        self.assertEqual(codex_spec.method_name, "generate")
+        self.assertEqual(codex_spec.args, (codex_plan.project_root, codex_plan.codex_profile))
+        self.assertEqual(codex_spec.failure_status, "项目模板生成失败")
+        self.assertEqual(codex_spec.kwargs["route_proxy_base_url"], "http://proxy.local")
+        self.assertEqual(claude_spec.method_name, "generate_claude_template")
+        self.assertEqual(claude_spec.args, (claude_plan.project_root, claude_plan.claude_profile))
+        self.assertEqual(claude_spec.failure_status, "Claude 项目模板生成失败")
+        self.assertEqual(claude_spec.kwargs["model_override"], "sonnet")
 
     def test_project_template_success_message_helpers_format_artifacts(self) -> None:
         result = ProjectTemplateResult(

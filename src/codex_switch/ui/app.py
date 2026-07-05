@@ -220,7 +220,9 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
     project_binding_sync_tasks,
+    build_claude_template_run_spec,
     build_claude_template_execution_plan,
+    build_codex_template_run_spec,
     build_codex_template_execution_plan,
     claude_template_success_message,
     codex_template_success_message,
@@ -5989,6 +5991,19 @@ class CodexSwitchApp:
             self._refresh_route_proxy_upstream_models(project)
             self.persist_state()
 
+    def _run_project_template_spec(self, spec, *, success_message_builder):
+        try:
+            method = getattr(self.project_template_service, spec.method_name)
+            result = method(*spec.args, **spec.kwargs)
+        except Exception as exc:
+            messagebox.showerror("生成失败", f"{spec.failure_message_prefix}：\n{exc}", parent=self.root)
+            self.status_var.set(spec.failure_status)
+            return None
+        self.refresh_project_tab()
+        self.status_var.set(spec.success_status)
+        messagebox.showinfo("生成成功", success_message_builder(result), parent=self.root)
+        return result
+
     def generate_project_template(self) -> None:
         project = self.get_selected_project()
         if not project:
@@ -6014,31 +6029,10 @@ class CodexSwitchApp:
             claude_model_override=claude_model,
             claude_fallback_model_override=claude_fallback_model,
         )
-        try:
-            result = self.project_template_service.generate(
-                plan.project_root,
-                plan.codex_profile,
-                global_mcp_toml=plan.global_mcp_toml,
-                project_mcp_toml=plan.project_mcp_toml,
-                agents_doc_text=plan.agents_doc_text,
-                claude_profile=plan.claude_profile,
-                route_proxy_base_url=plan.route_proxy_base_url,
-                codex_model_override=plan.codex_model_override,
-                claude_model_override=plan.claude_model_override,
-                claude_fallback_model_override=plan.claude_fallback_model_override,
-                skill_sources=plan.skill_sources,
-                skill_definitions=plan.skill_definitions,
-            )
-        except Exception as exc:
-            messagebox.showerror("生成失败", f"写入项目模板失败：\n{exc}", parent=self.root)
-            self.status_var.set("项目模板生成失败")
-            return
-        self.refresh_project_tab()
-        self.status_var.set(f"已生成项目模板：{project.name}")
-        messagebox.showinfo(
-            "生成成功",
-            codex_template_success_message(plan.project_name, result),
-            parent=self.root,
+        spec = build_codex_template_run_spec(plan)
+        self._run_project_template_spec(
+            spec,
+            success_message_builder=lambda result: codex_template_success_message(plan.project_name, result),
         )
 
     def generate_claude_template(self) -> None:
@@ -6061,26 +6055,10 @@ class CodexSwitchApp:
             model_override=claude_model,
             fallback_model_override=claude_fallback_model,
         )
-        try:
-            result = self.project_template_service.generate_claude_template(
-                plan.project_root,
-                plan.claude_profile,
-                project_mcp_toml=plan.project_mcp_toml,
-                agents_doc_text=plan.agents_doc_text,
-                route_proxy_base_url=plan.route_proxy_base_url,
-                model_override=plan.model_override,
-                fallback_model_override=plan.fallback_model_override,
-            )
-        except Exception as exc:
-            messagebox.showerror("生成失败", f"写入 Claude 项目模板失败：\n{exc}", parent=self.root)
-            self.status_var.set("Claude 项目模板生成失败")
-            return
-        self.refresh_project_tab()
-        self.status_var.set(f"已生成 Claude 项目模板：{project.name}")
-        messagebox.showinfo(
-            "生成成功",
-            claude_template_success_message(plan.project_name, result),
-            parent=self.root,
+        spec = build_claude_template_run_spec(plan)
+        self._run_project_template_spec(
+            spec,
+            success_message_builder=lambda result: claude_template_success_message(plan.project_name, result),
         )
 
     def _edit_project_text_file(self, *, plan, validator) -> None:

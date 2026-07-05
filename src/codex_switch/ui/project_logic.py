@@ -59,6 +59,16 @@ class ClaudeTemplateExecutionPlan:
 
 
 @dataclass(frozen=True)
+class ProjectTemplateRunSpec:
+    method_name: str
+    args: tuple[object, ...]
+    kwargs: dict[str, object]
+    success_status: str
+    failure_status: str
+    failure_message_prefix: str
+
+
+@dataclass(frozen=True)
 class ProjectTemplateDisplay:
     backup_text: str
     generated_text: str
@@ -656,6 +666,45 @@ def build_claude_template_execution_plan(
         route_proxy_base_url=options.route_proxy_base_url,
         model_override=model_override,
         fallback_model_override=fallback_model_override,
+    )
+
+
+def build_codex_template_run_spec(plan: CodexTemplateExecutionPlan) -> ProjectTemplateRunSpec:
+    return ProjectTemplateRunSpec(
+        method_name="generate",
+        args=(plan.project_root, plan.codex_profile),
+        kwargs={
+            "global_mcp_toml": plan.global_mcp_toml,
+            "project_mcp_toml": plan.project_mcp_toml,
+            "agents_doc_text": plan.agents_doc_text,
+            "claude_profile": plan.claude_profile,
+            "route_proxy_base_url": plan.route_proxy_base_url,
+            "codex_model_override": plan.codex_model_override,
+            "claude_model_override": plan.claude_model_override,
+            "claude_fallback_model_override": plan.claude_fallback_model_override,
+            "skill_sources": plan.skill_sources,
+            "skill_definitions": plan.skill_definitions,
+        },
+        success_status=f"已生成项目模板：{plan.project_name}",
+        failure_status="项目模板生成失败",
+        failure_message_prefix="写入项目模板失败",
+    )
+
+
+def build_claude_template_run_spec(plan: ClaudeTemplateExecutionPlan) -> ProjectTemplateRunSpec:
+    return ProjectTemplateRunSpec(
+        method_name="generate_claude_template",
+        args=(plan.project_root, plan.claude_profile),
+        kwargs={
+            "project_mcp_toml": plan.project_mcp_toml,
+            "agents_doc_text": plan.agents_doc_text,
+            "route_proxy_base_url": plan.route_proxy_base_url,
+            "model_override": plan.model_override,
+            "fallback_model_override": plan.fallback_model_override,
+        },
+        success_status=f"已生成 Claude 项目模板：{plan.project_name}",
+        failure_status="Claude 项目模板生成失败",
+        failure_message_prefix="写入 Claude 项目模板失败",
     )
 
 
