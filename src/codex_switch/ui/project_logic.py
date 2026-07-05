@@ -145,6 +145,14 @@ class ProjectLaunchPlan:
 
 
 @dataclass(frozen=True)
+class ProjectLaunchExecutionResult:
+    launched: bool
+    status_text: str | None = None
+    missing_message: str | None = None
+    failure_detail: str | None = None
+
+
+@dataclass(frozen=True)
 class ProjectEditUpdate:
     project: ProjectRecord
     codex_binding_changed: bool
@@ -1238,3 +1246,34 @@ def project_codex_cmd_command(cmd_path: Path) -> tuple[str, ...]:
 
 def project_claude_cmd_command() -> tuple[str, ...]:
     return ("cmd.exe", "/k", "claude")
+
+
+def execute_project_launch_plan(
+    plan: ProjectLaunchPlan,
+    *,
+    popen: Callable[..., object],
+    creationflags: int,
+    env: dict[str, str] | None = None,
+) -> ProjectLaunchExecutionResult:
+    if plan.required_path is not None and not plan.required_path.exists():
+        return ProjectLaunchExecutionResult(
+            launched=False,
+            missing_message=plan.missing_message,
+        )
+    kwargs: dict[str, object] = {
+        "cwd": plan.cwd,
+        "creationflags": creationflags,
+    }
+    if env is not None:
+        kwargs["env"] = env
+    try:
+        popen(plan.command, **kwargs)
+    except Exception as exc:
+        return ProjectLaunchExecutionResult(
+            launched=False,
+            failure_detail=str(exc),
+        )
+    return ProjectLaunchExecutionResult(
+        launched=True,
+        status_text=plan.success_status,
+    )

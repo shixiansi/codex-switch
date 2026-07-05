@@ -211,6 +211,7 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    execute_project_launch_plan,
     load_project_text_file_edit_session,
     normalize_project_text_file_content,
     save_project_text_file_content,
@@ -1999,6 +2000,35 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(codex_cmd_plan.command, ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(claude_cmd_plan.command, ("cmd.exe", "/k", "claude"))
             self.assertEqual(claude_cmd_plan.cwd, temp_dir)
+
+            launched_calls = []
+            launch_result = execute_project_launch_plan(
+                codex_cmd_plan,
+                popen=lambda command, **kwargs: launched_calls.append((command, kwargs)),
+                creationflags=123,
+                env={"A": "1"},
+            )
+            missing_result = execute_project_launch_plan(
+                codex_vscode_plan,
+                popen=lambda *_args, **_kwargs: None,
+                creationflags=123,
+            )
+            failure_result = execute_project_launch_plan(
+                claude_cmd_plan,
+                popen=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+                creationflags=123,
+            )
+
+            self.assertTrue(launch_result.launched)
+            self.assertEqual(launch_result.status_text, codex_cmd_plan.success_status)
+            self.assertEqual(launched_calls[0][0], codex_cmd_plan.command)
+            self.assertEqual(launched_calls[0][1]["cwd"], codex_cmd_plan.cwd)
+            self.assertEqual(launched_calls[0][1]["creationflags"], 123)
+            self.assertEqual(launched_calls[0][1]["env"], {"A": "1"})
+            self.assertFalse(missing_result.launched)
+            self.assertEqual(missing_result.missing_message, codex_vscode_plan.missing_message)
+            self.assertFalse(failure_result.launched)
+            self.assertEqual(failure_result.failure_detail, "boom")
 
     def test_mcp_logic_helpers_summarize_and_preview(self) -> None:
         raw_toml = """
