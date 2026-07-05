@@ -212,6 +212,7 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    execute_project_folder_open,
     execute_project_launch_plan,
     load_project_text_file_edit_session,
     normalize_project_text_file_content,
@@ -2001,6 +2002,28 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(codex_cmd_plan.command, ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(claude_cmd_plan.command, ("cmd.exe", "/k", "claude"))
             self.assertEqual(claude_cmd_plan.cwd, temp_dir)
+
+            folder_calls = []
+            folder_ok = execute_project_folder_open(
+                project,
+                open_path=lambda path: folder_calls.append(path),
+            )
+            missing_folder = execute_project_folder_open(
+                replace(project, project_dir=str(temp_dir / "missing")),
+                open_path=lambda _path: None,
+            )
+            folder_fail = execute_project_folder_open(
+                project,
+                open_path=lambda _path: (_ for _ in ()).throw(RuntimeError("cannot open")),
+            )
+
+            self.assertTrue(folder_ok.opened)
+            self.assertEqual(folder_ok.status_text, f"已打开项目文件夹：{project.name}")
+            self.assertEqual(folder_calls, [temp_dir])
+            self.assertFalse(missing_folder.opened)
+            self.assertEqual(missing_folder.error_message, "项目目录不存在。")
+            self.assertFalse(folder_fail.opened)
+            self.assertIn("cannot open", folder_fail.error_message)
 
             claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
             missing_preparation = build_project_claude_cmd_launch_preparation(

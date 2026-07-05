@@ -243,6 +243,7 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    execute_project_folder_open,
     execute_project_launch_plan,
     load_project_text_file_edit_session,
     normalize_project_text_file_content,
@@ -4687,16 +4688,14 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        project_root = project_root_path(project)
-        if not project_root.exists():
-            messagebox.showerror("打开失败", "项目目录不存在。", parent=self.root)
+        result = execute_project_folder_open(
+            project,
+            open_path=lambda path: os.startfile(path),  # type: ignore[attr-defined]
+        )
+        if not result.opened:
+            messagebox.showerror("打开失败", result.error_message, parent=self.root)
             return
-        try:
-            os.startfile(project_root)  # type: ignore[attr-defined]
-        except Exception as exc:
-            messagebox.showerror("打开失败", f"打开项目文件夹失败：\n{exc}", parent=self.root)
-            return
-        self.status_var.set(f"已打开项目文件夹：{project.name}")
+        self.status_var.set(result.status_text or "")
 
     def open_project_vscode(self) -> None:
         project = self.get_selected_project()

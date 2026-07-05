@@ -153,6 +153,13 @@ class ProjectLaunchExecutionResult:
 
 
 @dataclass(frozen=True)
+class ProjectFolderOpenResult:
+    opened: bool
+    status_text: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class ProjectClaudeCmdLaunchPreparation:
     project_root: Path | None = None
     profile: Profile | None = None
@@ -348,6 +355,30 @@ def project_vscode_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
         command=project_vscode_open_command(project),
         cwd=project_root_path(project),
         success_status=f"使用 VS Code 打开项目：{project.name}",
+    )
+
+
+def execute_project_folder_open(
+    project: ProjectRecord,
+    *,
+    open_path: Callable[[Path], None],
+) -> ProjectFolderOpenResult:
+    project_root = project_root_path(project)
+    if not project_root.exists():
+        return ProjectFolderOpenResult(
+            opened=False,
+            error_message="项目目录不存在。",
+        )
+    try:
+        open_path(project_root)
+    except Exception as exc:
+        return ProjectFolderOpenResult(
+            opened=False,
+            error_message=f"打开项目文件夹失败：\n{exc}",
+        )
+    return ProjectFolderOpenResult(
+        opened=True,
+        status_text=f"已打开项目文件夹：{project.name}",
     )
 
 
