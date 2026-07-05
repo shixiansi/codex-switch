@@ -211,6 +211,10 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    load_project_text_file_edit_session,
+    normalize_project_text_file_content,
+    save_project_text_file_content,
+    validate_project_claude_settings_json,
     execute_project_binding_sync,
     project_binding_sync_tasks,
     build_claude_template_run_spec,
@@ -1951,6 +1955,31 @@ class UiFilterTests(unittest.TestCase):
             claude_edit = project_claude_settings_edit_plan(project)
             self.assertEqual(codex_edit.path, temp_dir / ".codex" / "home" / "config.toml")
             self.assertEqual(claude_edit.path, temp_dir / ".claude" / "settings.local.json")
+            codex_edit.path.parent.mkdir(parents=True, exist_ok=True)
+            codex_edit.path.write_text("[demo]\n", encoding="utf-8")
+
+            session = load_project_text_file_edit_session(
+                codex_edit,
+                read_text=lambda path: path.read_text(encoding="utf-8"),
+            )
+            saved_text = {}
+            status_text = save_project_text_file_content(
+                codex_edit.path,
+                "line1\nline2\n\n",
+                write_text=lambda path, content: saved_text.update({str(path): content}),
+            )
+            json_payload = validate_project_claude_settings_json("{\"name\": \"demo\"}")
+
+            self.assertEqual(session.path, codex_edit.path)
+            self.assertEqual(session.title, codex_edit.title)
+            self.assertEqual(session.subtitle, str(codex_edit.path))
+            self.assertEqual(session.initial_text, "[demo]\n")
+            self.assertEqual(normalize_project_text_file_content("line1\nline2\n\n"), "line1\nline2\n")
+            self.assertEqual(saved_text[str(codex_edit.path)], "line1\nline2\n")
+            self.assertEqual(status_text, f"已保存：{codex_edit.path}")
+            self.assertEqual(json_payload, {"name": "demo"})
+            with self.assertRaises(ValueError):
+                validate_project_claude_settings_json("[]")
 
             vscode_plan = project_vscode_launch_plan(project)
             custom_plan = project_custom_run_launch_plan(replace(project, run_command=" npm run dev "))

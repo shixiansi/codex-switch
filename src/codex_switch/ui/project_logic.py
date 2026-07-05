@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -123,6 +125,14 @@ class ProjectFileEditPlan:
     path: Path
     title: str
     missing_message: str
+
+
+@dataclass(frozen=True)
+class ProjectTextFileEditSession:
+    path: Path
+    title: str
+    subtitle: str
+    initial_text: str
 
 
 @dataclass(frozen=True)
@@ -277,6 +287,40 @@ def project_claude_settings_edit_plan(project: ProjectRecord) -> ProjectFileEdit
         title="修改 settings.local.json",
         missing_message="未找到 .claude/settings.local.json，请先生成 Claude 模板。",
     )
+
+
+def load_project_text_file_edit_session(
+    plan: ProjectFileEditPlan,
+    *,
+    read_text: Callable[[Path], str],
+) -> ProjectTextFileEditSession:
+    return ProjectTextFileEditSession(
+        path=plan.path,
+        title=plan.title,
+        subtitle=str(plan.path),
+        initial_text=read_text(plan.path),
+    )
+
+
+def normalize_project_text_file_content(content: str) -> str:
+    return content.rstrip("\n") + "\n"
+
+
+def save_project_text_file_content(
+    path: Path,
+    content: str,
+    *,
+    write_text: Callable[[Path, str], None],
+) -> str:
+    write_text(path, normalize_project_text_file_content(content))
+    return f"已保存：{path}"
+
+
+def validate_project_claude_settings_json(content: str) -> dict:
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        raise ValueError("settings.local.json 必须是一个 JSON object。")
+    return payload
 
 
 def project_vscode_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:

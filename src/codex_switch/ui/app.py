@@ -242,6 +242,10 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    load_project_text_file_edit_session,
+    normalize_project_text_file_content,
+    save_project_text_file_content,
+    validate_project_claude_settings_json,
     execute_project_binding_sync,
     build_claude_template_run_spec,
     build_claude_template_execution_plan,
@@ -4625,26 +4629,33 @@ class CodexSwitchApp:
             messagebox.showinfo("提示", plan.missing_message, parent=self.root)
             return
         try:
-            initial_text = target.read_text(encoding="utf-8")
+            session = load_project_text_file_edit_session(
+                plan,
+                read_text=lambda path: path.read_text(encoding="utf-8"),
+            )
         except OSError as exc:
             messagebox.showerror("读失败", f"读取配置文件失败：\n{exc}", parent=self.root)
             return
         dialog = McpConfigDialog(
             self.root,
-            title=plan.title,
-            subtitle=str(target),
-            initial_text=initial_text,
+            title=session.title,
+            subtitle=session.subtitle,
+            initial_text=session.initial_text,
             validator=validator,
         )
         self.root.wait_window(dialog)
         if dialog.result is None:
             return
         try:
-            target.write_text(dialog.result.rstrip("\n") + "\n", encoding="utf-8")
+            status_text = save_project_text_file_content(
+                session.path,
+                dialog.result,
+                write_text=lambda path, content: path.write_text(content, encoding="utf-8"),
+            )
         except OSError as exc:
             messagebox.showerror("保存失败", f"写入配置文件失败：\n{exc}", parent=self.root)
             return
-        self.status_var.set(f"已保存：{target}")
+        self.status_var.set(status_text)
 
     def edit_project_codex_config(self) -> None:
         project = self.get_selected_project()
@@ -4657,19 +4668,13 @@ class CodexSwitchApp:
         )
 
     def edit_project_claude_settings(self) -> None:
-        def validate_json(content: str):
-            payload = json.loads(content)
-            if not isinstance(payload, dict):
-                raise ValueError("settings.local.json 必须是一个 JSON object。")
-            return payload
-
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
         self._edit_project_text_file(
             plan=project_claude_settings_edit_plan(project),
-            validator=validate_json,
+            validator=validate_project_claude_settings_json,
         )
 
     def _get_project_script_path(self, project: ProjectRecord) -> Path:
