@@ -207,6 +207,7 @@ from codex_switch.ui.skills_logic import (
 from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
+    execute_project_binding_sync,
     project_binding_sync_tasks,
     build_claude_template_run_spec,
     build_claude_template_execution_plan,
@@ -1436,6 +1437,87 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual([task.target for task in tasks], ["codex"])
         self.assertEqual(tasks[0].failure_status, "Codex API 配置同步失败")
         self.assertEqual(project_binding_sync_status("Demo", [Path("a.txt")]), "已同步项目配置：Demo")
+
+    def test_execute_project_binding_sync_returns_updated_paths(self) -> None:
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex")
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        project = ProjectRecord.create(str(Path.cwd()), codex_profile.id, codex_profile_id=codex_profile.id, claude_profile_id=claude_profile.id)
+        plan = build_project_binding_sync_plan(
+            project,
+            route_proxy_base_url="http://proxy.local",
+            codex_profile=codex_profile,
+            codex_model_override="gpt-5",
+            claude_profile=claude_profile,
+            claude_model_override="sonnet",
+            claude_fallback_model_override="haiku",
+            sync_codex=True,
+            sync_claude=True,
+        )
+        calls: list[tuple[str, str | None]] = []
+
+        result = execute_project_binding_sync(
+            plan,
+            sync_codex_binding=lambda _plan, task: calls.append((task.target, task.model_override)) or [Path("codex.toml")],
+            sync_claude_binding=lambda _plan, task: calls.append((task.target, task.fallback_model_override)) or [Path("claude.json")],
+        )
+
+        self.assertIsNone(result.failure)
+        self.assertEqual(result.updated_paths, [Path("codex.toml"), Path("claude.json")])
+        self.assertEqual(calls, [("codex", "gpt-5"), ("claude", "haiku")])
+
+    def test_execute_project_binding_sync_handles_missing_profiles(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id")
+        plan = build_project_binding_sync_plan(
+            project,
+            route_proxy_base_url=None,
+            codex_profile=None,
+            codex_model_override=None,
+            claude_profile=None,
+            claude_model_override=None,
+            claude_fallback_model_override=None,
+            sync_codex=True,
+            sync_claude=False,
+        )
+
+        result = execute_project_binding_sync(
+            plan,
+            sync_codex_binding=lambda *_args: [Path("unused")],
+            sync_claude_binding=lambda *_args: [Path("unused")],
+        )
+
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(result.failure.reason, "missing_profile")
+        self.assertEqual(result.failure.task.target, "codex")
+        self.assertEqual(result.failure.task.missing_message, "当前项目绑定的 Codex 配置已经不存在。")
+
+    def test_execute_project_binding_sync_handles_callback_failures(self) -> None:
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex")
+        project = ProjectRecord.create(str(Path.cwd()), codex_profile.id, codex_profile_id=codex_profile.id)
+        plan = build_project_binding_sync_plan(
+            project,
+            route_proxy_base_url="http://proxy.local",
+            codex_profile=codex_profile,
+            codex_model_override="gpt-5",
+            claude_profile=None,
+            claude_model_override=None,
+            claude_fallback_model_override=None,
+            sync_codex=True,
+            sync_claude=False,
+        )
+
+        def raise_sync(*_args):
+            raise RuntimeError("boom")
+
+        result = execute_project_binding_sync(
+            plan,
+            sync_codex_binding=raise_sync,
+            sync_claude_binding=lambda *_args: [Path("unused")],
+        )
+
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(result.failure.reason, "sync_failed")
+        self.assertEqual(result.failure.task.failure_status, "Codex API 配置同步失败")
+        self.assertEqual(result.failure.detail, "boom")
 
     def test_project_add_prerequisite_error_requires_profiles_and_both_clients(self) -> None:
         codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)

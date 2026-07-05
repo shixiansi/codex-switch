@@ -185,6 +185,17 @@ class ProjectBindingSyncTask:
     failure_status: str
 
 
+@dataclass(frozen=True)
+class ProjectBindingSyncFailure:
+    reason: str
+    task: ProjectBindingSyncTask
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectBindingSyncExecutionResult:
+    updated_paths: list[Path]
+    failure: ProjectBindingSyncFailure | None = None
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -613,6 +624,32 @@ def project_binding_sync_tasks(plan: ProjectBindingSyncPlan) -> list[ProjectBind
             )
         )
     return tasks
+
+
+def execute_project_binding_sync(
+    plan: ProjectBindingSyncPlan,
+    *,
+    sync_codex_binding: Callable[[ProjectBindingSyncPlan, ProjectBindingSyncTask], list[Path]],
+    sync_claude_binding: Callable[[ProjectBindingSyncPlan, ProjectBindingSyncTask], list[Path]],
+) -> ProjectBindingSyncExecutionResult:
+    updated_paths: list[Path] = []
+    for task in project_binding_sync_tasks(plan):
+        if task.profile is None:
+            return ProjectBindingSyncExecutionResult(
+                updated_paths=updated_paths,
+                failure=ProjectBindingSyncFailure(reason="missing_profile", task=task),
+            )
+        try:
+            if task.target == "codex":
+                updated_paths.extend(sync_codex_binding(plan, task))
+            else:
+                updated_paths.extend(sync_claude_binding(plan, task))
+        except Exception as exc:
+            return ProjectBindingSyncExecutionResult(
+                updated_paths=updated_paths,
+                failure=ProjectBindingSyncFailure(reason="sync_failed", task=task, detail=str(exc)),
+            )
+    return ProjectBindingSyncExecutionResult(updated_paths=updated_paths)
 
 
 def project_binding_sync_status(project_name: str, updated_paths: list[Path]) -> str:

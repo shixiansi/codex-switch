@@ -238,7 +238,7 @@ from codex_switch.ui.styles import (
 from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
-    project_binding_sync_tasks,
+    execute_project_binding_sync,
     build_claude_template_run_spec,
     build_claude_template_execution_plan,
     build_codex_template_run_spec,
@@ -4368,37 +4368,35 @@ class CodexSwitchApp:
             sync_codex=sync_codex,
             sync_claude=sync_claude,
         )
-        updated_paths: list[Path] = []
-        for task in project_binding_sync_tasks(plan):
-            if task.profile is None:
-                messagebox.showerror("无法同步", task.missing_message, parent=self.root)
-                return False
-            try:
-                if task.target == "codex":
-                    updated_paths.extend(
-                        self.project_template_service.sync_api_binding(
-                            plan.project_root,
-                            task.profile,
-                            route_proxy_base_url=plan.route_proxy_base_url,
-                            model_override=task.model_override,
-                        )
-                    )
-                else:
-                    updated_paths.extend(
-                        self.project_template_service.sync_claude_binding(
-                            plan.project_root,
-                            task.profile,
-                            route_proxy_base_url=plan.route_proxy_base_url,
-                            model_override=task.model_override,
-                            fallback_model_override=task.fallback_model_override,
-                        )
-                    )
-            except Exception as exc:
-                messagebox.showerror("同步失败", f"项目记录已保存，但同步 {task.failure_label} 失败：\n{exc}", parent=self.root)
-                self.status_var.set(task.failure_status)
-                return False
+        result = execute_project_binding_sync(
+            plan,
+            sync_codex_binding=lambda resolved_plan, task: self.project_template_service.sync_api_binding(
+                resolved_plan.project_root,
+                task.profile,
+                route_proxy_base_url=resolved_plan.route_proxy_base_url,
+                model_override=task.model_override,
+            ),
+            sync_claude_binding=lambda resolved_plan, task: self.project_template_service.sync_claude_binding(
+                resolved_plan.project_root,
+                task.profile,
+                route_proxy_base_url=resolved_plan.route_proxy_base_url,
+                model_override=task.model_override,
+                fallback_model_override=task.fallback_model_override,
+            ),
+        )
+        if result.failure is not None:
+            if result.failure.reason == "missing_profile":
+                messagebox.showerror("无法同步", result.failure.task.missing_message, parent=self.root)
+            else:
+                messagebox.showerror(
+                    "同步失败",
+                    f"项目记录已保存，但同步 {result.failure.task.failure_label} 失败：\n{result.failure.detail}",
+                    parent=self.root,
+                )
+                self.status_var.set(result.failure.task.failure_status)
+            return False
 
-        self.status_var.set(project_binding_sync_status(project.name, updated_paths))
+        self.status_var.set(project_binding_sync_status(project.name, result.updated_paths))
         return True
 
     def edit_project(self) -> None:
