@@ -134,13 +134,13 @@ from codex_switch.ui.account_pool_logic import (
     ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
     ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
     account_pool_channel_by_id,
-    account_pool_channel_from_result,
     account_pool_group_label,
     account_pool_group_type_from_label,
     account_pool_project_count,
     account_pool_source_label,
     account_pool_visible_channels,
     check_account_pool_channel,
+    prepare_account_pool_channel_submission,
     project_account_pool_group_name,
     project_uses_account_pool,
 )
@@ -5335,17 +5335,6 @@ class CodexSwitchApp:
         self.refresh_proxy_tab()
         self.status_var.set("已保存号池设置。")
 
-    def _account_pool_channel_from_result(
-        self,
-        result: dict,
-        existing: AccountPoolChannel | None = None,
-    ) -> AccountPoolChannel:
-        return account_pool_channel_from_result(
-            result,
-            selected_group_id=self._selected_account_pool_group_id(),
-            existing=existing,
-        )
-
     def _check_account_pool_channel(self, channel: AccountPoolChannel) -> HealthResult:
         validator = getattr(self, "account_pool_validator", None) or getattr(self, "health_checker", None)
         return check_account_pool_channel(
@@ -5354,13 +5343,19 @@ class CodexSwitchApp:
             validator=validator,
         )
 
-    def _mark_channel_from_success(self, channel: AccountPoolChannel, result: HealthResult) -> None:
-        checked_at = result.checked_at or now_iso()
-        channel.status = "normal"
-        channel.failure_reason = ""
-        channel.failed_at = None
-        channel.last_checked_at = checked_at
-        channel.last_success_at = checked_at
+    def _prepare_account_pool_channel_submission(
+        self,
+        result: dict,
+        existing: AccountPoolChannel | None = None,
+    ):
+        validator = getattr(self, "account_pool_validator", None) or getattr(self, "health_checker", None)
+        return prepare_account_pool_channel_submission(
+            result,
+            selected_group_id=self._selected_account_pool_group_id(),
+            settings=self.account_pool_settings,
+            existing=existing,
+            validator=validator,
+        )
 
     def add_account_pool_channel(self) -> None:
         try:
@@ -5370,16 +5365,14 @@ class CodexSwitchApp:
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        channel = self._account_pool_channel_from_result(dialog.result)
-        result = self._check_account_pool_channel(channel)
-        if result.status != "healthy":
-            messagebox.showerror("真实会话验证失败", result.detail, parent=self.root)
+        submission = self._prepare_account_pool_channel_submission(dialog.result)
+        if submission.health_result.status != "healthy":
+            messagebox.showerror("真实会话验证失败", submission.health_result.detail, parent=self.root)
             return
-        self._mark_channel_from_success(channel, result)
-        self.account_pool_settings.channels.append(channel)
+        self.account_pool_settings.channels.append(submission.channel)
         self.persist_state()
         self.refresh_account_pool_tab()
-        self.status_var.set(f"已新增号池渠道：{channel.name}")
+        self.status_var.set(f"已新增号池渠道：{submission.channel.name}")
 
     def add_account_pool_profile_channel(self) -> None:
         group = self._selected_account_pool_group()
@@ -5394,16 +5387,14 @@ class CodexSwitchApp:
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        channel = self._account_pool_channel_from_result(dialog.result)
-        result = self._check_account_pool_channel(channel)
-        if result.status != "healthy":
-            messagebox.showerror("真实会话验证失败", result.detail, parent=self.root)
+        submission = self._prepare_account_pool_channel_submission(dialog.result)
+        if submission.health_result.status != "healthy":
+            messagebox.showerror("真实会话验证失败", submission.health_result.detail, parent=self.root)
             return
-        self._mark_channel_from_success(channel, result)
-        self.account_pool_settings.channels.append(channel)
+        self.account_pool_settings.channels.append(submission.channel)
         self.persist_state()
         self.refresh_account_pool_tab()
-        self.status_var.set(f"已从配置库加入号池：{channel.name}")
+        self.status_var.set(f"已从配置库加入号池：{submission.channel.name}")
 
     def edit_account_pool_channel(self) -> None:
         channel = self._selected_account_pool_channel()
@@ -5424,16 +5415,14 @@ class CodexSwitchApp:
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        updated = self._account_pool_channel_from_result(dialog.result, existing=channel)
-        result = self._check_account_pool_channel(updated)
-        if result.status != "healthy":
-            messagebox.showerror("真实会话验证失败", result.detail, parent=self.root)
+        submission = self._prepare_account_pool_channel_submission(dialog.result, existing=channel)
+        if submission.health_result.status != "healthy":
+            messagebox.showerror("真实会话验证失败", submission.health_result.detail, parent=self.root)
             return
-        self._mark_channel_from_success(updated, result)
-        self.account_pool_settings.replace_channel(updated)
+        self.account_pool_settings.replace_channel(submission.channel)
         self.persist_state()
         self.refresh_account_pool_tab()
-        self.status_var.set(f"已更新号池渠道：{updated.name}")
+        self.status_var.set(f"已更新号池渠道：{submission.channel.name}")
 
     def delete_account_pool_channel(self) -> None:
         channel = self._selected_account_pool_channel()

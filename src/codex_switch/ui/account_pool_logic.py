@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from codex_switch.chat import AccountPoolSessionValidator
 from codex_switch.models import (
@@ -31,6 +32,12 @@ ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY = "临时号池"
 ACCOUNT_POOL_SOURCE_FILTER_PROFILE = "配置库号池"
 ACCOUNT_POOL_SOURCE_LABEL_TEMPORARY = "临时号池"
 ACCOUNT_POOL_SOURCE_LABEL_PROFILE = "配置库号池"
+
+
+@dataclass(frozen=True)
+class AccountPoolChannelSubmission:
+    channel: AccountPoolChannel
+    health_result: HealthResult
 
 
 def account_pool_group_type_from_label(label: str) -> str:
@@ -130,6 +137,15 @@ def account_pool_channel_from_result(
     return channel
 
 
+def mark_account_pool_channel_success(channel: AccountPoolChannel, result: HealthResult) -> None:
+    checked_at = result.checked_at or ""
+    channel.status = "normal"
+    channel.failure_reason = ""
+    channel.failed_at = None
+    channel.last_checked_at = checked_at
+    channel.last_success_at = checked_at
+
+
 def check_account_pool_channel(
     channel: AccountPoolChannel,
     *,
@@ -183,3 +199,26 @@ def check_account_pool_channel(
         wire_api=wire_api,
         allow_codex_client_restricted=(group_type == ACCOUNT_POOL_GROUP_TYPE_CODEX),
     )
+
+
+def prepare_account_pool_channel_submission(
+    result: dict,
+    *,
+    selected_group_id: str,
+    settings: AccountPoolSettings,
+    existing: AccountPoolChannel | None = None,
+    validator=None,
+) -> AccountPoolChannelSubmission:
+    channel = account_pool_channel_from_result(
+        result,
+        selected_group_id=selected_group_id,
+        existing=existing,
+    )
+    health_result = check_account_pool_channel(
+        channel,
+        settings=settings,
+        validator=validator,
+    )
+    if health_result.status == "healthy":
+        mark_account_pool_channel_success(channel, health_result)
+    return AccountPoolChannelSubmission(channel=channel, health_result=health_result)

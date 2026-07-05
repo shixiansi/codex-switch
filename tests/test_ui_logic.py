@@ -19,6 +19,7 @@ from codex_switch import main
 from codex_switch.chat import ChatResult
 from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import (
+    AccountPoolChannel,
     AccountPoolSettings,
     HealthResult,
     HotUpdateEvent,
@@ -108,6 +109,7 @@ from codex_switch.ui.global_logic import (
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
 )
+from codex_switch.ui.account_pool_logic import prepare_account_pool_channel_submission
 from codex_switch.ui.hot_update_logic import (
     HotUpdateDecisionTexts,
     PROJECT_HOT_UPDATE_TEXTS,
@@ -3466,6 +3468,39 @@ command = "node"
         self.assertEqual(app.account_pool_settings.channels, [])
         showerror.assert_called_once()
         self.assertIn("鉴权失败", showerror.call_args.args[1])
+
+    def test_prepare_account_pool_channel_submission_marks_success_and_preserves_existing_id(self) -> None:
+        class FakeChecker:
+            def check(self, _profile: Profile) -> HealthResult:
+                return HealthResult(status="healthy", detail="ok", checked_at="2026-06-06T10:00:00")
+
+        settings = AccountPoolSettings()
+        default_group = settings.ensure_default_group()
+        existing = AccountPoolChannel.create(
+            name="existing",
+            base_url="https://existing.example.com",
+            api_key="sk-existing",
+            group_id=default_group.id,
+        )
+
+        submission = prepare_account_pool_channel_submission(
+            {
+                "name": "pool-ok",
+                "base_url": "https://pool.example.com",
+                "api_key": "sk-pool",
+                "wire_api": "responses",
+                "default_model": "gpt-pool",
+            },
+            selected_group_id=default_group.id,
+            settings=settings,
+            existing=existing,
+            validator=FakeChecker(),
+        )
+
+        self.assertEqual(submission.health_result.status, "healthy")
+        self.assertEqual(submission.channel.id, existing.id)
+        self.assertEqual(submission.channel.last_checked_at, "2026-06-06T10:00:00")
+        self.assertEqual(submission.channel.last_success_at, "2026-06-06T10:00:00")
 
 
 class McpEditorPrefillTests(unittest.TestCase):
