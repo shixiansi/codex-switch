@@ -18,11 +18,17 @@ from tkinter import messagebox, simpledialog
 from codex_switch import __version__
 from codex_switch.chat import (
     SUPPORTED_WIRE_APIS,
-    WIRE_API_ANTHROPIC_MESSAGES,
     AccountPoolSessionValidator,
+    build_chat_request_body_template,
+    build_chat_target_state,
+    chat_model_options,
+    chat_payload_templates,
+    chat_settings_summary,
     ChatResult,
     ChatTester,
     default_wire_api_for_profile,
+    has_chat_model_choice,
+    resolve_chat_target_wire_choice,
 )
 from codex_switch.claude_config import ClaudeConfigManager
 from codex_switch.codex_config import (
@@ -6201,52 +6207,44 @@ class CodexSwitchApp:
 
     def _chat_model_options(self, profile: Profile, wire_api: str | None = None) -> list[str]:
         cache = self._model_batch_cache(profile)
-        if cache is not None and cache.completed:
-            success_models = successful_model_batch_models(cache)
-            return success_models or ["-"]
-        models: list[str] = []
-        if profile.health.models:
-            for model in profile.health.models:
-                if model not in models:
-                    models.append(model)
-        if models:
-            return models
         effective_wire_api = wire_api or self.chat_wire_choice_var.get().strip() or default_wire_api_for_profile(profile)
-        fallback_model = (
-            profile.claude_display_model
-            if effective_wire_api == WIRE_API_ANTHROPIC_MESSAGES
-            else profile.codex_display_model
+        completed_models = (
+            successful_model_batch_models(cache)
+            if cache is not None and cache.completed
+            else None
         )
-        return [fallback_model] if fallback_model else ["-"]
+        return chat_model_options(
+            profile,
+            completed_models=completed_models,
+            health_models=list(profile.health.models),
+            wire_api=effective_wire_api,
+        )
 
     def _chat_payload_templates(self) -> dict[str, str]:
-        templates: dict[str, str] = {}
-        for wire_api in SUPPORTED_WIRE_APIS:
-            templates[wire_api] = json.dumps(
-                self.chat_tester.build_payload_template(wire_api),
-                ensure_ascii=False,
-                indent=2,
-            )
-        return templates
+        return chat_payload_templates(
+            supported_wire_apis=list(SUPPORTED_WIRE_APIS),
+            build_payload_template=self.chat_tester.build_payload_template,
+        )
 
     def _refresh_chat_settings_summary(self) -> None:
         self.chat_settings_summary_var.set(
-            f"模型：{self.chat_model_choice_var.get() or '-'}    接口：{self.chat_wire_choice_var.get() or '-'}"
+            chat_settings_summary(
+                self.chat_model_choice_var.get(),
+                self.chat_wire_choice_var.get(),
+            )
         )
 
     def _has_chat_model_choice(self) -> bool:
-        selected_model = self.chat_model_choice_var.get().strip()
-        return bool(selected_model and selected_model != "-")
+        return has_chat_model_choice(self.chat_model_choice_var.get())
 
     def _refresh_chat_request_body_template(self, _event: object | None = None) -> None:
-        wire_api = self.chat_wire_choice_var.get().strip() or SUPPORTED_WIRE_APIS[0]
-        try:
-            template = self.chat_tester.build_payload_template(wire_api)
-        except ValueError:
-            wire_api = SUPPORTED_WIRE_APIS[0]
-            self.chat_wire_choice_var.set(wire_api)
-            template = self.chat_tester.build_payload_template(wire_api)
-        self.chat_request_body_text = json.dumps(template, ensure_ascii=False, indent=2)
+        template = build_chat_request_body_template(
+            selected_wire_api=self.chat_wire_choice_var.get(),
+            supported_wire_apis=list(SUPPORTED_WIRE_APIS),
+            build_payload_template=self.chat_tester.build_payload_template,
+        )
+        self.chat_wire_choice_var.set(template.wire_api)
+        self.chat_request_body_text = template.payload_text
         self._refresh_chat_settings_summary()
 
     def open_chat_settings(self) -> None:
@@ -6293,38 +6291,47 @@ class CodexSwitchApp:
             self._append_chat_line("系统", "请选择左侧测试列表中的一套配置，再开始测试对话。")
             return
 
-        keep_history = self.chat_profile_id == profile.id
         current_wire = self.chat_wire_choice_var.get().strip()
-        default_wire = default_wire_api_for_profile(profile)
-        next_wire = current_wire if keep_history and current_wire in SUPPORTED_WIRE_APIS else default_wire
-        options = self._chat_model_options(profile, next_wire)
+        wire_choice = resolve_chat_target_wire_choice(
+            profile,
+            current_profile_id=self.chat_profile_id,
+            current_wire=current_wire,
+            supported_wire_apis=list(SUPPORTED_WIRE_APIS),
+        )
+        options = self._chat_model_options(profile, wire_choice.next_wire)
         current_choice = self.chat_model_choice_var.get().strip()
-        next_choice = current_choice if keep_history and current_choice and current_choice != "-" else options[0]
-        should_reset_payload = not keep_history or next_wire != current_wire or not self.chat_request_body_text.strip()
+        target_state = build_chat_target_state(
+            profile.name,
+            options,
+            keep_history=wire_choice.keep_history,
+            current_choice=current_choice,
+            current_payload_text=self.chat_request_body_text,
+            current_busy=self.chat_busy,
+            current_wire=current_wire,
+            next_wire=wire_choice.next_wire,
+        )
 
         self.chat_profile_id = profile.id
         self.chat_target_var.set(profile.name)
-        self.chat_model_choice_var.set(next_choice)
-        self.chat_wire_choice_var.set(next_wire)
-        if should_reset_payload:
+        self.chat_model_choice_var.set(target_state.next_choice)
+        self.chat_wire_choice_var.set(wire_choice.next_wire)
+        if target_state.should_reset_payload:
             self._refresh_chat_request_body_template()
         else:
             self._refresh_chat_settings_summary()
-        if self._has_chat_model_choice() and not self.chat_busy:
+        if target_state.send_enabled:
             self.chat_send_button.state(["!disabled"])
         else:
             self.chat_send_button.state(["disabled"])
-        if self.chat_busy:
-            self.chat_settings_button.state(["disabled"])
-        else:
+        if target_state.settings_enabled:
             self.chat_settings_button.state(["!disabled"])
+        else:
+            self.chat_settings_button.state(["disabled"])
 
-        if not keep_history:
+        if target_state.clear_history:
             self.clear_chat_history()
-            if options == ["-"]:
-                self._append_chat_line("系统", f"当前测试配置：{profile.name}\n还没有可用的 API 返回模型，请先执行健康检测。")
-            else:
-                self._append_chat_line("系统", f"当前测试配置：{profile.name}\n可选模型：{', '.join(options)}")
+            if target_state.announcement_text:
+                self._append_chat_line("系统", target_state.announcement_text)
 
     def clear_chat_history(self) -> None:
         self.chat_history.configure(state="normal")

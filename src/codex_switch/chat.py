@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 import uuid
 from dataclasses import dataclass
@@ -31,6 +32,28 @@ class ChatResult:
     extracted: bool = True
 
 
+@dataclass(frozen=True)
+class ChatRequestBodyTemplate:
+    wire_api: str
+    payload_text: str
+
+
+@dataclass(frozen=True)
+class ChatTargetWireChoice:
+    keep_history: bool
+    next_wire: str
+
+
+@dataclass(frozen=True)
+class ChatTargetState:
+    next_choice: str
+    should_reset_payload: bool
+    send_enabled: bool
+    settings_enabled: bool
+    clear_history: bool
+    announcement_text: str | None
+
+
 def is_codex_client_restricted_error(text: str | None) -> bool:
     if not text:
         return False
@@ -58,6 +81,119 @@ def default_wire_api_for_profile(profile: Profile) -> str:
         return _normalize_wire_api(profile.wire_api)
     except ValueError:
         return WIRE_API_RESPONSES
+
+
+def chat_model_options(
+    profile: Profile,
+    *,
+    completed_models: list[str] | None,
+    health_models: list[str],
+    wire_api: str | None,
+) -> list[str]:
+    if completed_models is not None:
+        return completed_models or ["-"]
+    models: list[str] = []
+    for model in health_models:
+        if model not in models:
+            models.append(model)
+    if models:
+        return models
+    effective_wire_api = wire_api or default_wire_api_for_profile(profile)
+    fallback_model = (
+        profile.claude_display_model
+        if effective_wire_api == WIRE_API_ANTHROPIC_MESSAGES
+        else profile.codex_display_model
+    )
+    return [fallback_model] if fallback_model else ["-"]
+
+
+def chat_payload_templates(
+    *,
+    supported_wire_apis: list[str],
+    build_payload_template: Callable[[str], dict[str, Any]],
+) -> dict[str, str]:
+    templates: dict[str, str] = {}
+    for wire_api in supported_wire_apis:
+        templates[wire_api] = json.dumps(
+            build_payload_template(wire_api),
+            ensure_ascii=False,
+            indent=2,
+        )
+    return templates
+
+
+def chat_settings_summary(model_choice: str, wire_choice: str) -> str:
+    return f"模型：{model_choice or '-'}    接口：{wire_choice or '-'}"
+
+
+def has_chat_model_choice(selected_model: str) -> bool:
+    normalized = selected_model.strip()
+    return bool(normalized and normalized != "-")
+
+
+def build_chat_request_body_template(
+    *,
+    selected_wire_api: str,
+    supported_wire_apis: list[str],
+    build_payload_template: Callable[[str], dict[str, Any]],
+) -> ChatRequestBodyTemplate:
+    wire_api = selected_wire_api.strip() or supported_wire_apis[0]
+    if wire_api not in supported_wire_apis:
+        wire_api = supported_wire_apis[0]
+    try:
+        template = build_payload_template(wire_api)
+    except ValueError:
+        wire_api = supported_wire_apis[0]
+        template = build_payload_template(wire_api)
+    return ChatRequestBodyTemplate(
+        wire_api=wire_api,
+        payload_text=json.dumps(template, ensure_ascii=False, indent=2),
+    )
+
+
+def resolve_chat_target_wire_choice(
+    profile: Profile,
+    *,
+    current_profile_id: str | None,
+    current_wire: str,
+    supported_wire_apis: list[str],
+) -> ChatTargetWireChoice:
+    keep_history = current_profile_id == profile.id
+    default_wire = default_wire_api_for_profile(profile)
+    next_wire = current_wire if keep_history and current_wire in supported_wire_apis else default_wire
+    return ChatTargetWireChoice(
+        keep_history=keep_history,
+        next_wire=next_wire,
+    )
+
+
+def chat_target_announcement_text(profile_name: str, model_options: list[str]) -> str:
+    if model_options == ["-"]:
+        return f"当前测试配置：{profile_name}\n还没有可用的 API 返回模型，请先执行健康检测。"
+    return f"当前测试配置：{profile_name}\n可选模型：{', '.join(model_options)}"
+
+
+def build_chat_target_state(
+    profile_name: str,
+    model_options: list[str],
+    *,
+    keep_history: bool,
+    current_choice: str,
+    current_payload_text: str,
+    current_busy: bool,
+    current_wire: str,
+    next_wire: str,
+) -> ChatTargetState:
+    next_choice = current_choice if keep_history and current_choice and current_choice != "-" else model_options[0]
+    should_reset_payload = not keep_history or next_wire != current_wire or not current_payload_text.strip()
+    return ChatTargetState(
+        next_choice=next_choice,
+        should_reset_payload=should_reset_payload,
+        send_enabled=has_chat_model_choice(next_choice) and not current_busy,
+        settings_enabled=not current_busy,
+        clear_history=not keep_history,
+        announcement_text=None if keep_history else chat_target_announcement_text(profile_name, model_options),
+    )
 
 
 def _build_endpoint(base_url: str, wire_api: str) -> str:

@@ -16,7 +16,17 @@ from unittest.mock import patch
 from helpers import start_test_server, workspace_tempdir
 
 from codex_switch import main
-from codex_switch.chat import ChatResult
+from codex_switch.chat import (
+    build_chat_request_body_template,
+    build_chat_target_state,
+    ChatResult,
+    chat_model_options,
+    chat_payload_templates,
+    chat_settings_summary,
+    has_chat_model_choice,
+    resolve_chat_target_wire_choice,
+    WIRE_API_RESPONSES,
+)
 from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import (
     AccountPoolChannel,
@@ -1151,6 +1161,80 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(all(status == "success" for _, status, _, _ in results))
         self.assertTrue(all(duration_ms >= 0 for _, _, _, duration_ms in results))
         self.assertEqual(tester.max_active, 3)
+
+    def test_chat_logic_helpers_build_models_templates_and_target_state(self) -> None:
+        profile = Profile.create(
+            "demo",
+            "https://api.example.com",
+            "sk-demo",
+            model="gpt-default",
+            vendor=VENDOR_CODEX,
+            wire_api=WIRE_API_RESPONSES,
+        )
+        profile.health = HealthResult(status="healthy", detail="ok", models=["gpt-4o", "gpt-4o", "gpt-4.1"])
+
+        completed_options = chat_model_options(
+            profile,
+            completed_models=["ok-a", "ok-b"],
+            health_models=list(profile.health.models),
+            wire_api=WIRE_API_RESPONSES,
+        )
+        health_options = chat_model_options(
+            profile,
+            completed_models=None,
+            health_models=list(profile.health.models),
+            wire_api=WIRE_API_RESPONSES,
+        )
+        empty_options = chat_model_options(
+            profile,
+            completed_models=[],
+            health_models=[],
+            wire_api=WIRE_API_RESPONSES,
+        )
+        templates = chat_payload_templates(
+            supported_wire_apis=[WIRE_API_RESPONSES],
+            build_payload_template=lambda wire: {"wire": wire},
+        )
+        template = build_chat_request_body_template(
+            selected_wire_api="missing",
+            supported_wire_apis=[WIRE_API_RESPONSES],
+            build_payload_template=lambda wire: {"wire": wire},
+        )
+        wire_choice = resolve_chat_target_wire_choice(
+            profile,
+            current_profile_id=None,
+            current_wire="",
+            supported_wire_apis=[WIRE_API_RESPONSES],
+        )
+        target_state = build_chat_target_state(
+            profile.name,
+            health_options,
+            keep_history=wire_choice.keep_history,
+            current_choice="",
+            current_payload_text="",
+            current_busy=False,
+            current_wire="",
+            next_wire=wire_choice.next_wire,
+        )
+
+        self.assertEqual(completed_options, ["ok-a", "ok-b"])
+        self.assertEqual(health_options, ["gpt-4o", "gpt-4.1"])
+        self.assertEqual(empty_options, ["-"])
+        self.assertIn(WIRE_API_RESPONSES, templates)
+        self.assertIn('"wire": "responses"', templates[WIRE_API_RESPONSES])
+        self.assertEqual(template.wire_api, WIRE_API_RESPONSES)
+        self.assertIn('"wire": "responses"', template.payload_text)
+        self.assertEqual(chat_settings_summary("gpt-4o", "responses"), "模型：gpt-4o    接口：responses")
+        self.assertTrue(has_chat_model_choice("gpt-4o"))
+        self.assertFalse(has_chat_model_choice("-"))
+        self.assertFalse(wire_choice.keep_history)
+        self.assertEqual(wire_choice.next_wire, WIRE_API_RESPONSES)
+        self.assertEqual(target_state.next_choice, "gpt-4o")
+        self.assertTrue(target_state.should_reset_payload)
+        self.assertTrue(target_state.send_enabled)
+        self.assertTrue(target_state.settings_enabled)
+        self.assertTrue(target_state.clear_history)
+        self.assertIn("当前测试配置：demo", target_state.announcement_text or "")
 
     def test_project_binding_helpers_keep_legacy_profile_fallback(self) -> None:
         project = ProjectRecord.create(
