@@ -109,7 +109,11 @@ from codex_switch.ui.global_logic import (
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
 )
-from codex_switch.ui.account_pool_logic import prepare_account_pool_channel_submission
+from codex_switch.ui.account_pool_logic import (
+    account_pool_group_delete_error,
+    prepare_account_pool_channel_submission,
+    resolve_account_pool_group_settings_update,
+)
 from codex_switch.ui.hot_update_logic import (
     HotUpdateDecisionTexts,
     PROJECT_HOT_UPDATE_TEXTS,
@@ -3501,6 +3505,42 @@ command = "node"
         self.assertEqual(submission.channel.id, existing.id)
         self.assertEqual(submission.channel.last_checked_at, "2026-06-06T10:00:00")
         self.assertEqual(submission.channel.last_success_at, "2026-06-06T10:00:00")
+
+    def test_resolve_account_pool_group_settings_update_applies_defaults(self) -> None:
+        update = resolve_account_pool_group_settings_update(
+            enabled=True,
+            group_type_label="Claude",
+            default_model_value="",
+            claude_model_value="",
+            claude_fallback_model_value="",
+        )
+
+        self.assertTrue(update.enabled)
+        self.assertEqual(update.pool_type, ACCOUNT_POOL_GROUP_TYPE_CLAUDE)
+        self.assertTrue(update.default_model)
+        self.assertTrue(update.claude_model)
+        self.assertTrue(update.claude_fallback_model)
+
+    def test_account_pool_group_delete_error_checks_last_group_and_channels(self) -> None:
+        settings = AccountPoolSettings()
+        default_group = settings.ensure_default_group()
+
+        self.assertEqual(account_pool_group_delete_error(settings, default_group.id), "至少保留一个号池组。")
+
+        extra_group = settings.add_group("extra")
+        self.assertIsNone(account_pool_group_delete_error(settings, extra_group.id))
+
+        channel = AccountPoolChannel.create(
+            name="busy",
+            base_url="https://busy.example.com",
+            api_key="sk-busy",
+            group_id=extra_group.id,
+        )
+        settings.channels.append(channel)
+        self.assertEqual(
+            account_pool_group_delete_error(settings, extra_group.id),
+            "当前号池组还有渠道，请先删除或移动渠道。",
+        )
 
 
 class McpEditorPrefillTests(unittest.TestCase):

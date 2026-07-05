@@ -40,6 +40,15 @@ class AccountPoolChannelSubmission:
     health_result: HealthResult
 
 
+@dataclass(frozen=True)
+class AccountPoolGroupSettingsUpdate:
+    enabled: bool
+    pool_type: str
+    default_model: str
+    claude_model: str
+    claude_fallback_model: str
+
+
 def account_pool_group_type_from_label(label: str) -> str:
     for group_type, group_label in ACCOUNT_POOL_GROUP_TYPE_LABELS.items():
         if group_label == label:
@@ -104,12 +113,45 @@ def project_account_pool_group_name(
     return group.name if group is not None else "已删除"
 
 
+def account_pool_group_delete_error(settings: AccountPoolSettings, group_id: str) -> str | None:
+    if len(settings.groups) <= 1:
+        return "至少保留一个号池组。"
+    if settings.channels_for_group(group_id):
+        return "当前号池组还有渠道，请先删除或移动渠道。"
+    return None
+
+
 def account_pool_project_count(projects: Iterable[ProjectRecord], route_proxy_settings: RouteProxySettings) -> int:
     return sum(1 for project in projects if project_uses_account_pool(route_proxy_settings, project.id))
 
 
 def account_pool_channel_by_id(settings: AccountPoolSettings, channel_id: str | None) -> AccountPoolChannel | None:
     return next((channel for channel in settings.channels if channel.id == channel_id), None)
+
+
+def resolve_account_pool_group_settings_update(
+    *,
+    enabled: bool,
+    group_type_label: str,
+    default_model_value: str,
+    claude_model_value: str,
+    claude_fallback_model_value: str,
+) -> AccountPoolGroupSettingsUpdate:
+    return AccountPoolGroupSettingsUpdate(
+        enabled=enabled,
+        pool_type=account_pool_group_type_from_label(group_type_label),
+        default_model=default_model_value.strip() or DEFAULT_CODEX_MODEL,
+        claude_model=claude_model_value.strip() or DEFAULT_CLAUDE_MODEL,
+        claude_fallback_model=claude_fallback_model_value.strip() or DEFAULT_CLAUDE_FALLBACK_MODEL,
+    )
+
+
+def apply_account_pool_group_settings(group: AccountPoolGroup, update: AccountPoolGroupSettingsUpdate) -> None:
+    group.enabled = update.enabled
+    group.pool_type = update.pool_type
+    group.default_model = update.default_model
+    group.claude_model = update.claude_model
+    group.claude_fallback_model = update.claude_fallback_model
 
 
 def account_pool_channel_from_result(

@@ -133,16 +133,18 @@ from codex_switch.ui.account_pool_logic import (
     ACCOUNT_POOL_SOURCE_FILTER_ALL,
     ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
     ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
+    account_pool_group_delete_error,
     account_pool_channel_by_id,
     account_pool_group_label,
-    account_pool_group_type_from_label,
     account_pool_project_count,
     account_pool_source_label,
     account_pool_visible_channels,
+    apply_account_pool_group_settings,
     check_account_pool_channel,
     prepare_account_pool_channel_submission,
     project_account_pool_group_name,
     project_uses_account_pool,
+    resolve_account_pool_group_settings_update,
 )
 from codex_switch.ui.global_logic import (
     claude_settings_env_values,
@@ -3357,9 +3359,6 @@ class CodexSwitchApp:
         group = self._selected_account_pool_group()
         return group.id if group is not None else ""
 
-    def _account_pool_group_type_from_label(self, label: str) -> str:
-        return account_pool_group_type_from_label(label)
-
     def _account_pool_group_label(self, group: AccountPoolGroup) -> str:
         return account_pool_group_label(group, self.account_pool_settings)
 
@@ -5281,20 +5280,14 @@ class CodexSwitchApp:
         group = self._selected_account_pool_group()
         if group is None:
             return
-        group_type = self._account_pool_group_type_from_label(self.account_pool_group_type_var.get())
-        claude_model = self.account_pool_group_claude_model_var.get().strip() or DEFAULT_CLAUDE_MODEL
-        claude_fallback_model = (
-            self.account_pool_group_claude_fallback_model_var.get().strip()
-            or DEFAULT_CLAUDE_FALLBACK_MODEL
+        update = resolve_account_pool_group_settings_update(
+            enabled=self.account_pool_group_enabled_var.get(),
+            group_type_label=self.account_pool_group_type_var.get(),
+            default_model_value=self.account_pool_group_default_model_var.get(),
+            claude_model_value=self.account_pool_group_claude_model_var.get(),
+            claude_fallback_model_value=self.account_pool_group_claude_fallback_model_var.get(),
         )
-        if group_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE and (not claude_model or not claude_fallback_model):
-            messagebox.showerror("保存失败", "Claude 号池组需要默认模型和兜底模型。", parent=self.root)
-            return
-        group.enabled = self.account_pool_group_enabled_var.get()
-        group.pool_type = group_type
-        group.default_model = self.account_pool_group_default_model_var.get().strip() or DEFAULT_CODEX_MODEL
-        group.claude_model = claude_model
-        group.claude_fallback_model = claude_fallback_model
+        apply_account_pool_group_settings(group, update)
         self.persist_state()
         self.refresh_account_pool_tab()
         self.refresh_proxy_tab()
@@ -5314,11 +5307,12 @@ class CodexSwitchApp:
         group = self._selected_account_pool_group()
         if group is None:
             return
-        if len(self.account_pool_settings.groups) <= 1:
-            messagebox.showinfo("提示", "至少保留一个号池组。", parent=self.root)
+        delete_error = account_pool_group_delete_error(self.account_pool_settings, group.id)
+        if delete_error == "至少保留一个号池组。":
+            messagebox.showinfo("提示", delete_error, parent=self.root)
             return
-        if self.account_pool_settings.channels_for_group(group.id):
-            messagebox.showerror("无法删除", "当前号池组还有渠道，请先删除或移动渠道。", parent=self.root)
+        if delete_error:
+            messagebox.showerror("无法删除", delete_error, parent=self.root)
             return
         if not messagebox.askyesno("确认删除", f"确定要删除号池组“{group.name}”吗？", parent=self.root):
             return
