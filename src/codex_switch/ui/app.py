@@ -201,10 +201,13 @@ from codex_switch.ui.library_logic import (
     visible_profiles_for_filter,
 )
 from codex_switch.ui.mcp_logic import (
+    mcp_collection_after_delete,
+    mcp_collection_after_upsert,
     mcp_detail_display,
     mcp_contains_project_root,
     mcp_env_summary,
     mcp_list_summary,
+    mcp_name_conflict_error,
     mcp_server_rows,
     mcp_summary,
     mcp_tab_display,
@@ -5439,13 +5442,20 @@ class CodexSwitchApp:
         if dialog.result is None:
             return
         server_name = dialog.result["name"]
-        if server_name in self.mcp_page_servers:
-            messagebox.showerror("名称重复", f"MCP 工具“{server_name}”已经存在。", parent=self.root)
+        conflict_error = mcp_name_conflict_error(self.mcp_page_servers, server_name)
+        if conflict_error:
+            messagebox.showerror("名称重复", conflict_error, parent=self.root)
             return
-        self.mcp_page_servers[server_name] = dialog.result["config"]
+        mutation = mcp_collection_after_upsert(
+            self.mcp_page_servers,
+            server_name,
+            dialog.result["config"],
+        )
+        self.mcp_page_servers = mutation.page_servers
         self.refresh_mcp_tab(reload_from_state=False)
-        self.mcp_tree.selection_set(server_name)
-        self.mcp_tree.focus(server_name)
+        if mutation.selected_name:
+            self.mcp_tree.selection_set(mutation.selected_name)
+            self.mcp_tree.focus(mutation.selected_name)
         self._refresh_mcp_detail()
         self.status_var.set(f"已添加 MCP 工具：{server_name}")
 
@@ -5459,15 +5469,25 @@ class CodexSwitchApp:
         if dialog.result is None:
             return
         updated_name = dialog.result["name"]
-        if updated_name != server_name and updated_name in self.mcp_page_servers:
-            messagebox.showerror("名称重复", f"MCP 工具“{updated_name}”已经存在。", parent=self.root)
+        conflict_error = mcp_name_conflict_error(
+            self.mcp_page_servers,
+            updated_name,
+            current_name=server_name,
+        )
+        if conflict_error:
+            messagebox.showerror("名称重复", conflict_error, parent=self.root)
             return
-        if updated_name != server_name:
-            self.mcp_page_servers.pop(server_name, None)
-        self.mcp_page_servers[updated_name] = dialog.result["config"]
+        mutation = mcp_collection_after_upsert(
+            self.mcp_page_servers,
+            updated_name,
+            dialog.result["config"],
+            current_name=server_name,
+        )
+        self.mcp_page_servers = mutation.page_servers
         self.refresh_mcp_tab(reload_from_state=False)
-        self.mcp_tree.selection_set(updated_name)
-        self.mcp_tree.focus(updated_name)
+        if mutation.selected_name:
+            self.mcp_tree.selection_set(mutation.selected_name)
+            self.mcp_tree.focus(mutation.selected_name)
         self._refresh_mcp_detail()
         self.status_var.set(f"已更新 MCP 工具：{updated_name}")
 
@@ -5478,8 +5498,12 @@ class CodexSwitchApp:
             return
         if not messagebox.askyesno("确认删除", f"确定要删除 MCP 工具“{server_name}”吗？", parent=self.root):
             return
-        self.mcp_page_servers.pop(server_name, None)
+        mutation = mcp_collection_after_delete(self.mcp_page_servers, server_name)
+        self.mcp_page_servers = mutation.page_servers
         self.refresh_mcp_tab(reload_from_state=False)
+        if mutation.selected_name:
+            self.mcp_tree.selection_set(mutation.selected_name)
+            self.mcp_tree.focus(mutation.selected_name)
         self.status_var.set(f"已删除 MCP 工具：{server_name}")
 
     def save_mcp_servers(self) -> None:

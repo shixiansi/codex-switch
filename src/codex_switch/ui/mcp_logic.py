@@ -30,6 +30,12 @@ class McpDetailDisplay:
     preview_text: str
 
 
+@dataclass(frozen=True)
+class McpMutationResult:
+    page_servers: dict[str, dict]
+    selected_name: str | None
+
+
 def safe_mcp_server_names(raw_toml: str | None) -> list[str]:
     try:
         return mcp_server_names_from_toml(raw_toml)
@@ -128,4 +134,45 @@ def mcp_detail_display(server_name: str | None, page_servers: dict[str, dict]) -
         selected_name_text=server_name,
         summary_text=f"type: {server_config.get('type', '-') or '-'}    args: {args_count}    env: {env_count}",
         preview_text=render_mcp_preview(server_name, page_servers),
+    )
+
+
+def mcp_name_conflict_error(
+    page_servers: dict[str, dict],
+    server_name: str,
+    *,
+    current_name: str | None = None,
+) -> str | None:
+    if server_name in page_servers and server_name != current_name:
+        return f"MCP 工具“{server_name}”已经存在。"
+    return None
+
+
+def mcp_collection_after_upsert(
+    page_servers: dict[str, dict],
+    server_name: str,
+    config: dict,
+    *,
+    current_name: str | None = None,
+) -> McpMutationResult:
+    updated_servers = dict(page_servers)
+    if current_name and current_name != server_name:
+        updated_servers.pop(current_name, None)
+    updated_servers[server_name] = config
+    return McpMutationResult(
+        page_servers=updated_servers,
+        selected_name=server_name,
+    )
+
+
+def mcp_collection_after_delete(
+    page_servers: dict[str, dict],
+    server_name: str,
+) -> McpMutationResult:
+    updated_servers = dict(page_servers)
+    updated_servers.pop(server_name, None)
+    next_name = next(iter(updated_servers), None)
+    return McpMutationResult(
+        page_servers=updated_servers,
+        selected_name=next_name,
     )

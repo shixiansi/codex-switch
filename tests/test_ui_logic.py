@@ -152,10 +152,13 @@ from codex_switch.ui.library_logic import (
 )
 from codex_switch.ui.model_batch_logic import model_batch_counts, model_batch_health_summary
 from codex_switch.ui.mcp_logic import (
+    mcp_collection_after_delete,
+    mcp_collection_after_upsert,
     mcp_detail_display,
     mcp_contains_project_root,
     mcp_env_summary,
     mcp_list_summary,
+    mcp_name_conflict_error,
     mcp_server_rows,
     mcp_summary,
     mcp_tab_display,
@@ -1516,6 +1519,18 @@ command = "node"
         self.assertEqual(detail.selected_name_text, "alpha")
         self.assertIn("type: stdio", detail.summary_text)
         self.assertIn("[mcp_servers.alpha]", detail.preview_text)
+        self.assertEqual(mcp_name_conflict_error(page_servers, "alpha"), "MCP 工具“alpha”已经存在。")
+        self.assertIsNone(mcp_name_conflict_error(page_servers, "alpha", current_name="alpha"))
+
+        upserted = mcp_collection_after_upsert(page_servers, "gamma", {"type": "stdio"})
+        renamed = mcp_collection_after_upsert(page_servers, "delta", {"type": "stdio"}, current_name="beta")
+        deleted = mcp_collection_after_delete(page_servers, "alpha")
+
+        self.assertEqual(upserted.selected_name, "gamma")
+        self.assertIn("gamma", upserted.page_servers)
+        self.assertNotIn("beta", renamed.page_servers)
+        self.assertIn("delta", renamed.page_servers)
+        self.assertNotIn("alpha", deleted.page_servers)
 
     def test_skills_tab_display_builds_repo_group_project_rows_and_hints(self) -> None:
         group = SkillGroup.create("frontend", skills=[SkillDefinition.create("skill-a", content="a")], description="UI helpers")
