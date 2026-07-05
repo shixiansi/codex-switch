@@ -190,6 +190,7 @@ from codex_switch.ui.skills_logic import (
     SkillMarketEntry,
     build_skill_market_layout,
     build_skills_tab_display,
+    build_skills_tab_refresh_state,
     filter_skill_market_repos,
     filter_skill_repo_preview_sources,
     skill_group_choice_labels,
@@ -2271,6 +2272,55 @@ args = ["-m", "alpha"]
         self.assertIn("1 个仓库读取失败", display.preview_status_text)
         self.assertEqual(display.selected_repo_id, repo_b.id)
         self.assertEqual(display.selected_group_id, group.id)
+
+    def test_build_skills_tab_refresh_state_loads_market_entries_and_display(self) -> None:
+        skill = SkillDefinition.create('skill-a', content='a')
+        group = SkillGroup.create('frontend', skills=[skill], description='UI helpers')
+        repo = SkillMarketRepo.create('https://github.com/example/skills', branch='main')
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            'profile-id',
+            skill_group_ids=[group.id],
+            skills=[skill],
+            skill_names=[skill.name],
+        )
+        entry = SkillMarketEntry(
+            repo_id=repo.id,
+            repo_url=repo.url,
+            author='alice',
+            source=SkillSource(
+                name='skill-a',
+                display_name='Skill A',
+                source_path=Path('skills/skill-a'),
+            ),
+        )
+        calls: list[bool] = []
+
+        def load_market_entries(sync_remote: bool) -> tuple[list[SkillMarketEntry], list[str]]:
+            calls.append(sync_remote)
+            return [entry], ['boom']
+
+        refresh_state = build_skills_tab_refresh_state(
+            skill_market_enabled=True,
+            force_sync=True,
+            load_market_entries=load_market_entries,
+            all_repos=[repo],
+            visible_repos=[repo],
+            groups=[group],
+            projects=[project],
+            repo_filter_active=False,
+            selected_repo_id=repo.id,
+            selected_group_id=group.id,
+        )
+
+        self.assertEqual(calls, [True])
+        self.assertEqual(refresh_state.market_entries, [entry])
+        self.assertEqual(refresh_state.market_errors, ['boom'])
+        self.assertTrue(refresh_state.should_reset_force_sync)
+        self.assertEqual(refresh_state.display.selected_repo_id, repo.id)
+        self.assertEqual(refresh_state.display.selected_group_id, group.id)
+        self.assertIn('市场显示 1 个 Skills', refresh_state.display.preview_status_text)
+        self.assertIn('1 个仓库读取失败', refresh_state.display.preview_status_text)
 
     def test_skill_choice_label_helpers_build_expected_labels(self) -> None:
         group = SkillGroup.create("frontend", skills=[SkillDefinition.create("skill-a", content="a")])

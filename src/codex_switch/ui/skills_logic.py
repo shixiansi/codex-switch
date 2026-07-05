@@ -67,6 +67,14 @@ class SkillsTabDisplay:
 
 
 @dataclass(frozen=True)
+class SkillsTabRefreshState:
+    market_entries: list[SkillMarketEntry]
+    market_errors: list[str]
+    display: SkillsTabDisplay
+    should_reset_force_sync: bool
+
+
+@dataclass(frozen=True)
 class SkillRepoPreviewRow:
     source_path: str
     values: tuple[str, str]
@@ -275,6 +283,43 @@ def build_skills_tab_display(
         preview_status_text=preview_status_text,
         selected_repo_id=resolved_repo_id,
         selected_group_id=resolved_group_id,
+    )
+
+
+def build_skills_tab_refresh_state(
+    *,
+    skill_market_enabled: bool,
+    force_sync: bool,
+    load_market_entries: Callable[[bool], tuple[list[SkillMarketEntry], list[str]]],
+    all_repos: list[SkillMarketRepo],
+    visible_repos: list[SkillMarketRepo],
+    groups: list[SkillGroup],
+    projects: list[ProjectRecord],
+    repo_filter_active: bool,
+    selected_repo_id: str | None = None,
+    selected_group_id: str | None = None,
+) -> SkillsTabRefreshState:
+    market_entries: list[SkillMarketEntry] = []
+    market_errors: list[str] = []
+    if skill_market_enabled:
+        market_entries, market_errors = load_market_entries(force_sync)
+
+    display = build_skills_tab_display(
+        all_repos=all_repos,
+        visible_repos=visible_repos,
+        groups=groups,
+        projects=projects,
+        market_entries_count=len(market_entries),
+        market_errors_count=len(market_errors),
+        repo_filter_active=repo_filter_active,
+        selected_repo_id=selected_repo_id,
+        selected_group_id=selected_group_id,
+    )
+    return SkillsTabRefreshState(
+        market_entries=market_entries,
+        market_errors=market_errors,
+        display=display,
+        should_reset_force_sync=skill_market_enabled and force_sync,
     )
 
 

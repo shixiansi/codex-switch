@@ -339,7 +339,7 @@ from codex_switch.ui.skills_logic import (
     SkillMarketEntry,
     apply_profile_metadata,
     build_skill_market_layout,
-    build_skills_tab_display,
+    build_skills_tab_refresh_state,
     expanded_skills_for_group_ids,
     existing_repo_files,
     filter_skill_market_repos,
@@ -2314,51 +2314,52 @@ class CodexSwitchApp:
 
     def refresh_skills_tab(self) -> None:
         self._sync_projects_from_skill_groups()
-        market_entries: list[SkillMarketEntry] = []
-        market_errors: list[str] = []
-        if hasattr(self, "skill_market_frame"):
-            market_entries, market_errors = self._load_skill_market_entries(sync_remote=self.skill_market_force_sync)
-            self.skill_market_force_sync = False
-            self._render_skill_market_cards(market_entries)
-        visible_repos = self._filtered_skill_market_repos() if hasattr(self, "skill_repo_tree") else list(self.skill_market_repos)
-        selected_repo_id = self.skill_repo_tree.focus() if hasattr(self, "skill_repo_tree") else None
-        selected_group_id = self.skill_group_tree.focus() if hasattr(self, "skill_group_tree") else None
-        display = build_skills_tab_display(
+        market_enabled = hasattr(self, 'skill_market_frame')
+        visible_repos = self._filtered_skill_market_repos() if hasattr(self, 'skill_repo_tree') else list(self.skill_market_repos)
+        selected_repo_id = self.skill_repo_tree.focus() if hasattr(self, 'skill_repo_tree') else None
+        selected_group_id = self.skill_group_tree.focus() if hasattr(self, 'skill_group_tree') else None
+        refresh_state = build_skills_tab_refresh_state(
+            skill_market_enabled=market_enabled,
+            force_sync=self.skill_market_force_sync,
+            load_market_entries=lambda sync_remote: self._load_skill_market_entries(sync_remote=sync_remote),
             all_repos=self.skill_market_repos,
             visible_repos=visible_repos,
             groups=self.skill_groups,
             projects=self.projects,
-            market_entries_count=len(market_entries),
-            market_errors_count=len(market_errors),
             repo_filter_active=bool(
-                hasattr(self, "skill_repo_filter_var") and self.skill_repo_filter_var.get().strip()
+                hasattr(self, 'skill_repo_filter_var') and self.skill_repo_filter_var.get().strip()
             ),
             selected_repo_id=selected_repo_id,
             selected_group_id=selected_group_id,
         )
-        if hasattr(self, "skill_repo_tree"):
+        if refresh_state.should_reset_force_sync:
+            self.skill_market_force_sync = False
+        if market_enabled:
+            self._render_skill_market_cards(refresh_state.market_entries)
+        display = refresh_state.display
+        if hasattr(self, 'skill_repo_tree'):
             replace_treeview_rows(
                 self.skill_repo_tree,
                 [(row.repo_id, row.values) for row in display.repo_rows],
                 selected_id=display.selected_repo_id,
             )
 
-        if hasattr(self, "skill_group_tree"):
+        if hasattr(self, 'skill_group_tree'):
             replace_treeview_rows(
                 self.skill_group_tree,
                 [(row.group_id, row.values) for row in display.group_rows],
                 selected_id=display.selected_group_id,
             )
 
-        if hasattr(self, "skill_project_tree"):
+        if hasattr(self, 'skill_project_tree'):
             replace_treeview_rows(
                 self.skill_project_tree,
                 [(row.project_id, row.values) for row in display.project_rows],
             )
         self.skills_hint_var.set(display.hint_text)
-        if hasattr(self, "skill_market_frame"):
+        if market_enabled:
             self.skill_repo_preview_var.set(display.preview_status_text)
-        if hasattr(self, "skill_repo_tree"):
+        if hasattr(self, 'skill_repo_tree'):
             self._refresh_skill_repo_detail()
         self._refresh_skill_group_detail()
         self._refresh_skill_project_detail()
