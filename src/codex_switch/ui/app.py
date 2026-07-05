@@ -386,6 +386,13 @@ from codex_switch.ui.page_builders import (
 )
 from codex_switch.ui.page_builders import build_library_tab_page
 from codex_switch.ui.page_builders import build_proxy_tab_page, build_stats_tab_page
+from codex_switch.ui.page_builders import (
+    build_local_skills_panel_page,
+    build_project_skills_panel_page,
+    build_skill_repo_source_panel_page,
+    build_skill_repos_panel_page,
+    build_skills_tab_page,
+)
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -994,164 +1001,19 @@ class CodexSwitchApp:
         build_mcp_tab_page(self, parent)
 
     def _build_skills_tab(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-        card = self._make_card(parent)
-        card.grid(row=0, column=0, sticky="nsew")
-        card.columnconfigure(0, weight=1)
-        card.rowconfigure(1, weight=1)
-
-        tk.Label(card, text="Skills 管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        tk.Label(card, textvariable=self.skills_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="e")
-
-        notebook = ttk.Notebook(card)
-        notebook.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
-        market_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
-        repo_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
-        local_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
-        project_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
-        notebook.add(market_tab, text="技能市场")
-        notebook.add(repo_tab, text="仓库源管理")
-        notebook.add(local_tab, text="本地Skills")
-        notebook.add(project_tab, text="项目Skills")
-
-        self._build_skill_repos_panel(market_tab)
-        self._build_skill_repo_source_panel(repo_tab)
-        self._build_local_skills_panel(local_tab)
-        self._build_project_skills_panel(project_tab)
+        build_skills_tab_page(self, parent)
 
     def _build_skill_repos_panel(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
-        repo_filter_bar = tk.Frame(parent, bg=PALETTE["card_bg"])
-        repo_filter_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        repo_filter_bar.columnconfigure(1, weight=1)
-        tk.Label(repo_filter_bar, text="筛选 Skill", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.skill_market_filter_entry = ttk.Entry(repo_filter_bar, textvariable=self.skill_market_filter_var)
-        self.skill_market_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(repo_filter_bar, text="清除", variant="secondary", command=self.clear_skill_market_filter).grid(row=0, column=2, sticky="e")
-        self.skill_market_filter_var.trace_add("write", lambda *_args: self.apply_skill_market_filter())
-        make_button(repo_filter_bar, text="刷新市场", variant="secondary", command=self.refresh_skill_market_now).grid(row=0, column=3, sticky="e", padx=(8, 0))
-        tk.Label(parent, textvariable=self.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(8, 0))
-
-        market_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        market_wrap.grid(row=1, column=0, sticky="nsew")
-        market_wrap.columnconfigure(0, weight=1)
-        market_wrap.rowconfigure(0, weight=1)
-        self.skill_market_canvas = tk.Canvas(market_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
-        self.skill_market_canvas.grid(row=0, column=0, sticky="nsew")
-        market_scroll = ttk.Scrollbar(market_wrap, orient="vertical", command=self.skill_market_canvas.yview)
-        market_scroll.grid(row=0, column=1, sticky="ns")
-        self.skill_market_canvas.configure(yscrollcommand=market_scroll.set)
-        self.skill_market_frame = tk.Frame(self.skill_market_canvas, bg=PALETTE["card_bg"])
-        self.skill_market_window = self.skill_market_canvas.create_window((0, 0), window=self.skill_market_frame, anchor="nw")
-        self.skill_market_frame.bind(
-            "<Configure>",
-            lambda _event: self.skill_market_canvas.configure(scrollregion=self.skill_market_canvas.bbox("all")),
-        )
-        self.skill_market_canvas.bind("<Configure>", self._layout_skill_market_cards)
+        build_skill_repos_panel_page(self, parent)
 
     def _build_skill_repo_source_panel(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
-        tk.Label(parent, text="仓库源管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
-
-        toolbar = tk.Frame(parent, bg=PALETTE["card_bg"])
-        toolbar.grid(row=1, column=0, sticky="ew", pady=(8, 8))
-        toolbar.columnconfigure(1, weight=1)
-        tk.Label(toolbar, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.skill_repo_filter_entry = ttk.Entry(toolbar, textvariable=self.skill_repo_filter_var)
-        self.skill_repo_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(toolbar, text="清除", variant="secondary", command=self.clear_skill_repo_filter).grid(row=0, column=2, sticky="e", padx=(0, 8))
-        make_button(toolbar, text="新增仓库", variant="primary", command=self.add_skill_market_repo).grid(row=0, column=3, sticky="e", padx=(0, 8))
-        make_button(toolbar, text="检查更新", variant="secondary", command=self.check_selected_skill_repo_update).grid(row=0, column=4, sticky="e")
-        self.skill_repo_filter_var.trace_add("write", lambda *_args: self.apply_skill_repo_filter())
-
-        repo_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        repo_wrap.grid(row=2, column=0, sticky="nsew")
-        repo_wrap.columnconfigure(0, weight=1)
-        repo_wrap.rowconfigure(0, weight=1)
-        self.skill_repo_tree = ttk.Treeview(repo_wrap, columns=("url", "branch", "commit", "auto"), show="headings")
-        self.skill_repo_tree.heading("url", text="GitHub 仓库", anchor="w")
-        self.skill_repo_tree.heading("branch", text="Ref", anchor="center")
-        self.skill_repo_tree.heading("commit", text="最近提交", anchor="center")
-        self.skill_repo_tree.heading("auto", text="自动更新", anchor="center")
-        self.skill_repo_tree.column("url", width=300, anchor="w")
-        self.skill_repo_tree.column("branch", width=90, anchor="center", stretch=False)
-        self.skill_repo_tree.column("commit", width=110, anchor="center", stretch=False)
-        self.skill_repo_tree.column("auto", width=80, anchor="center", stretch=False)
-        self.skill_repo_tree.grid(row=0, column=0, sticky="nsew")
-        self.skill_repo_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_repo_detail())
-        repo_scroll = ttk.Scrollbar(repo_wrap, orient="vertical", command=self.skill_repo_tree.yview)
-        repo_scroll.grid(row=0, column=1, sticky="ns")
-        self.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
-
-        repo_actions = tk.Frame(parent, bg=PALETTE["card_bg"])
-        repo_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        repo_actions.columnconfigure(0, weight=1)
-        tk.Label(repo_actions, textvariable=self.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        make_button(repo_actions, text="编辑仓库", variant="secondary", command=self.edit_skill_market_repo).grid(row=0, column=1, sticky="e", padx=(0, 8))
-        make_button(repo_actions, text="删除仓库", variant="danger", command=self.delete_skill_market_repo).grid(row=0, column=2, sticky="e", padx=(0, 8))
-        make_button(repo_actions, text="安装到组", variant="secondary", command=self.install_selected_skill_repo_to_group).grid(row=0, column=3, sticky="e")
+        build_skill_repo_source_panel_page(self, parent)
 
     def _build_local_skills_panel(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        wrap.grid(row=0, column=0, sticky="nsew")
-        wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(0, weight=1)
-        self.skill_group_tree = ttk.Treeview(wrap, columns=("name", "count", "description"), show="headings")
-        self.skill_group_tree.heading("name", text="组名", anchor="w")
-        self.skill_group_tree.heading("count", text="Skills", anchor="center")
-        self.skill_group_tree.heading("description", text="描述", anchor="w")
-        self.skill_group_tree.column("name", width=180, anchor="w")
-        self.skill_group_tree.column("count", width=80, anchor="center", stretch=False)
-        self.skill_group_tree.column("description", width=420, anchor="w")
-        self.skill_group_tree.grid(row=0, column=0, sticky="nsew")
-        self.skill_group_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_group_detail())
-        group_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_group_tree.yview)
-        group_scroll.grid(row=0, column=1, sticky="ns")
-        self.skill_group_tree.configure(yscrollcommand=group_scroll.set)
-
-        actions = tk.Frame(parent, bg=PALETTE["card_bg"])
-        actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        for column in range(6):
-            actions.columnconfigure(column, weight=1)
-        make_button(actions, text="新增组", variant="primary", command=self.add_skill_group).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="编辑组", variant="secondary", command=self.edit_skill_group).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="删除组", variant="danger", command=self.delete_skill_group).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        make_button(actions, text="刷新", variant="secondary", command=self.refresh_skills_tab).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        tk.Label(actions, textvariable=self.skill_group_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=4, columnspan=2, sticky="w")
+        build_local_skills_panel_page(self, parent)
 
     def _build_project_skills_panel(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-        wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
-        wrap.grid(row=0, column=0, sticky="nsew")
-        wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(0, weight=1)
-        self.skill_project_tree = ttk.Treeview(wrap, columns=("name", "groups", "skills"), show="headings")
-        self.skill_project_tree.heading("name", text="项目", anchor="w")
-        self.skill_project_tree.heading("groups", text="关联组", anchor="w")
-        self.skill_project_tree.heading("skills", text="展开 Skills", anchor="w")
-        self.skill_project_tree.column("name", width=180, anchor="w")
-        self.skill_project_tree.column("groups", width=260, anchor="w")
-        self.skill_project_tree.column("skills", width=360, anchor="w")
-        self.skill_project_tree.grid(row=0, column=0, sticky="nsew")
-        self.skill_project_tree.bind("<<TreeviewSelect>>", lambda _event: self._refresh_skill_project_detail())
-        project_scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.skill_project_tree.yview)
-        project_scroll.grid(row=0, column=1, sticky="ns")
-        self.skill_project_tree.configure(yscrollcommand=project_scroll.set)
-
-        actions = tk.Frame(parent, bg=PALETTE["card_bg"])
-        actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        actions.columnconfigure(0, weight=1)
-        actions.columnconfigure(1, weight=1)
-        actions.columnconfigure(2, weight=3)
-        make_button(actions, text="编辑项目关联", variant="primary", command=self.edit_project).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="刷新", variant="secondary", command=self.refresh_skills_tab).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        tk.Label(actions, textvariable=self.skill_project_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w")
+        build_project_skills_panel_page(self, parent)
 
     def _build_docs_tab(self, parent: tk.Misc) -> None:
         build_docs_tab_page(self, parent)
