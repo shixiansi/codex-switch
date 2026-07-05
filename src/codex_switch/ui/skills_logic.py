@@ -67,6 +67,18 @@ class SkillsTabDisplay:
 
 
 @dataclass(frozen=True)
+class SkillRepoPreviewRow:
+    source_path: str
+    values: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class SkillRepoPreviewDisplay:
+    rows: list[SkillRepoPreviewRow]
+    status_text: str
+
+
+@dataclass(frozen=True)
 class SkillGroupDialogCardDisplay:
     skill_id: str
     title: str
@@ -216,6 +228,85 @@ def build_skills_tab_display(
         selected_repo_id=resolved_repo_id,
         selected_group_id=resolved_group_id,
     )
+
+
+def skill_repo_filter_text(
+    repo: SkillMarketRepo,
+    *,
+    groups_by_id: dict[str, SkillGroup] | None = None,
+) -> str:
+    group = (groups_by_id or {}).get(repo.installed_group_id)
+    group_name = group.name if group is not None else ""
+    auto_label = "auto automatic 自动 是" if repo.auto_update else "manual 手动 否"
+    return " ".join(
+        item
+        for item in (
+            repo.url,
+            repo.branch,
+            repo.last_sync_commit,
+            group_name,
+            auto_label,
+        )
+        if item
+    ).casefold()
+
+
+def filter_skill_market_repos(
+    repos: list[SkillMarketRepo],
+    *,
+    groups: list[SkillGroup],
+    query: str,
+) -> list[SkillMarketRepo]:
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        return list(repos)
+    group_by_id = {group.id: group for group in groups}
+    return [
+        repo
+        for repo in repos
+        if normalized_query in skill_repo_filter_text(repo, groups_by_id=group_by_id)
+    ]
+
+
+def filter_skill_repo_preview_sources(
+    sources: list[SkillSource],
+    *,
+    query: str,
+) -> list[SkillSource]:
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        return list(sources)
+    return [
+        source
+        for source in sources
+        if normalized_query in source.name.casefold()
+        or normalized_query in source.display_name.casefold()
+        or normalized_query in str(source.source_path).casefold()
+    ]
+
+
+def skill_repo_preview_display(
+    repo: SkillMarketRepo,
+    all_sources: list[SkillSource],
+    visible_sources: list[SkillSource],
+    *,
+    query: str,
+) -> SkillRepoPreviewDisplay:
+    rows = [
+        SkillRepoPreviewRow(
+            source_path=str(source.source_path),
+            values=(source.name, compact_text(str(source.source_path), 54)),
+        )
+        for source in visible_sources
+    ]
+    total_count = len(all_sources)
+    visible_count = len(visible_sources)
+    normalized_query = query.strip()
+    if normalized_query:
+        status_text = f"{repo.url}：{visible_count} / {total_count} 个 Skills，筛选“{normalized_query}”。"
+    else:
+        status_text = f"{repo.url}：{total_count} 个 Skills。"
+    return SkillRepoPreviewDisplay(rows=rows, status_text=status_text)
 
 
 def skill_group_detail_text(group: SkillGroup | None) -> str:

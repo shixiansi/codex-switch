@@ -167,7 +167,12 @@ from codex_switch.ui.mcp_logic import (
     render_mcp_preview,
     safe_mcp_server_names,
 )
-from codex_switch.ui.skills_logic import build_skills_tab_display
+from codex_switch.ui.skills_logic import (
+    build_skills_tab_display,
+    filter_skill_market_repos,
+    filter_skill_repo_preview_sources,
+    skill_repo_preview_display,
+)
 from codex_switch.ui.skills_logic import (
     expanded_skills_for_group_ids,
     projects_after_skill_group_delete,
@@ -3090,9 +3095,29 @@ args = ["-m", "alpha"]
 
         app.skill_repo_filter_var.set("自动")
         self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_beta.url])
+        self.assertEqual(
+            [repo.url for repo in filter_skill_market_repos([repo_alpha, repo_beta], groups=[group], query="自动")],
+            [repo_beta.url],
+        )
 
         app.clear_skill_repo_filter()
         self.assertEqual([repo.url for repo in app._filtered_skill_market_repos()], [repo_alpha.url, repo_beta.url])
+
+    def test_skill_repo_preview_helpers_filter_and_render_status(self) -> None:
+        repo = SkillMarketRepo.create("https://github.com/example/skills")
+        sources = [
+            SkillSource(name="alpha-helper", display_name="Alpha Helper", source_path=Path("skills/alpha-helper")),
+            SkillSource(name="beta-helper", display_name="Beta Helper", source_path=Path("skills/beta-helper")),
+            SkillSource(name="gamma-helper", display_name="Category Helper", source_path=Path("skills/category-helper")),
+        ]
+
+        filtered = filter_skill_repo_preview_sources(sources, query="beta")
+        display = skill_repo_preview_display(repo, sources, filtered, query="beta")
+
+        self.assertEqual([source.name for source in filtered], ["beta-helper"])
+        self.assertEqual([row.values[0] for row in display.rows], ["beta-helper"])
+        self.assertIn("1 / 3", display.status_text)
+        self.assertIn("beta", display.status_text)
 
     def test_skill_repo_preview_sync_does_not_mark_repo_synced(self) -> None:
         class FakeCompleted:

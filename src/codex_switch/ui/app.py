@@ -323,12 +323,15 @@ from codex_switch.ui.skills_logic import (
     build_skills_tab_display,
     expanded_skills_for_group_ids,
     existing_repo_files,
+    filter_skill_market_repos,
+    filter_skill_repo_preview_sources,
     import_skill_sources_to_group,
     load_skill_market_entries,
     profile_metadata_entries,
     projects_after_skill_group_delete,
     remove_skill_group,
     replace_skill_group,
+    skill_repo_preview_display,
     skill_repo_checksum_required_paths,
     skill_group_with_added_skill,
     skill_group_with_deleted_skill,
@@ -3673,32 +3676,14 @@ class CodexSwitchApp:
             ).grid(row=3, column=0, sticky="ew")
         self._layout_skill_market_cards()
 
-    def _skill_repo_filter_text(self, repo: SkillMarketRepo) -> str:
-        group = self._skill_group_by_id(repo.installed_group_id)
-        group_name = group.name if group is not None else ""
-        auto_label = "auto automatic 自动 是" if repo.auto_update else "manual 手动 否"
-        return " ".join(
-            item
-            for item in (
-                repo.url,
-                repo.branch,
-                repo.last_sync_commit,
-                group_name,
-                auto_label,
-            )
-            if item
-        ).casefold()
-
     def _filtered_skill_market_repos(self) -> list[SkillMarketRepo]:
         query_var = getattr(self, "skill_repo_filter_var", None)
         query = query_var.get().strip().casefold() if query_var is not None else ""
-        if not query:
-            return list(self.skill_market_repos)
-        return [
-            repo
-            for repo in self.skill_market_repos
-            if query in self._skill_repo_filter_text(repo)
-        ]
+        return filter_skill_market_repos(
+            self.skill_market_repos,
+            groups=self.skill_groups,
+            query=query,
+        )
 
     def apply_skill_repo_filter(self) -> None:
         self.refresh_skills_tab()
@@ -3727,35 +3712,28 @@ class CodexSwitchApp:
         candidates = list(self.skill_repo_preview_sources if sources is None else sources)
         query_var = getattr(self, "skill_repo_preview_filter_var", None)
         query = query_var.get().strip().casefold() if query_var is not None else ""
-        if not query:
-            return candidates
-        return [
-            source
-            for source in candidates
-            if query in source.name.casefold()
-            or query in source.display_name.casefold()
-            or query in str(source.source_path).casefold()
-        ]
+        return filter_skill_repo_preview_sources(candidates, query=query)
 
     def _render_skill_repo_preview_rows(self, repo: SkillMarketRepo, sources: list[SkillSource]) -> None:
         if not hasattr(self, "skill_repo_preview_tree"):
             return
         for item in self.skill_repo_preview_tree.get_children():
             self.skill_repo_preview_tree.delete(item)
-        for source in sources:
+        query = self.skill_repo_preview_filter_var.get().strip() if hasattr(self, "skill_repo_preview_filter_var") else ""
+        display = skill_repo_preview_display(
+            repo,
+            self.skill_repo_preview_sources,
+            sources,
+            query=query,
+        )
+        for row in display.rows:
             self.skill_repo_preview_tree.insert(
                 "",
                 "end",
-                iid=str(source.source_path),
-                values=(source.name, compact_text(str(source.source_path), 54)),
+                iid=row.source_path,
+                values=row.values,
             )
-        total_count = len(self.skill_repo_preview_sources)
-        visible_count = len(sources)
-        query = self.skill_repo_preview_filter_var.get().strip() if hasattr(self, "skill_repo_preview_filter_var") else ""
-        if query:
-            self.skill_repo_preview_var.set(f"{repo.url}：{visible_count} / {total_count} 个 Skills，筛选“{query}”。")
-        else:
-            self.skill_repo_preview_var.set(f"{repo.url}：{total_count} 个 Skills。")
+        self.skill_repo_preview_var.set(display.status_text)
 
     def apply_skill_repo_preview_filter(self) -> None:
         repo = self._skill_repo_by_id(getattr(self, "skill_repo_preview_repo_id", ""))
