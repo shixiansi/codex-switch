@@ -376,7 +376,12 @@ from codex_switch.ui.profile_logic import (
     profile_initial_vendor,
     updated_profile_from_dialog as updated_profile_record_from_dialog,
 )
-from codex_switch.ui.page_builders import build_docs_tab_page, build_mcp_tab_page
+from codex_switch.ui.page_builders import (
+    build_account_pool_tab_page,
+    build_docs_tab_page,
+    build_mcp_tab_page,
+    build_test_tab_page,
+)
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -1446,125 +1451,7 @@ class CodexSwitchApp:
         return wrap, tree
 
     def _build_account_pool_tab(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
-        content.grid(row=0, column=0, sticky="nsew")
-        content.columnconfigure(0, weight=7)
-        content.columnconfigure(1, weight=4)
-        content.rowconfigure(0, weight=1)
-
-        left = self._make_card(content)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(3, weight=1)
-        header = tk.Frame(left, bg=PALETTE["card_bg"])
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        tk.Label(header, text="号池", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(
-            header,
-            text="启用号池",
-            variable=self.account_pool_enabled_var,
-            command=self.save_account_pool_settings,
-        ).grid(row=0, column=1, sticky="e")
-        tk.Label(left, textvariable=self.account_pool_summary_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
-
-        group_bar = tk.Frame(left, bg=PALETTE["card_bg"])
-        group_bar.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        group_bar.columnconfigure(1, weight=1)
-        group_bar.columnconfigure(3, weight=1)
-        tk.Label(group_bar, text="号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.account_pool_group_combo = ttk.Combobox(
-            group_bar,
-            textvariable=self.account_pool_group_var,
-            state="readonly",
-            width=24,
-        )
-        self.account_pool_group_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        self.account_pool_group_combo.bind("<<ComboboxSelected>>", self._on_account_pool_group_changed)
-        ttk.Checkbutton(
-            group_bar,
-            text="启用组",
-            variable=self.account_pool_group_enabled_var,
-            command=self.save_account_pool_group_settings,
-        ).grid(row=0, column=2, sticky="w", padx=(0, 8))
-        make_button(group_bar, text="新建组", variant="secondary", command=self.add_account_pool_group).grid(row=0, column=3, padx=(0, 8))
-        make_button(group_bar, text="删除组", variant="danger", command=self.delete_account_pool_group).grid(row=0, column=4, padx=(0, 8))
-        self.account_pool_source_filter_combo = ttk.Combobox(
-            group_bar,
-            textvariable=self.account_pool_source_filter_var,
-            values=(
-                ACCOUNT_POOL_SOURCE_FILTER_ALL,
-                ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
-                ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
-            ),
-            state="readonly",
-            width=12,
-        )
-        self.account_pool_source_filter_combo.grid(row=0, column=5, sticky="e")
-        self.account_pool_source_filter_var.trace_add("write", lambda *_args: self.refresh_account_pool_tab())
-
-        tk.Label(group_bar, text="类型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Combobox(
-            group_bar,
-            textvariable=self.account_pool_group_type_var,
-            values=tuple(ACCOUNT_POOL_GROUP_TYPE_LABELS.values()),
-            state="readonly",
-            width=14,
-        ).grid(row=1, column=1, sticky="w", padx=(0, 8), pady=(8, 0))
-        tk.Label(group_bar, text="Codex 默认模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=2, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(group_bar, textvariable=self.account_pool_group_default_model_var, width=24).grid(row=1, column=3, columnspan=3, sticky="ew", pady=(8, 0))
-        tk.Label(group_bar, text="Claude 默认模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(group_bar, textvariable=self.account_pool_group_claude_model_var, width=24).grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(8, 0))
-        tk.Label(group_bar, text="Claude 兜底模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=2, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(group_bar, textvariable=self.account_pool_group_claude_fallback_model_var, width=24).grid(row=2, column=3, columnspan=3, sticky="ew", pady=(8, 0))
-        make_button(group_bar, text="保存组设置", variant="primary", command=self.save_account_pool_group_settings).grid(row=3, column=3, columnspan=3, sticky="e", pady=(8, 0))
-
-        tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        tree_wrap.grid(row=3, column=0, sticky="nsew")
-        tree_wrap.columnconfigure(0, weight=1)
-        tree_wrap.rowconfigure(0, weight=1)
-        self.account_pool_tree = ttk.Treeview(
-            tree_wrap,
-            columns=("name", "source", "base_url", "wire", "key", "status", "checked", "failure"),
-            show="headings",
-        )
-        for column, title, width in (
-            ("name", "名称", 140),
-            ("source", "来源", 90),
-            ("base_url", "API 地址", 220),
-            ("wire", "Wire API", 120),
-            ("key", "Key", 120),
-            ("status", "状态", 80),
-            ("checked", "最后检测", 130),
-            ("failure", "失败原因", 220),
-        ):
-            self.account_pool_tree.heading(column, text=title)
-            self.account_pool_tree.column(column, width=width, anchor="center")
-        self.account_pool_tree.grid(row=0, column=0, sticky="nsew")
-        self.account_pool_tree.bind("<<TreeviewSelect>>", self._on_account_pool_selection_changed)
-        pool_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.account_pool_tree.yview)
-        pool_scroll.grid(row=0, column=1, sticky="ns")
-        self.account_pool_tree.configure(yscrollcommand=pool_scroll.set)
-
-        actions = tk.Frame(left, bg=PALETTE["card_bg"])
-        actions.grid(row=4, column=0, sticky="ew", pady=(14, 0))
-        for column in range(6):
-            actions.columnconfigure(column, weight=1)
-        make_button(actions, text="添加临时", variant="primary", command=self.add_account_pool_channel).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="加入配置库", variant="secondary", command=self.add_account_pool_profile_channel).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="编辑渠道", variant="secondary", command=self.edit_account_pool_channel).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        make_button(actions, text="删除渠道", variant="danger", command=self.delete_account_pool_channel).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        make_button(actions, text="重测异常", variant="secondary", command=self.retest_account_pool_channel).grid(row=0, column=4, sticky="ew", padx=(0, 8))
-        make_button(actions, text="刷新", variant="secondary", command=self.refresh_account_pool_tab).grid(row=0, column=5, sticky="ew")
-
-        right = self._make_card(content)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(1, weight=1)
-        tk.Label(right, textvariable=self.account_pool_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, columnspan=2, sticky="w")
-        self._create_info_row(right, 1, "渠道详情", self.account_pool_selected_detail_var, wraplength=360)
+        build_account_pool_tab_page(self, parent)
 
     def _build_mcp_tab(self, parent: tk.Misc) -> None:
         build_mcp_tab_page(self, parent)
@@ -1859,125 +1746,7 @@ class CodexSwitchApp:
         self.hot_update_log_text.configure(yscrollcommand=hot_update_log_scroll.set)
 
     def _build_test_tab(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
-        content.grid(row=0, column=0, sticky="nsew")
-        content.columnconfigure(0, weight=0)
-        content.columnconfigure(1, weight=1)
-        content.rowconfigure(0, weight=1)
-        self.test_layout_content = content
-        content.bind("<Configure>", self._sync_test_layout_widths)
-
-        left = self._make_card(content)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left.grid_propagate(False)
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(1, weight=1)
-        self.test_api_panel = left
-        test_api_header = tk.Frame(left, bg=PALETTE["card_bg"])
-        test_api_header.grid(row=0, column=0, sticky="ew")
-        test_api_header.columnconfigure(0, weight=1)
-        tk.Label(test_api_header, text="测试 API 选择", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        make_button(test_api_header, textvariable=self.hide_error_button_var, variant="secondary", command=self._on_profile_filter_changed).grid(row=0, column=1, sticky="e")
-
-        api_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
-        api_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
-        api_tree_wrap.columnconfigure(0, weight=1)
-        api_tree_wrap.rowconfigure(0, weight=1)
-
-        self.test_api_tree = ttk.Treeview(api_tree_wrap, columns=("name", "health"), show="headings")
-        self.test_api_tree.heading("name", text="API")
-        self.test_api_tree.heading("health", text="状态")
-        self.test_api_tree.column("name", width=165, minwidth=120, anchor="w")
-        self.test_api_tree.column("health", width=78, minwidth=64, anchor="center")
-        self.test_api_tree.grid(row=0, column=0, sticky="nsew")
-        self.test_api_tree.bind("<<TreeviewSelect>>", self._on_test_api_selection_changed)
-
-        api_scroll = ttk.Scrollbar(api_tree_wrap, orient="vertical", command=self.test_api_tree.yview)
-        api_scroll.grid(row=0, column=1, sticky="ns")
-        self.test_api_tree.configure(yscrollcommand=api_scroll.set)
-
-        right = tk.Frame(content, bg=PALETTE["panel_bg"])
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=0)
-        right.rowconfigure(1, weight=1)
-
-        detail = self._make_card(right)
-        detail.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
-        detail.columnconfigure(1, weight=1)
-        detail.columnconfigure(3, weight=1)
-
-        header = tk.Frame(detail, bg=PALETTE["card_bg"])
-        header.grid(row=0, column=0, columnspan=4, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        tk.Label(header, text="健康检测", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        self.test_detail_badge = make_status_badge(header, textvariable=self.test_detail_health_var)
-        self.test_detail_badge.grid(row=0, column=1, sticky="e", padx=(10, 8))
-        self.model_batch_button = make_button(header, text="测试选中 API 模型", variant="primary", command=self.test_selected_api_models)
-        self.model_batch_button.grid(row=0, column=2, sticky="e")
-        tk.Label(header, textvariable=self.test_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-        tk.Label(detail, text="健康状态判定", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="nw", padx=(0, 14), pady=(14, 4))
-        override_row = tk.Frame(detail, bg=PALETTE["card_bg"])
-        override_row.grid(row=1, column=1, sticky="ew", pady=(14, 4))
-        self.health_override_combo = ttk.Combobox(override_row, textvariable=self.health_override_var, state="readonly", values=tuple(HEALTH_OVERRIDE_DISPLAY.values()), width=22)
-        self.health_override_combo.grid(row=0, column=0, sticky="w")
-        self.health_override_combo.bind("<<ComboboxSelected>>", self._on_health_override_changed)
-        tk.Label(override_row, textvariable=self.health_override_note_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font, justify="left", wraplength=320).grid(row=1, column=0, sticky="w", pady=(6, 0))
-
-        self._create_dual_info_row(detail, 2, "提供方", self.test_detail_provider_var, "默认模型", self.test_detail_model_var)
-        self._create_dual_info_row(detail, 3, "API Key", self.test_detail_key_var, "Wire API", self.test_detail_wire_var)
-        self._create_dual_info_row(detail, 4, "最近检测", self.test_detail_checked_var, "最近 endpoint", self.test_detail_endpoint_var)
-        self._create_info_row(detail, 5, "API 地址", self.test_detail_api_var, wraplength=520)
-        self._create_info_row(detail, 6, "结果详情", self.test_detail_result_var, wraplength=520)
-        self._create_success_models_row(detail, 7)
-        self._create_info_row(detail, 8, "备注", self.test_detail_notes_var, wraplength=520)
-
-        chat = self._make_card(right)
-        chat.grid(row=1, column=0, sticky="nsew")
-        chat.columnconfigure(0, weight=1)
-        chat.rowconfigure(2, weight=1)
-
-        chat_header = tk.Frame(chat, bg=PALETTE["card_bg"])
-        chat_header.grid(row=0, column=0, sticky="ew")
-        chat_header.columnconfigure(0, weight=1)
-        tk.Label(chat_header, text="聊天测试", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        tk.Label(chat_header, text="模型、接口标准和请求体在聊天设置里临时覆盖。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.chat_settings_button = make_button(chat_header, text="聊天设置", variant="secondary", command=self.open_chat_settings)
-        self.chat_settings_button.grid(row=0, column=1, rowspan=2, sticky="e")
-
-        chat_meta = tk.Frame(chat, bg=PALETTE["card_bg"])
-        chat_meta.grid(row=1, column=0, sticky="ew", pady=(12, 10))
-        chat_meta.columnconfigure(1, weight=1)
-        tk.Label(chat_meta, text="测试配置", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 12))
-        tk.Label(chat_meta, textvariable=self.chat_target_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font).grid(row=0, column=1, sticky="w")
-        tk.Label(chat_meta, text="当前设置", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 12), pady=(6, 0))
-        tk.Label(chat_meta, textvariable=self.chat_settings_summary_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=620).grid(row=1, column=1, sticky="w", pady=(6, 0))
-
-        history_wrap = tk.Frame(chat, bg=PALETTE["card_bg"])
-        history_wrap.grid(row=2, column=0, sticky="nsew")
-        history_wrap.columnconfigure(0, weight=1)
-        history_wrap.rowconfigure(0, weight=1)
-        self.chat_history = tk.Text(history_wrap, wrap="word", relief="solid", borderwidth=1, highlightthickness=0, font=self.body_font, bg="#FBFDFE", fg=PALETTE["text"], state="disabled")
-        self.chat_history.grid(row=0, column=0, sticky="nsew")
-        chat_scroll = ttk.Scrollbar(history_wrap, orient="vertical", command=self.chat_history.yview)
-        chat_scroll.grid(row=0, column=1, sticky="ns")
-        self.chat_history.configure(yscrollcommand=chat_scroll.set)
-
-        input_wrap = tk.Frame(chat, bg=PALETTE["card_bg"])
-        input_wrap.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        input_wrap.columnconfigure(0, weight=1)
-        self.chat_input = tk.Text(input_wrap, height=4, wrap="word", relief="solid", borderwidth=1, highlightthickness=0, font=self.body_font, fg=PALETTE["text"])
-        self.chat_input.grid(row=0, column=0, sticky="ew")
-        buttons = tk.Frame(input_wrap, bg=PALETTE["card_bg"])
-        buttons.grid(row=0, column=1, sticky="ns", padx=(10, 0))
-        self.chat_send_button = make_button(buttons, text="发送测试", variant="primary", command=self.send_chat_message)
-        self.chat_send_button.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        make_button(buttons, text="清空记录", variant="secondary", command=self.clear_chat_history).grid(row=1, column=0, sticky="ew")
-        content.after_idle(self._sync_test_layout_widths)
+        build_test_tab_page(self, parent)
 
     def _sync_test_layout_widths(self, event: tk.Event | None = None) -> None:
         content = getattr(self, "test_layout_content", None)
