@@ -136,6 +136,13 @@ class RouteProxyProjectEnablePlan:
     settings: RouteProxySettings
     codex_protocol: str
     claude_protocol: str
+    success_status: str
+
+
+@dataclass(frozen=True)
+class RouteProxyProjectDisablePlan:
+    settings: RouteProxySettings
+    success_status: str
 
 
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
@@ -509,7 +516,30 @@ def build_route_proxy_project_enable_plan(
         settings=updated_settings,
         codex_protocol=codex_protocol,
         claude_protocol=claude_protocol,
+        success_status=f"已启用项目路由代理并同步配置：{project.name}",
     )
+
+
+def build_route_proxy_project_disable_plan(
+    settings: RouteProxySettings,
+    project: ProjectRecord,
+) -> RouteProxyProjectDisablePlan:
+    return RouteProxyProjectDisablePlan(
+        settings=settings.without_project_rules(project.id),
+        success_status=f"已关闭项目路由代理并同步配置：{project.name}",
+    )
+
+
+def route_proxy_started_status(settings: RouteProxySettings) -> str:
+    return f"路由代理已启动：{settings.base_url}"
+
+
+def route_proxy_stopped_status() -> str:
+    return "路由代理已停止。"
+
+
+def route_proxy_start_failed_status() -> str:
+    return "路由代理启动失败"
 
 
 def route_proxy_rule_for_project_client(

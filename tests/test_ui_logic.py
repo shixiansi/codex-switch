@@ -206,6 +206,7 @@ from codex_switch.ui.project_logic import (
 )
 from codex_switch.ui.route_proxy_logic import (
     build_route_proxy_project_enable_plan,
+    build_route_proxy_project_disable_plan,
     route_proxy_account_pool_choices,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
@@ -1863,6 +1864,23 @@ command = "node"
         self.assertEqual(claude_rule.primary_profile_id, "claude-profile")
         self.assertEqual(claude_rule.upstream_model, "")
         self.assertEqual(plan.settings.rules_for_project("other-project")[0].primary_profile_id, "other-profile")
+        self.assertIn(project.name, plan.success_status)
+
+    def test_build_route_proxy_project_disable_plan_removes_project_rules_only(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id")
+        other_project = ProjectRecord.create(str(Path.cwd() / "other"), "other-profile")
+        settings = RouteProxySettings(
+            rules=[
+                RouteProxyRule.create(project_id=project.id, client_type=ROUTE_PROXY_CLIENT_CODEX, primary_profile_id="profile-id"),
+                RouteProxyRule.create(project_id=other_project.id, client_type=ROUTE_PROXY_CLIENT_CODEX, primary_profile_id="other-profile"),
+            ]
+        )
+
+        plan = build_route_proxy_project_disable_plan(settings, project)
+
+        self.assertEqual(plan.settings.rules_for_project(project.id), [])
+        self.assertEqual(len(plan.settings.rules_for_project(other_project.id)), 1)
+        self.assertIn(project.name, plan.success_status)
 
     def test_route_proxy_project_helpers_follow_enabled_codex_rule(self) -> None:
         project = ProjectRecord.create(str(Path.cwd()), "profile-id")

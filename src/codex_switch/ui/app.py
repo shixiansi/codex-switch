@@ -275,6 +275,7 @@ from codex_switch.ui.route_proxy_logic import (
     apply_route_proxy_settings_form,
     apply_route_proxy_project_rules,
     build_route_proxy_project_enable_plan,
+    build_route_proxy_project_disable_plan,
     claude_model_overrides_for_project,
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_LABELS,
@@ -287,6 +288,9 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_account_pool_choices,
     resolve_route_proxy_project_rule_form,
     route_proxy_tab_display,
+    route_proxy_started_status,
+    route_proxy_start_failed_status,
+    route_proxy_stopped_status,
     refresh_route_proxy_upstream_models,
     route_proxy_detail_display,
     refresh_route_proxy_rules_for_project,
@@ -5168,19 +5172,19 @@ class CodexSwitchApp:
             self.route_proxy_settings.enabled = False
             if show_errors:
                 messagebox.showerror("启动失败", f"路由代理启动失败：\n{exc}", parent=self.root)
-            self.status_var.set("路由代理启动失败")
+            self.status_var.set(route_proxy_start_failed_status())
             self.persist_state()
             return
         self.persist_state()
         self.refresh_proxy_tab()
-        self.status_var.set(f"路由代理已启动：{self.route_proxy_settings.base_url}")
+        self.status_var.set(route_proxy_started_status(self.route_proxy_settings))
 
     def stop_route_proxy(self) -> None:
         self.route_proxy_server.stop()
         self.route_proxy_settings.enabled = False
         self.persist_state()
         self.refresh_proxy_tab()
-        self.status_var.set("路由代理已停止。")
+        self.status_var.set(route_proxy_stopped_status())
 
     def _record_account_pool_update(self, settings: AccountPoolSettings) -> None:
         self.account_pool_settings = settings
@@ -5416,20 +5420,21 @@ class CodexSwitchApp:
         if self._sync_project_api_binding(project):
             self.refresh_project_tab()
             self.refresh_proxy_tab()
-            self.status_var.set(f"已启用项目路由代理并同步配置：{project.name}")
+            self.status_var.set(plan.success_status)
 
     def disable_route_proxy_for_project(self) -> None:
         project = self._selected_proxy_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
+        plan = build_route_proxy_project_disable_plan(self.route_proxy_settings, project)
+        self.route_proxy_settings = plan.settings
         self.persist_state()
         self.refresh_proxy_tab()
         if self._sync_project_api_binding(project):
             self.refresh_project_tab()
             self.refresh_proxy_tab()
-            self.status_var.set(f"已关闭项目路由代理并同步配置：{project.name}")
+            self.status_var.set(plan.success_status)
 
     def ensure_window_visible(self) -> None:
         self.root.update_idletasks()
