@@ -59,6 +59,8 @@ class SkillsTabDisplay:
     project_rows: list[SkillProjectRow]
     hint_text: str
     preview_status_text: str
+    selected_repo_id: str | None = None
+    selected_group_id: str | None = None
 
 
 def github_repo_author(repo_url: str) -> str:
@@ -135,6 +137,8 @@ def build_skills_tab_display(
     market_entries_count: int,
     market_errors_count: int,
     repo_filter_active: bool,
+    selected_repo_id: str | None = None,
+    selected_group_id: str | None = None,
 ) -> SkillsTabDisplay:
     repo_rows = [
         SkillRepoRow(
@@ -183,12 +187,16 @@ def build_skills_tab_display(
     hint_text = f"{len(all_repos)} 个仓库{repo_filter_text}；{len(groups)} 个本地组，{len(projects)} 个项目。"
     error_text = f"；{market_errors_count} 个仓库读取失败" if market_errors_count else ""
     preview_status_text = f"市场显示 {market_entries_count} 个 Skills{error_text}。"
+    resolved_repo_id = selected_repo_id if any(row.repo_id == selected_repo_id for row in repo_rows) else None
+    resolved_group_id = selected_group_id if any(row.group_id == selected_group_id for row in group_rows) else None
     return SkillsTabDisplay(
         repo_rows=repo_rows,
         group_rows=group_rows,
         project_rows=project_rows,
         hint_text=hint_text,
         preview_status_text=preview_status_text,
+        selected_repo_id=resolved_repo_id,
+        selected_group_id=resolved_group_id,
     )
 
 

@@ -3550,6 +3550,8 @@ class CodexSwitchApp:
             self.skill_market_force_sync = False
             self._render_skill_market_cards(market_entries)
         visible_repos = self._filtered_skill_market_repos() if hasattr(self, "skill_repo_tree") else list(self.skill_market_repos)
+        selected_repo_id = self.skill_repo_tree.focus() if hasattr(self, "skill_repo_tree") else None
+        selected_group_id = self.skill_group_tree.focus() if hasattr(self, "skill_group_tree") else None
         display = build_skills_tab_display(
             all_repos=self.skill_market_repos,
             visible_repos=visible_repos,
@@ -3560,9 +3562,10 @@ class CodexSwitchApp:
             repo_filter_active=bool(
                 hasattr(self, "skill_repo_filter_var") and self.skill_repo_filter_var.get().strip()
             ),
+            selected_repo_id=selected_repo_id,
+            selected_group_id=selected_group_id,
         )
         if hasattr(self, "skill_repo_tree"):
-            selected_repo_id = self.skill_repo_tree.focus()
             for item in self.skill_repo_tree.get_children():
                 self.skill_repo_tree.delete(item)
             for row in display.repo_rows:
@@ -3572,12 +3575,11 @@ class CodexSwitchApp:
                     iid=row.repo_id,
                     values=row.values,
                 )
-            if selected_repo_id and any(row.repo_id == selected_repo_id for row in display.repo_rows):
-                self.skill_repo_tree.selection_set(selected_repo_id)
-                self.skill_repo_tree.focus(selected_repo_id)
+            if display.selected_repo_id:
+                self.skill_repo_tree.selection_set(display.selected_repo_id)
+                self.skill_repo_tree.focus(display.selected_repo_id)
 
         if hasattr(self, "skill_group_tree"):
-            selected_group_id = self.skill_group_tree.focus()
             for item in self.skill_group_tree.get_children():
                 self.skill_group_tree.delete(item)
             for row in display.group_rows:
@@ -3587,9 +3589,9 @@ class CodexSwitchApp:
                     iid=row.group_id,
                     values=row.values,
                 )
-            if selected_group_id and any(row.group_id == selected_group_id for row in display.group_rows):
-                self.skill_group_tree.selection_set(selected_group_id)
-                self.skill_group_tree.focus(selected_group_id)
+            if display.selected_group_id:
+                self.skill_group_tree.selection_set(display.selected_group_id)
+                self.skill_group_tree.focus(display.selected_group_id)
 
         if hasattr(self, "skill_project_tree"):
             for item in self.skill_project_tree.get_children():

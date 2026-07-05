@@ -1452,6 +1452,8 @@ command = "node"
             market_entries_count=3,
             market_errors_count=1,
             repo_filter_active=True,
+            selected_repo_id=repo_b.id,
+            selected_group_id=group.id,
         )
 
         self.assertEqual([row.repo_id for row in display.repo_rows], [repo_b.id])
@@ -1461,6 +1463,8 @@ command = "node"
         self.assertIn("1 个本地组", display.hint_text)
         self.assertIn("市场显示 3 个 Skills", display.preview_status_text)
         self.assertIn("1 个仓库读取失败", display.preview_status_text)
+        self.assertEqual(display.selected_repo_id, repo_b.id)
+        self.assertEqual(display.selected_group_id, group.id)
 
     def test_hot_update_logic_helpers_append_render_and_summarize(self) -> None:
         events = append_hot_update_event(
