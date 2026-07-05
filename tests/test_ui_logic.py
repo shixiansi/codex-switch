@@ -133,6 +133,7 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_summary_text,
     process_hot_update_candidate,
 )
+from codex_switch.ui.update_logic import build_software_update_finish_plan
 from codex_switch.ui.library_logic import (
     build_library_detail_display,
     build_library_tab_display,
@@ -454,6 +455,35 @@ class SoftwareUpdateTests(unittest.TestCase):
         self.assertIn("未能获取 GitHub 最新版本信息", app.software_update_status_var.get())
         self.assertEqual(app.hot_update_events[0].status, "error")
         self.assertNotIn("None", app._hot_update_event_line(app.hot_update_events[0]))
+
+    def test_build_software_update_finish_plan_covers_error_current_and_available(self) -> None:
+        current_plan = build_software_update_finish_plan(
+            SoftwareUpdateInfo(
+                current_version="0.2.2",
+                latest_version="0.2.2",
+                release_url="https://github.com/shixiansi/codex-switch/releases/tag/v0.2.2",
+            ),
+            "",
+        )
+        available_plan = build_software_update_finish_plan(
+            SoftwareUpdateInfo(
+                current_version="0.2.2",
+                latest_version="v0.3.0",
+                release_url="https://github.com/shixiansi/codex-switch/releases/tag/v0.3.0",
+                download_url="https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip",
+                release_name="Codex Switch v0.3.0",
+            ),
+            "",
+        )
+        error_plan = build_software_update_finish_plan(None, "None")
+
+        self.assertEqual(current_plan.kind, "current")
+        self.assertIn("当前已是最新版本", current_plan.status_text)
+        self.assertEqual(available_plan.kind, "available")
+        self.assertIn("发现新版本", available_plan.status_text)
+        self.assertIn("是否打开下载页面", available_plan.prompt_message)
+        self.assertEqual(error_plan.kind, "error")
+        self.assertIn("未能获取 GitHub 最新版本信息", error_plan.event_detail)
 
     def test_existing_software_update_none_error_renders_readable_detail(self) -> None:
         app = _make_minimal_app()

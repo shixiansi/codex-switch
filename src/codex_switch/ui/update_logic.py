@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from codex_switch.software_update import SoftwareUpdateInfo
+
 
 HOT_UPDATE_CHECKSUM_MANIFEST_RELATIVE_PATHS = (
     Path("codex-switch-checksums.json"),
@@ -172,9 +174,60 @@ class GitRemoteUpdate:
         return self.latest_commit[:12] if self.latest_commit else "-"
 
 
+@dataclass(frozen=True)
+class SoftwareUpdateFinishPlan:
+    kind: str
+    status_text: str
+    event_target: str | None = None
+    event_status: str | None = None
+    event_detail: str = ""
+    prompt_message: str | None = None
+    prompt_url: str | None = None
+
+
 def software_update_error_detail(error: object) -> str:
     message = str(error or "").strip()
     normalized = message.casefold()
     if not message or normalized == "none" or normalized.endswith(": none") or normalized.endswith("- none"):
         return "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。"
     return message
+
+
+def build_software_update_finish_plan(
+    info: SoftwareUpdateInfo | None,
+    error: object,
+) -> SoftwareUpdateFinishPlan:
+    detail = software_update_error_detail(error) if error else ""
+    if detail:
+        summary = f"软件更新检查失败：{detail}"
+        return SoftwareUpdateFinishPlan(
+            kind="error",
+            status_text=summary,
+            event_target="Codex Switch",
+            event_status="error",
+            event_detail=detail,
+        )
+    if info is None:
+        return SoftwareUpdateFinishPlan(kind="none", status_text="")
+    if not info.update_available:
+        summary = f"当前已是最新版本：{info.current_version}"
+        return SoftwareUpdateFinishPlan(
+            kind="current",
+            status_text=summary,
+            event_target="Codex Switch",
+            event_status="current",
+            event_detail=summary,
+        )
+
+    detail = f"发现新版本 {info.latest_version}，当前版本 {info.current_version}。"
+    target = info.release_name or "Codex Switch"
+    target_url = info.download_url or info.release_url or None
+    return SoftwareUpdateFinishPlan(
+        kind="available",
+        status_text=detail,
+        event_target=target,
+        event_status="available",
+        event_detail=detail,
+        prompt_message=f"{detail}\n\n是否打开下载页面？",
+        prompt_url=target_url,
+    )

@@ -343,6 +343,7 @@ from codex_switch.ui.update_logic import (
     normalize_git_ref,
     remote_commit_from_ls_remote,
     same_git_commit,
+    build_software_update_finish_plan,
     software_update_error_detail,
     verify_hot_update_checksums,
 )
@@ -2693,60 +2694,57 @@ class CodexSwitchApp:
         automatic: bool,
     ) -> None:
         self.software_update_check_running = False
-        error = software_update_error_detail(error) if error else ""
-        if error:
-            summary = f"软件更新检查失败：{error}"
-            self.software_update_status_var.set(summary)
+        plan = build_software_update_finish_plan(info, error)
+        if plan.kind == "error":
+            self.software_update_status_var.set(plan.status_text)
             if not automatic:
-                messagebox.showerror("软件更新检查失败", error, parent=self.root)
-            self.status_var.set(summary)
+                messagebox.showerror("软件更新检查失败", plan.event_detail, parent=self.root)
+            self.status_var.set(plan.status_text)
             self._record_hot_update_event(
                 scope="software",
-                target="Codex Switch",
-                status="error",
-                detail=error,
+                target=plan.event_target or "Codex Switch",
+                status=plan.event_status or "error",
+                detail=plan.event_detail,
                 automatic=automatic,
             )
             self.persist_state()
             return
-        if info is None:
+        if plan.kind == "none":
             return
-        if not info.update_available:
-            summary = f"当前已是最新版本：{info.current_version}"
-            self.software_update_status_var.set(summary)
+        if plan.kind == "current":
+            self.software_update_status_var.set(plan.status_text)
             if not automatic:
-                messagebox.showinfo("软件更新", summary, parent=self.root)
-            self.status_var.set(summary)
+                messagebox.showinfo("软件更新", plan.status_text, parent=self.root)
+            self.status_var.set(plan.status_text)
             self._record_hot_update_event(
                 scope="software",
-                target="Codex Switch",
-                status="current",
-                detail=summary,
+                target=plan.event_target or "Codex Switch",
+                status=plan.event_status or "current",
+                detail=plan.event_detail,
                 automatic=automatic,
             )
             self.persist_state()
             return
 
-        detail = f"发现新版本 {info.latest_version}，当前版本 {info.current_version}。"
-        self.software_update_status_var.set(detail)
-        self.status_var.set(detail)
+        self.software_update_status_var.set(plan.status_text)
+        self.status_var.set(plan.status_text)
         self._record_hot_update_event(
             scope="software",
-            target=info.release_name or "Codex Switch",
-            status="available",
-            detail=detail,
+            target=plan.event_target or "Codex Switch",
+            status=plan.event_status or "available",
+            detail=plan.event_detail,
             automatic=automatic,
         )
         self.persist_state()
-        target_url = info.download_url or info.release_url
+        target_url = plan.prompt_url
         if not target_url:
-            messagebox.showinfo("软件更新", f"{detail}\n\n该 Release 没有可打开的下载地址。", parent=self.root)
+            messagebox.showinfo("软件更新", f"{plan.status_text}\n\n该 Release 没有可打开的下载地址。", parent=self.root)
             return
-        if messagebox.askyesno("发现软件新版本", f"{detail}\n\n是否打开下载页面？", parent=self.root):
+        if messagebox.askyesno("发现软件新版本", plan.prompt_message or plan.status_text, parent=self.root):
             webbrowser.open(target_url)
             self._record_hot_update_event(
                 scope="software",
-                target=info.release_name or "Codex Switch",
+                target=plan.event_target or "Codex Switch",
                 status="opened",
                 detail=target_url,
                 automatic=automatic,
