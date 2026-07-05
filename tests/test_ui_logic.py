@@ -177,6 +177,7 @@ from codex_switch.ui.project_logic import (
     project_vscode_open_command,
 )
 from codex_switch.ui.route_proxy_logic import (
+    build_route_proxy_project_enable_plan,
     route_proxy_account_pool_choices,
     refresh_route_proxy_rules_for_project,
     route_proxy_base_url_for_project,
@@ -1515,6 +1516,59 @@ command = "node"
         self.assertEqual(codex_rule.upstream_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
         self.assertEqual(codex_rule.upstream_model, "gpt-5.4")
         self.assertEqual(codex_rule.upstream_source, ROUTE_PROXY_UPSTREAM_SOURCE_PROFILE)
+
+    def test_build_route_proxy_project_enable_plan_replaces_project_rules_and_keeps_other_projects(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "chat-project",
+            codex_profile_id="chat-profile",
+            claude_profile_id="claude-profile",
+        )
+        chat_profile = Profile.create("chat", "https://chat.example.com/v1", "sk-chat", wire_api="chat_completions")
+        chat_profile.id = "chat-profile"
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude_profile.id = "claude-profile"
+        stale_codex_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="old-codex",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_OPENAI,
+        )
+        stale_claude_rule = RouteProxyRule.create(
+            project_id=project.id,
+            client_type=ROUTE_PROXY_CLIENT_CLAUDE,
+            primary_profile_id="old-claude",
+            upstream_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC,
+        )
+        other_rule = RouteProxyRule.create(
+            project_id="other-project",
+            client_type=ROUTE_PROXY_CLIENT_CODEX,
+            primary_profile_id="other-profile",
+        )
+        settings = RouteProxySettings(rules=[stale_codex_rule, stale_claude_rule, other_rule])
+        account_pool_settings = AccountPoolSettings()
+        default_group = account_pool_settings.ensure_default_group()
+        account_pool_settings.selected_group_id = default_group.id
+
+        plan = build_route_proxy_project_enable_plan(
+            settings,
+            account_pool_settings,
+            project,
+            chat_profile,
+            claude_profile,
+        )
+
+        project_rules = plan.settings.rules_for_project(project.id)
+        codex_rule = next(rule for rule in project_rules if rule.client_type == ROUTE_PROXY_CLIENT_CODEX)
+        claude_rule = next(rule for rule in project_rules if rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE)
+        self.assertEqual(plan.codex_protocol, ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT)
+        self.assertEqual(plan.claude_protocol, ROUTE_PROXY_PROTOCOL_ANTHROPIC)
+        self.assertEqual(codex_rule.primary_profile_id, "chat-profile")
+        self.assertEqual(codex_rule.account_pool_group_id, default_group.id)
+        self.assertEqual(codex_rule.upstream_model, "gpt-5.4")
+        self.assertEqual(claude_rule.primary_profile_id, "claude-profile")
+        self.assertEqual(claude_rule.upstream_model, "")
+        self.assertEqual(plan.settings.rules_for_project("other-project")[0].primary_profile_id, "other-profile")
 
     def test_route_proxy_project_helpers_follow_enabled_codex_rule(self) -> None:
         project = ProjectRecord.create(str(Path.cwd()), "profile-id")

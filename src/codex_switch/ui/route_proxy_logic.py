@@ -112,6 +112,13 @@ class RouteProxyProjectRuleForm:
     claude_pool_model: str | None
 
 
+@dataclass(frozen=True)
+class RouteProxyProjectEnablePlan:
+    settings: RouteProxySettings
+    codex_protocol: str
+    claude_protocol: str
+
+
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
     wire_api = default_wire_api_for_profile(profile)
     if wire_api == WIRE_API_RESPONSES:
@@ -352,6 +359,16 @@ def normalize_route_proxy_settings_form(
     )
 
 
+def apply_route_proxy_settings_form(
+    settings: RouteProxySettings,
+    form: RouteProxySettingsForm,
+) -> None:
+    settings.host = form.host
+    settings.port = form.port
+    settings.account_pool_strategy = form.account_pool_strategy
+    settings.upstream_timeout_seconds = form.upstream_timeout_seconds
+
+
 def resolve_route_proxy_project_rule_form(
     account_pool_settings: AccountPoolSettings,
     *,
@@ -419,6 +436,32 @@ def resolve_route_proxy_project_rule_form(
         compact_model=compact_model,
         codex_pool_model=codex_pool_model,
         claude_pool_model=claude_pool_model,
+    )
+
+
+def build_route_proxy_project_enable_plan(
+    settings: RouteProxySettings,
+    account_pool_settings: AccountPoolSettings,
+    project: ProjectRecord,
+    codex_profile: Profile,
+    claude_profile: Profile,
+) -> RouteProxyProjectEnablePlan:
+    rules = route_proxy_rules_for_project_profiles(project, codex_profile, claude_profile)
+    selected_group = account_pool_settings.group_by_id(account_pool_settings.selected_group_id)
+    codex_protocol = ROUTE_PROXY_PROTOCOL_OPENAI
+    claude_protocol = ROUTE_PROXY_PROTOCOL_ANTHROPIC
+    for rule in rules:
+        if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
+            rule.account_pool_group_id = selected_group.id if selected_group is not None else ""
+            codex_protocol = rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI
+        elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
+            claude_protocol = rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC
+    updated_settings = settings.without_project_rules(project.id)
+    updated_settings.rules.extend(rules)
+    return RouteProxyProjectEnablePlan(
+        settings=updated_settings,
+        codex_protocol=codex_protocol,
+        claude_protocol=claude_protocol,
     )
 
 

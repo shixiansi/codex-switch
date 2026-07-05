@@ -252,7 +252,9 @@ from codex_switch.ui.project_logic import (
 )
 from codex_switch.ui.route_proxy_logic import (
     account_pool_group_for_project_client,
+    apply_route_proxy_settings_form,
     apply_route_proxy_project_rules,
+    build_route_proxy_project_enable_plan,
     claude_model_overrides_for_project,
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_PROTOCOLS,
@@ -270,7 +272,6 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_group_label_for_id,
     route_proxy_rule_for_project_client,
-    route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui.repo_sync_logic import (
     git_local_commit as repo_git_local_commit,
@@ -5213,10 +5214,7 @@ class CodexSwitchApp:
         except ValueError as exc:
             messagebox.showerror("更新失败", str(exc), parent=self.root)
             return False
-        self.route_proxy_settings.host = form.host
-        self.route_proxy_settings.port = form.port
-        self.route_proxy_settings.account_pool_strategy = form.account_pool_strategy
-        self.route_proxy_settings.upstream_timeout_seconds = form.upstream_timeout_seconds
+        apply_route_proxy_settings_form(self.route_proxy_settings, form)
         if save_project_rules:
             self._save_selected_route_proxy_project_rules()
         self.persist_state()
@@ -5522,16 +5520,16 @@ class CodexSwitchApp:
         if claude_profile is None:
             messagebox.showerror("无法启用", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
             return
-        rules = route_proxy_rules_for_project_profiles(project, codex_profile, claude_profile)
-        for rule in rules:
-            if rule.client_type == ROUTE_PROXY_CLIENT_CODEX:
-                group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
-                rule.account_pool_group_id = group.id if group is not None else ""
-                self.proxy_codex_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_OPENAI)
-            elif rule.client_type == ROUTE_PROXY_CLIENT_CLAUDE:
-                self.proxy_claude_protocol_var.set(rule.upstream_protocol or ROUTE_PROXY_PROTOCOL_ANTHROPIC)
-        self.route_proxy_settings = self.route_proxy_settings.without_project_rules(project.id)
-        self.route_proxy_settings.rules.extend(rules)
+        plan = build_route_proxy_project_enable_plan(
+            self.route_proxy_settings,
+            self.account_pool_settings,
+            project,
+            codex_profile,
+            claude_profile,
+        )
+        self.proxy_codex_protocol_var.set(plan.codex_protocol)
+        self.proxy_claude_protocol_var.set(plan.claude_protocol)
+        self.route_proxy_settings = plan.settings
         self._save_selected_route_proxy_project_rules()
         self.persist_state()
         self.refresh_proxy_tab()
