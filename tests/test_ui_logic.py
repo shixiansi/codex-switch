@@ -212,6 +212,7 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    build_project_launch_feedback,
     execute_project_folder_open,
     execute_project_launch_plan,
     load_project_text_file_edit_session,
@@ -2073,6 +2074,23 @@ class UiFilterTests(unittest.TestCase):
                 popen=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
                 creationflags=123,
             )
+            success_feedback = build_project_launch_feedback(
+                launch_result,
+                codex_cmd_plan,
+                failure_message_prefix="打开 CMD 脚本失败",
+                missing_as_info=True,
+            )
+            missing_feedback = build_project_launch_feedback(
+                missing_result,
+                codex_vscode_plan,
+                failure_message_prefix="打开 VS Code 脚本失败",
+                missing_as_info=True,
+            )
+            failure_feedback = build_project_launch_feedback(
+                failure_result,
+                claude_cmd_plan,
+                failure_message_prefix="打开 Claude CMD 失败",
+            )
 
             self.assertTrue(launch_result.launched)
             self.assertEqual(launch_result.status_text, codex_cmd_plan.success_status)
@@ -2084,6 +2102,9 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(missing_result.missing_message, codex_vscode_plan.missing_message)
             self.assertFalse(failure_result.launched)
             self.assertEqual(failure_result.failure_detail, "boom")
+            self.assertEqual(success_feedback.status_text, codex_cmd_plan.success_status)
+            self.assertEqual(missing_feedback.info_message, codex_vscode_plan.missing_message)
+            self.assertEqual(failure_feedback.error_message, "打开 Claude CMD 失败：\nboom")
 
     def test_mcp_logic_helpers_summarize_and_preview(self) -> None:
         raw_toml = """

@@ -243,6 +243,7 @@ from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_edit_execution_plan,
     build_project_binding_sync_plan,
+    build_project_launch_feedback,
     execute_project_folder_open,
     execute_project_launch_plan,
     load_project_text_file_edit_session,
@@ -4708,10 +4709,15 @@ class CodexSwitchApp:
             popen=subprocess.Popen,
             creationflags=_CREATE_NEW_CONSOLE,
         )
-        if not result.launched:
-            messagebox.showerror("打开失败", f"使用 VS Code 打开项目失败：\n{result.failure_detail}", parent=self.root)
+        feedback = build_project_launch_feedback(
+            result,
+            plan,
+            failure_message_prefix="使用 VS Code 打开项目失败",
+        )
+        if feedback.error_message:
+            messagebox.showerror("打开失败", feedback.error_message, parent=self.root)
             return
-        self.status_var.set(result.status_text or plan.success_status)
+        self.status_var.set(feedback.status_text or plan.success_status)
 
     def open_project_claude_cmd(self) -> None:
         project = self.get_selected_project()
@@ -4757,10 +4763,15 @@ class CodexSwitchApp:
             creationflags=_CREATE_NEW_CONSOLE,
             env=env,
         )
-        if not result.launched:
-            messagebox.showerror("启动失败", f"打开 Claude CMD 失败：\n{result.failure_detail}", parent=self.root)
+        feedback = build_project_launch_feedback(
+            result,
+            preparation.launch_plan,
+            failure_message_prefix="打开 Claude CMD 失败",
+        )
+        if feedback.error_message:
+            messagebox.showerror("启动失败", feedback.error_message, parent=self.root)
             return
-        self.status_var.set(result.status_text or preparation.launch_plan.success_status)
+        self.status_var.set(feedback.status_text or preparation.launch_plan.success_status)
 
     def run_project(self) -> None:
         project = self.get_selected_project()
@@ -4774,10 +4785,15 @@ class CodexSwitchApp:
                 popen=subprocess.Popen,
                 creationflags=_CREATE_NEW_CONSOLE,
             )
-            if not result.launched:
-                messagebox.showerror("运行失败", f"运行项目命令失败：\n{result.failure_detail}", parent=self.root)
+            feedback = build_project_launch_feedback(
+                result,
+                plan,
+                failure_message_prefix="运行项目命令失败",
+            )
+            if feedback.error_message:
+                messagebox.showerror("运行失败", feedback.error_message, parent=self.root)
                 return
-            self.status_var.set(result.status_text or plan.success_status)
+            self.status_var.set(feedback.status_text or plan.success_status)
             return
         self.run_project_cmd()
 
@@ -4792,13 +4808,19 @@ class CodexSwitchApp:
             popen=subprocess.Popen,
             creationflags=_CREATE_NEW_CONSOLE,
         )
-        if not result.launched:
-            if result.missing_message:
-                messagebox.showinfo("提示", result.missing_message, parent=self.root)
-            else:
-                messagebox.showerror("运行失败", f"打开 VS Code 脚本失败：\n{result.failure_detail}", parent=self.root)
+        feedback = build_project_launch_feedback(
+            result,
+            plan,
+            failure_message_prefix="打开 VS Code 脚本失败",
+            missing_as_info=True,
+        )
+        if feedback.info_message:
+            messagebox.showinfo("提示", feedback.info_message, parent=self.root)
             return
-        self.status_var.set(result.status_text or plan.success_status)
+        if feedback.error_message:
+            messagebox.showerror("运行失败", feedback.error_message, parent=self.root)
+            return
+        self.status_var.set(feedback.status_text or plan.success_status)
 
     def run_project_cmd(self) -> None:
         project = self.get_selected_project()
@@ -4814,13 +4836,19 @@ class CodexSwitchApp:
             popen=subprocess.Popen,
             creationflags=_CREATE_NEW_CONSOLE,
         )
-        if not result.launched:
-            if result.missing_message:
-                messagebox.showinfo("提示", result.missing_message, parent=self.root)
-            else:
-                messagebox.showerror("运行失败", f"打开 CMD 脚本失败：\n{result.failure_detail}", parent=self.root)
+        feedback = build_project_launch_feedback(
+            result,
+            plan,
+            failure_message_prefix="打开 CMD 脚本失败",
+            missing_as_info=True,
+        )
+        if feedback.info_message:
+            messagebox.showinfo("提示", feedback.info_message, parent=self.root)
             return
-        self.status_var.set(result.status_text or plan.success_status)
+        if feedback.error_message:
+            messagebox.showerror("运行失败", feedback.error_message, parent=self.root)
+            return
+        self.status_var.set(feedback.status_text or plan.success_status)
 
     def test_selected_profile(self) -> None:
         profile = self.get_selected_profile()

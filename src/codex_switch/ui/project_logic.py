@@ -153,6 +153,13 @@ class ProjectLaunchExecutionResult:
 
 
 @dataclass(frozen=True)
+class ProjectLaunchFeedback:
+    status_text: str | None = None
+    info_message: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class ProjectFolderOpenResult:
     opened: bool
     status_text: str | None = None
@@ -1351,3 +1358,20 @@ def execute_project_launch_plan(
         launched=True,
         status_text=plan.success_status,
     )
+
+
+def build_project_launch_feedback(
+    result: ProjectLaunchExecutionResult,
+    plan: ProjectLaunchPlan,
+    *,
+    failure_message_prefix: str,
+    missing_as_info: bool = False,
+) -> ProjectLaunchFeedback:
+    if result.launched:
+        return ProjectLaunchFeedback(status_text=result.status_text or plan.success_status)
+    if result.missing_message:
+        if missing_as_info:
+            return ProjectLaunchFeedback(info_message=result.missing_message)
+        return ProjectLaunchFeedback(error_message=result.missing_message)
+    detail = result.failure_detail or "unknown error"
+    return ProjectLaunchFeedback(error_message=f"{failure_message_prefix}：\n{detail}")
