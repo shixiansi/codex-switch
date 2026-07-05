@@ -177,6 +177,7 @@ from codex_switch.ui.library_logic import (
     build_library_detail_display,
     build_library_tab_display,
     build_test_detail_display,
+    build_test_tab_display,
     current_status_counts,
     health_override_note,
     health_status_text,
@@ -4922,35 +4923,34 @@ class CodexSwitchApp:
         self.status_var.set(f"已导入 {len(imported)} 个本地文件到 {current_group.name}。")
 
     def refresh_test_tab(self) -> None:
-        selected_id = self.selected_profile_id
-        visible_profiles = visible_profiles_for_filter(self.profiles, self.hide_error_profiles)
-        if selected_id and not any(profile.id == selected_id for profile in visible_profiles):
-            selected_id = visible_profiles[0].id if visible_profiles else None
-            self.selected_profile_id = selected_id
-        if not selected_id and visible_profiles:
-            selected_id = visible_profiles[0].id
-            self.selected_profile_id = selected_id
+        display = build_test_tab_display(
+            self.profiles,
+            hide_error_profiles=self.hide_error_profiles,
+            selected_profile_id=self.selected_profile_id,
+            status_text=STATUS_TEXT,
+        )
+        self.selected_profile_id = display.selected_profile_id
 
         self.suppress_selection_events = True
         try:
             for item in self.test_api_tree.get_children():
                 self.test_api_tree.delete(item)
-            for profile in visible_profiles:
+            for row in display.rows:
                 self.test_api_tree.insert(
                     "",
                     "end",
-                    iid=profile.id,
-                    values=(profile.name, self._health_status_text(profile)),
-                    tags=(profile.effective_health_status,),
+                    iid=row.profile_id,
+                    values=row.values,
+                    tags=(row.tag,),
                 )
             self.test_api_tree.tag_configure("healthy", foreground=PALETTE["success"])
             self.test_api_tree.tag_configure("degraded", foreground=PALETTE["warning"])
             self.test_api_tree.tag_configure("error", foreground=PALETTE["danger"])
             self.test_api_tree.tag_configure("unknown", foreground=PALETTE["neutral_text"])
-            if selected_id and self.test_api_tree.exists(selected_id):
-                self.test_api_tree.selection_set(selected_id)
-                self.test_api_tree.focus(selected_id)
-                self.test_api_tree.see(selected_id)
+            if display.selected_profile_id and self.test_api_tree.exists(display.selected_profile_id):
+                self.test_api_tree.selection_set(display.selected_profile_id)
+                self.test_api_tree.focus(display.selected_profile_id)
+                self.test_api_tree.see(display.selected_profile_id)
         finally:
             self.suppress_selection_events = False
 

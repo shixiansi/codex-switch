@@ -75,6 +75,19 @@ class TestDetailDisplay:
     health_override_state: str
 
 
+@dataclass(frozen=True)
+class TestTreeRow:
+    profile_id: str
+    values: tuple[str, str]
+    tag: str
+
+
+@dataclass(frozen=True)
+class TestTabDisplay:
+    selected_profile_id: str | None
+    rows: list[TestTreeRow]
+
+
 def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
     if not hide_error_profiles:
         return list(profiles)
@@ -331,4 +344,30 @@ def build_test_detail_display(
         ),
         health_override_note_text=health_override_note(profile),
         health_override_state="readonly",
+    )
+
+
+def build_test_tab_display(
+    profiles: list[Profile],
+    *,
+    hide_error_profiles: bool,
+    selected_profile_id: str | None,
+    status_text: dict[str, str],
+) -> TestTabDisplay:
+    visible_profiles = visible_profiles_for_filter(profiles, hide_error_profiles)
+    if selected_profile_id and not any(profile.id == selected_profile_id for profile in visible_profiles):
+        selected_profile_id = visible_profiles[0].id if visible_profiles else None
+    if not selected_profile_id and visible_profiles:
+        selected_profile_id = visible_profiles[0].id
+    rows = [
+        TestTreeRow(
+            profile_id=profile.id,
+            values=(profile.name, health_status_text(profile, status_text)),
+            tag=profile.effective_health_status,
+        )
+        for profile in visible_profiles
+    ]
+    return TestTabDisplay(
+        selected_profile_id=selected_profile_id,
+        rows=rows,
     )

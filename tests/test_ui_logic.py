@@ -119,6 +119,7 @@ from codex_switch.ui.library_logic import (
     build_library_detail_display,
     build_library_tab_display,
     build_test_detail_display,
+    build_test_tab_display,
     current_status_counts,
     health_override_note,
     health_status_text,
@@ -699,6 +700,25 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(detail.success_models_text, "gpt-5")
         self.assertEqual(detail.health_override_value, "健康")
         self.assertEqual(detail.health_override_state, "readonly")
+
+    def test_library_logic_build_test_tab_display_selects_first_visible_profile(self) -> None:
+        healthy = Profile.create("healthy", "https://healthy.example.com", "sk-healthy", vendor=VENDOR_CODEX)
+        healthy.health = HealthResult(status="healthy")
+        hidden = Profile.create("hidden", "https://hidden.example.com", "sk-hidden", vendor=VENDOR_CODEX)
+        hidden.health = HealthResult(status="error")
+
+        display = build_test_tab_display(
+            [healthy, hidden],
+            hide_error_profiles=True,
+            selected_profile_id="missing",
+            status_text={"healthy": "健康", "degraded": "降级", "error": "异常", "unknown": "未知"},
+        )
+
+        self.assertEqual(display.selected_profile_id, healthy.id)
+        self.assertEqual(len(display.rows), 1)
+        self.assertEqual(display.rows[0].profile_id, healthy.id)
+        self.assertEqual(display.rows[0].values[0], "healthy")
+        self.assertIn("健康", display.rows[0].values[1])
 
     def test_library_model_tags_show_first_twenty_and_summary(self) -> None:
         app = _make_minimal_app()
