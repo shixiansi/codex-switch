@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import subprocess
+from typing import Any, TypeVar
 
 from codex_switch.models import HOT_UPDATE_EVENT_LIMIT, HotUpdateEvent
 from codex_switch.ui.update_logic import software_update_error_detail
@@ -56,6 +58,23 @@ class ManualHotUpdateSpec:
     error_message_prefix: str
     current_info_message: str
     declined_status_message: str
+
+
+@dataclass(frozen=True)
+class HotUpdateBatchEvent:
+    target: str
+    status: str
+    detail: str
+    commit: str
+    automatic: bool
+
+
+@dataclass(frozen=True)
+class HotUpdateBatchResult:
+    updated_count: int
+    pending_count: int
+    errors: list[str]
+    events: list[HotUpdateBatchEvent]
 
 
 SKILL_REPO_HOT_UPDATE_TEXTS = HotUpdateDecisionTexts(
@@ -243,4 +262,83 @@ def process_hot_update_candidate(
         event_detail=texts.auto_disabled,
         event_automatic=True,
         commit=latest_commit,
+    )
+
+
+T = TypeVar("T")
+
+
+def process_hot_update_targets(
+    items: list[T],
+    *,
+    automatic: bool,
+    fetch_update: Callable[[T], Any],
+    get_target: Callable[[T], str],
+    get_error_label: Callable[[T], str],
+    get_auto_update_enabled: Callable[[T], bool],
+    texts: HotUpdateDecisionTexts,
+    apply_update: Callable[[T, str, bool], bool],
+    set_current_commit: Callable[[T, str], None] | None = None,
+    confirm_update: Callable[[T, str], bool] | None = None,
+) -> HotUpdateBatchResult:
+    updated_count = 0
+    pending_count = 0
+    errors: list[str] = []
+    events: list[HotUpdateBatchEvent] = []
+
+    for item in list(items):
+        target = get_target(item)
+        try:
+            update = fetch_update(item)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            detail = str(exc)
+            errors.append(f"{get_error_label(item)} {target}: {detail}")
+            events.append(
+                HotUpdateBatchEvent(
+                    target=target,
+                    status="error",
+                    detail=detail,
+                    commit="",
+                    automatic=automatic,
+                )
+            )
+            continue
+
+        auto_update_enabled = get_auto_update_enabled(item)
+        decision = process_hot_update_candidate(
+            has_update=update.has_update,
+            latest_commit=update.latest_commit,
+            automatic=automatic,
+            auto_update_enabled=auto_update_enabled,
+            texts=texts,
+            apply_update=lambda: apply_update(item, update.latest_commit, auto_update_enabled),
+            set_current_commit=(
+                (lambda commit, current=item: set_current_commit(current, commit))
+                if set_current_commit is not None
+                else None
+            ),
+            confirm_update=(
+                (lambda current=item, latest=update.short_latest: confirm_update(current, latest))
+                if confirm_update is not None and not automatic and not auto_update_enabled
+                else None
+            ),
+        )
+        updated_count += decision.updated_delta
+        pending_count += decision.pending_delta
+        if decision.event_status:
+            events.append(
+                HotUpdateBatchEvent(
+                    target=target,
+                    status=decision.event_status,
+                    detail=decision.event_detail,
+                    commit=decision.commit,
+                    automatic=decision.event_automatic,
+                )
+            )
+
+    return HotUpdateBatchResult(
+        updated_count=updated_count,
+        pending_count=pending_count,
+        errors=errors,
+        events=events,
     )

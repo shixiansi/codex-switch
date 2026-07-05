@@ -409,6 +409,7 @@ from codex_switch.ui.page_builders import (
     build_project_list_panel_page,
     build_project_tab_page,
 )
+from codex_switch.ui.hot_update_logic import process_hot_update_targets
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -1663,116 +1664,76 @@ class CodexSwitchApp:
         self._render_hot_update_log()
 
     def _check_and_apply_hot_updates(self, *, automatic: bool) -> str:
-        repo_updates = 0
-        project_updates = 0
-        pending_repo_updates = 0
-        pending_project_updates = 0
-        errors: list[str] = []
-
-        for repo in list(self.skill_market_repos):
-            try:
-                update = self._skill_repo_remote_update(repo)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                detail = str(exc)
-                errors.append(f"Skills仓库 {repo.url}: {detail}")
-                self._record_hot_update_event(
-                    scope="skill_repo",
-                    target=repo.url,
-                    status="error",
-                    detail=detail,
-                    automatic=automatic,
-                )
-                continue
-            decision = process_hot_update_candidate(
-                has_update=update.has_update,
-                latest_commit=update.latest_commit,
-                automatic=automatic,
-                auto_update_enabled=repo.auto_update,
-                texts=SKILL_REPO_HOT_UPDATE_TEXTS,
-                apply_update=lambda: self._apply_skill_repo_update(
-                    repo,
-                    automatic=repo.auto_update,
-                    expected_commit=update.latest_commit,
-                ),
-                set_current_commit=lambda commit: self._set_skill_repo_commit(repo, commit),
-                confirm_update=(
-                    lambda: messagebox.askyesno(
-                        "\u53d1\u73b0 Skills \u4ed3\u5e93\u66f4\u65b0",
-                        f"{repo.url}\n\u8fdc\u7aef\u63d0\u4ea4\uff1a{update.short_latest}\n\u662f\u5426\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730\uff1f",
-                        parent=self.root,
-                    )
-                ) if not automatic and not repo.auto_update else None,
+        repo_batch = process_hot_update_targets(
+            list(self.skill_market_repos),
+            automatic=automatic,
+            fetch_update=self._skill_repo_remote_update,
+            get_target=lambda repo: repo.url,
+            get_error_label=lambda _repo: "Skills仓库",
+            get_auto_update_enabled=lambda repo: repo.auto_update,
+            texts=SKILL_REPO_HOT_UPDATE_TEXTS,
+            apply_update=lambda repo, latest_commit, auto_update_enabled: self._apply_skill_repo_update(
+                repo,
+                automatic=auto_update_enabled,
+                expected_commit=latest_commit,
+            ),
+            set_current_commit=lambda repo, commit: self._set_skill_repo_commit(repo, commit),
+            confirm_update=lambda repo, short_latest: messagebox.askyesno(
+                "发现 Skills 仓库更新",
+                f"{repo.url}\n远端提交：{short_latest}\n是否拉取并更新本地？",
+                parent=self.root,
+            ),
+        )
+        for event in repo_batch.events:
+            self._record_hot_update_event(
+                scope="skill_repo",
+                target=event.target,
+                status=event.status,
+                detail=event.detail,
+                commit=event.commit,
+                automatic=event.automatic,
             )
-            repo_updates += decision.updated_delta
-            pending_repo_updates += decision.pending_delta
-            if decision.event_status:
-                self._record_hot_update_event(
-                    scope="skill_repo",
-                    target=repo.url,
-                    status=decision.event_status,
-                    detail=decision.event_detail,
-                    commit=decision.commit,
-                    automatic=decision.event_automatic,
-                )
 
-        for project in list(self.projects):
-            if not project.github_repo:
-                continue
-            try:
-                update = self._project_remote_update(project)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                detail = str(exc)
-                errors.append(f"项目 {project.name}: {detail}")
-                self._record_hot_update_event(
-                    scope="project",
-                    target=project.name,
-                    status="error",
-                    detail=detail,
-                    automatic=automatic,
-                )
-                continue
-            decision = process_hot_update_candidate(
-                has_update=update.has_update,
-                latest_commit=update.latest_commit,
-                automatic=automatic,
-                auto_update_enabled=project.github_auto_update,
-                texts=PROJECT_HOT_UPDATE_TEXTS,
-                apply_update=lambda: self._apply_project_update(
-                    project,
-                    update.latest_commit,
-                    automatic=project.github_auto_update,
-                ),
-                set_current_commit=lambda commit: self._set_project_commit(project, commit),
-                confirm_update=(
-                    lambda: messagebox.askyesno(
-                        "\u53d1\u73b0\u9879\u76ee\u66f4\u65b0",
-                        f"{project.name}\n\u8fdc\u7aef\u63d0\u4ea4\uff1a{update.short_latest}\n\u662f\u5426\u6267\u884c git pull --ff-only\uff1f",
-                        parent=self.root,
-                    )
-                ) if not automatic and not project.github_auto_update else None,
+        project_batch = process_hot_update_targets(
+            [project for project in self.projects if project.github_repo],
+            automatic=automatic,
+            fetch_update=self._project_remote_update,
+            get_target=lambda project: project.name,
+            get_error_label=lambda _project: "项目",
+            get_auto_update_enabled=lambda project: project.github_auto_update,
+            texts=PROJECT_HOT_UPDATE_TEXTS,
+            apply_update=lambda project, latest_commit, auto_update_enabled: self._apply_project_update(
+                project,
+                latest_commit,
+                automatic=auto_update_enabled,
+            ),
+            set_current_commit=lambda project, commit: self._set_project_commit(project, commit),
+            confirm_update=lambda project, short_latest: messagebox.askyesno(
+                "发现项目更新",
+                f"{project.name}\n远端提交：{short_latest}\n是否执行 git pull --ff-only？",
+                parent=self.root,
+            ),
+        )
+        for event in project_batch.events:
+            self._record_hot_update_event(
+                scope="project",
+                target=event.target,
+                status=event.status,
+                detail=event.detail,
+                commit=event.commit,
+                automatic=event.automatic,
             )
-            project_updates += decision.updated_delta
-            pending_project_updates += decision.pending_delta
-            if decision.event_status:
-                self._record_hot_update_event(
-                    scope="project",
-                    target=project.name,
-                    status=decision.event_status,
-                    detail=decision.event_detail,
-                    commit=decision.commit,
-                    automatic=decision.event_automatic,
-                )
 
         summary = hot_update_summary_text(
-            repo_updates=repo_updates,
-            project_updates=project_updates,
-            pending_repo_updates=pending_repo_updates,
-            pending_project_updates=pending_project_updates,
-            error_count=len(errors),
+            repo_updates=repo_batch.updated_count,
+            project_updates=project_batch.updated_count,
+            pending_repo_updates=repo_batch.pending_count,
+            pending_project_updates=project_batch.pending_count,
+            error_count=len(repo_batch.errors) + len(project_batch.errors),
         )
         self._record_hot_update_event(
             scope="check",
-            target="\u81ea\u52a8\u68c0\u67e5" if automatic else "\u624b\u52a8\u68c0\u67e5",
+            target="自动检查" if automatic else "手动检查",
             status="summary",
             detail=summary,
             automatic=automatic,

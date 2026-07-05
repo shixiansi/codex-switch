@@ -287,6 +287,8 @@ from codex_switch.ui.profile_logic import (
     updated_profile_from_dialog as updated_profile_record_from_dialog,
 )
 
+from codex_switch.ui.hot_update_logic import process_hot_update_targets
+
 class _ValueVar:
     def __init__(self, value: str) -> None:
         self.value = value
@@ -1882,6 +1884,42 @@ args = ["-m", "alpha"]
         self.assertIn("abc123", repo_spec.confirm_message)
         self.assertEqual(project_spec.scope, "project")
         self.assertIn("Demo", project_spec.target)
+
+    def test_process_hot_update_targets_collects_counts_errors_and_events(self) -> None:
+        class FakeUpdate:
+            def __init__(self, *, has_update: bool, latest_commit: str, short_latest: str) -> None:
+                self.has_update = has_update
+                self.latest_commit = latest_commit
+                self.short_latest = short_latest
+
+        items = [
+            {"target": "repo-a", "auto": False, "update": FakeUpdate(has_update=False, latest_commit="aaa", short_latest="aaa")},
+            {"target": "repo-b", "auto": True, "update": FakeUpdate(has_update=True, latest_commit="bbb", short_latest="bbb")},
+            {"target": "repo-c", "auto": False, "error": RuntimeError("boom")},
+        ]
+        commits: list[tuple[str, str]] = []
+
+        result = process_hot_update_targets(
+            items,
+            automatic=False,
+            fetch_update=lambda item: (_ for _ in ()).throw(item["error"]) if "error" in item else item["update"],
+            get_target=lambda item: item["target"],
+            get_error_label=lambda _item: "仓库",
+            get_auto_update_enabled=lambda item: item["auto"],
+            texts=SKILL_REPO_HOT_UPDATE_TEXTS,
+            apply_update=lambda _item, _commit, _auto: False,
+            set_current_commit=lambda item, commit: commits.append((item["target"], commit)),
+            confirm_update=lambda _item, _short: False,
+        )
+
+        self.assertEqual(commits, [("repo-a", "aaa")])
+        self.assertEqual(result.updated_count, 0)
+        self.assertEqual(result.pending_count, 1)
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual([event.status for event in result.events], ["current", "pending", "error"])
+        self.assertEqual(result.events[0].target, "repo-a")
+        self.assertEqual(result.events[1].target, "repo-b")
+        self.assertEqual(result.events[2].target, "repo-c")
 
     def test_check_selected_skill_repo_update_records_current_commit_via_shared_decision(self) -> None:
         repo = SkillMarketRepo.create("https://github.com/example/skills")
