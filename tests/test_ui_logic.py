@@ -106,6 +106,7 @@ from codex_switch.ui.global_logic import (
     claude_settings_env_values,
     global_apply_detail,
     global_apply_targets,
+    global_profile_choice_display,
     global_profile_choice_names,
     global_profile_apply_error,
     GlobalApplyResult,
@@ -894,6 +895,16 @@ class UiFilterTests(unittest.TestCase):
         self.assertIs(profile_for_choice_index(profiles, 1), second)
         self.assertIsNone(profile_for_choice_index(profiles, -1))
         self.assertIsNone(profile_for_choice_index(profiles, 2))
+
+        empty_display = global_profile_choice_display([], None)
+        filled_display = global_profile_choice_display(profiles, second)
+        fallback_display = global_profile_choice_display(profiles, None)
+
+        self.assertEqual(empty_display.state, "disabled")
+        self.assertIsNone(empty_display.selected_index)
+        self.assertEqual(filled_display.selected_index, 1)
+        self.assertEqual(filled_display.selected_label, "same")
+        self.assertEqual(fallback_display.selected_index, 0)
 
     def test_claude_settings_env_values_read_api_and_models(self) -> None:
         settings = {

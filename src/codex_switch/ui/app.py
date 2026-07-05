@@ -152,6 +152,7 @@ from codex_switch.ui.global_logic import (
     claude_settings_env_values,
     global_apply_detail,
     global_apply_targets,
+    global_profile_choice_display,
     global_profile_choice_names,
     global_profile_apply_error,
     GlobalApplyResult,
@@ -2241,17 +2242,14 @@ class CodexSwitchApp:
         combo = self._global_profile_combo_for(target)
         choice_var = self._global_profile_choice_var_for(target)
         profiles = self._profiles_for_global_target(target)
-        labels = global_profile_choice_names(profiles)
-        combo.configure(values=labels, state="readonly" if labels else "disabled")
         profile = self._profile_by_id(self._global_profile_id_for(target))
-        if profile not in profiles:
-            profile = profiles[0] if profiles else None
-        if not profile:
+        display = global_profile_choice_display(profiles, profile)
+        combo.configure(values=display.labels, state=display.state)
+        if display.selected_index is None:
             choice_var.set("")
             return
-        index = profiles.index(profile)
-        choice_var.set(profile.name)
-        combo.current(index)
+        choice_var.set(display.selected_label)
+        combo.current(display.selected_index)
 
     def _project_by_id(self, project_id: str | None) -> ProjectRecord | None:
         return next((item for item in self.projects if item.id == project_id), None)

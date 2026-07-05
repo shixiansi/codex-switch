@@ -14,6 +14,14 @@ class GlobalApplyResult:
     claude_settings_path: Path | None = None
 
 
+@dataclass(frozen=True)
+class GlobalProfileChoiceDisplay:
+    labels: tuple[str, ...]
+    state: str
+    selected_label: str
+    selected_index: int | None
+
+
 def resolve_global_profile_id(
     stored_profile_id: str | None,
     legacy_profile_id: str | None,
@@ -44,6 +52,28 @@ def resolve_global_mcp_server_names(
 
 def global_profile_choice_names(profiles: list[Profile]) -> tuple[str, ...]:
     return tuple(profile.name for profile in profiles)
+
+
+def global_profile_choice_display(
+    profiles: list[Profile],
+    selected_profile: Profile | None,
+) -> GlobalProfileChoiceDisplay:
+    labels = global_profile_choice_names(profiles)
+    if selected_profile not in profiles:
+        selected_profile = profiles[0] if profiles else None
+    if selected_profile is None:
+        return GlobalProfileChoiceDisplay(
+            labels=labels,
+            state="readonly" if labels else "disabled",
+            selected_label="",
+            selected_index=None,
+        )
+    return GlobalProfileChoiceDisplay(
+        labels=labels,
+        state="readonly" if labels else "disabled",
+        selected_label=selected_profile.name,
+        selected_index=profiles.index(selected_profile),
+    )
 
 
 def profile_for_choice_index(profiles: list[Profile], index: int) -> Profile | None:
