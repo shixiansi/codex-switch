@@ -131,14 +131,12 @@ from codex_switch.ui.account_pool_logic import (
     ACCOUNT_POOL_SOURCE_FILTER_ALL,
     ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
     ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
-    account_pool_channel_rows,
     account_pool_group_delete_error,
     account_pool_group_choices_display,
     account_pool_channel_by_id,
     account_pool_detail_display,
-    account_pool_project_count,
-    account_pool_summary_text,
-    account_pool_visible_channels,
+    account_pool_group_form_display,
+    account_pool_tab_display,
     apply_account_pool_group_settings,
     check_account_pool_channel,
     prepare_account_pool_channel_submission,
@@ -3400,41 +3398,44 @@ class CodexSwitchApp:
 
     def refresh_account_pool_tab(self) -> None:
         self.account_pool_settings.ensure_default_group()
-        self._refresh_account_pool_group_choices()
-        group = self._selected_account_pool_group()
-        group_id = group.id if group else ""
-        self.account_pool_enabled_var.set(self.account_pool_settings.enabled)
-        self.account_pool_summary_var.set(
-            account_pool_summary_text(
-                self.account_pool_settings,
-                group_id=group_id,
-                project_count=account_pool_project_count(self.projects, self.route_proxy_settings),
-            )
+        selected_id = None
+        if hasattr(self, "account_pool_tree"):
+            selection = self.account_pool_tree.selection()
+            if selection:
+                selected_id = selection[0]
+        display = account_pool_tab_display(
+            self.account_pool_settings,
+            projects=self.projects,
+            route_proxy_settings=self.route_proxy_settings,
+            source_filter=self.account_pool_source_filter_var.get(),
+            selected_channel_id=selected_id,
         )
+        self.account_pool_group_choices = display.group_display.choices
+        if hasattr(self, "account_pool_group_combo"):
+            self.account_pool_group_combo.configure(values=display.group_display.labels)
+        if display.group_display.selected_label:
+            self.account_pool_group_var.set(display.group_display.selected_label)
+        if display.group_display.form is not None:
+            self.account_pool_group_enabled_var.set(display.group_display.form.enabled)
+            self.account_pool_group_type_var.set(display.group_display.form.group_type_label)
+            self.account_pool_group_default_model_var.set(display.group_display.form.default_model)
+            self.account_pool_group_claude_model_var.set(display.group_display.form.claude_model)
+            self.account_pool_group_claude_fallback_model_var.set(display.group_display.form.claude_fallback_model)
+        self.account_pool_enabled_var.set(self.account_pool_settings.enabled)
+        self.account_pool_summary_var.set(display.summary_text)
         if not hasattr(self, "account_pool_tree"):
             return
-        selected_id = None
-        selection = self.account_pool_tree.selection()
-        if selection:
-            selected_id = selection[0]
-        rows = account_pool_channel_rows(
-            account_pool_visible_channels(
-                self.account_pool_settings,
-                group_id,
-                self.account_pool_source_filter_var.get(),
-            )
-        )
         self.suppress_selection_events = True
         try:
             replace_treeview_rows(
                 self.account_pool_tree,
-                [(row.channel_id, row.values) for row in rows],
+                [(row.channel_id, row.values) for row in display.rows],
             )
         finally:
             self.suppress_selection_events = False
-        if selected_id and self.account_pool_tree.exists(selected_id):
-            self.account_pool_tree.selection_set(selected_id)
-            self.account_pool_tree.focus(selected_id)
+        if display.selected_channel_id and self.account_pool_tree.exists(display.selected_channel_id):
+            self.account_pool_tree.selection_set(display.selected_channel_id)
+            self.account_pool_tree.focus(display.selected_channel_id)
         self._refresh_account_pool_detail()
 
     def _refresh_account_pool_detail(self) -> None:
@@ -5149,16 +5150,13 @@ class CodexSwitchApp:
             return
         self.account_pool_settings.selected_group_id = group_id
         group = self.account_pool_settings.group_by_id(group_id)
-        if group is not None:
-            self.account_pool_group_enabled_var.set(group.enabled)
-            self.account_pool_group_type_var.set(
-                ACCOUNT_POOL_GROUP_TYPE_LABELS.get(group.pool_type, ACCOUNT_POOL_GROUP_TYPE_LABELS[ACCOUNT_POOL_GROUP_TYPE_CODEX])
-            )
-            self.account_pool_group_default_model_var.set(group.default_model or DEFAULT_CODEX_MODEL)
-            self.account_pool_group_claude_model_var.set(group.claude_model or DEFAULT_CLAUDE_MODEL)
-            self.account_pool_group_claude_fallback_model_var.set(
-                group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL
-            )
+        form_display = account_pool_group_form_display(group)
+        if form_display is not None:
+            self.account_pool_group_enabled_var.set(form_display.enabled)
+            self.account_pool_group_type_var.set(form_display.group_type_label)
+            self.account_pool_group_default_model_var.set(form_display.default_model)
+            self.account_pool_group_claude_model_var.set(form_display.claude_model)
+            self.account_pool_group_claude_fallback_model_var.set(form_display.claude_fallback_model)
         self.refresh_account_pool_tab()
 
     def save_account_pool_group_settings(self) -> None:

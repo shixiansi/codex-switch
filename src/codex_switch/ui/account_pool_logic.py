@@ -79,6 +79,14 @@ class AccountPoolDetailDisplay:
     detail_text: str
 
 
+@dataclass(frozen=True)
+class AccountPoolTabDisplay:
+    group_display: AccountPoolGroupChoicesDisplay
+    summary_text: str
+    rows: list[AccountPoolChannelRow]
+    selected_channel_id: str | None
+
+
 def account_pool_group_type_from_label(label: str) -> str:
     for group_type, group_label in ACCOUNT_POOL_GROUP_TYPE_LABELS.items():
         if group_label == label:
@@ -193,6 +201,41 @@ def account_pool_detail_display(channel: AccountPoolChannel) -> AccountPoolDetai
         f"失败原因：{channel.failure_reason or '-'}"
     )
     return AccountPoolDetailDisplay(selected_name=channel.name, detail_text=detail)
+
+
+def account_pool_tab_display(
+    settings: AccountPoolSettings,
+    *,
+    projects: Iterable[ProjectRecord],
+    route_proxy_settings: RouteProxySettings,
+    source_filter: str,
+    selected_channel_id: str | None,
+) -> AccountPoolTabDisplay:
+    settings.ensure_default_group()
+    group_display = account_pool_group_choices_display(settings)
+    group_id = group_display.choices.get(group_display.selected_label, settings.selected_group_id)
+    rows = account_pool_channel_rows(
+        account_pool_visible_channels(
+            settings,
+            group_id,
+            source_filter,
+        )
+    )
+    resolved_selected_channel_id = (
+        selected_channel_id
+        if any(row.channel_id == selected_channel_id for row in rows)
+        else None
+    )
+    return AccountPoolTabDisplay(
+        group_display=group_display,
+        summary_text=account_pool_summary_text(
+            settings,
+            group_id=group_id,
+            project_count=account_pool_project_count(projects, route_proxy_settings),
+        ),
+        rows=rows,
+        selected_channel_id=resolved_selected_channel_id,
+    )
 
 
 def project_uses_account_pool(route_proxy_settings: RouteProxySettings, project_id: str) -> bool:

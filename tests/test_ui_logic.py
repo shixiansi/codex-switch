@@ -21,6 +21,8 @@ from codex_switch.health import HealthChecker, build_candidate_urls
 from codex_switch.models import (
     AccountPoolChannel,
     AccountPoolSettings,
+    ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+    ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
     HealthResult,
     HotUpdateEvent,
     Profile,
@@ -115,10 +117,12 @@ from codex_switch.ui.global_logic import (
     resolve_global_profile_id,
 )
 from codex_switch.ui.account_pool_logic import (
+    ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
     account_pool_channel_rows,
     account_pool_detail_display,
     account_pool_group_delete_error,
     account_pool_group_choices_display,
+    account_pool_tab_display,
     account_pool_summary_text,
     prepare_account_pool_channel_submission,
     resolve_account_pool_group_settings_update,
@@ -4190,6 +4194,48 @@ args = ["-m", "alpha"]
         self.assertIsNotNone(display.form)
         self.assertEqual(display.form.group_type_label, "Claude")
         self.assertIn("连接号池项目 2 个", summary)
+
+    def test_account_pool_tab_display_builds_summary_rows_and_selection(self) -> None:
+        settings = AccountPoolSettings()
+        group = settings.ensure_default_group()
+        channel_a = AccountPoolChannel.create(
+            name="pool-a",
+            base_url="https://pool-a.example.com",
+            api_key="sk-a",
+            group_id=group.id,
+            source_type=ACCOUNT_POOL_CHANNEL_SOURCE_TEMPORARY,
+        )
+        channel_b = AccountPoolChannel.create(
+            name="pool-b",
+            base_url="https://pool-b.example.com",
+            api_key="sk-b",
+            group_id=group.id,
+            source_type=ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE,
+        )
+        settings.channels.extend([channel_a, channel_b])
+        route_proxy_settings = RouteProxySettings()
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id")
+
+        display = account_pool_tab_display(
+            settings,
+            projects=[project],
+            route_proxy_settings=route_proxy_settings,
+            source_filter=ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
+            selected_channel_id=channel_b.id,
+        )
+        missing_selection = account_pool_tab_display(
+            settings,
+            projects=[project],
+            route_proxy_settings=route_proxy_settings,
+            source_filter=ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
+            selected_channel_id="missing",
+        )
+
+        self.assertEqual([row.channel_id for row in display.rows], [channel_b.id])
+        self.assertEqual(display.selected_channel_id, channel_b.id)
+        self.assertIsNotNone(display.group_display.form)
+        self.assertIn("连接号池项目 0 个", display.summary_text)
+        self.assertIsNone(missing_selection.selected_channel_id)
 
     def test_account_pool_channel_rows_and_detail_display_format_fields(self) -> None:
         channel = AccountPoolChannel.create(
