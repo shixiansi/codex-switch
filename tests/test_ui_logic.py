@@ -245,6 +245,12 @@ from codex_switch.ui.utils import is_github_repo_url, replace_treeview_rows, res
 from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
+from codex_switch.ui.skills_logic import (
+    build_skill_group_dialog_layout,
+    skill_group_dialog_card_displays,
+    skill_group_detail_text,
+)
+
 class _ValueVar:
     def __init__(self, value: str) -> None:
         self.value = value
@@ -2555,6 +2561,62 @@ command = "node"
 
         self.assertEqual([skill.content for skill in app.projects[0].skills], ["new", "review"])
         self.assertEqual(app.projects[0].skill_names, ["python-helper", "review-helper"])
+
+    def test_skill_group_detail_text_summarizes_visible_skills(self) -> None:
+        skills = [SkillDefinition.create(f"helper-{index}", content=str(index)) for index in range(6)]
+        group = SkillGroup.create("Code Group", skills=skills)
+
+        summary = skill_group_detail_text(group)
+
+        self.assertIn("Code Group:", summary)
+        self.assertIn("helper-0", summary)
+        self.assertIn("helper-4", summary)
+        self.assertNotIn("helper-5", summary)
+        self.assertTrue(summary.endswith(" ..."))
+
+    def test_skill_group_dialog_card_displays_build_compact_labels(self) -> None:
+        first = SkillDefinition.create(
+            "alpha-helper-with-a-very-long-name",
+            type=SKILL_TYPE_CONFIG,
+            version="2.0.0",
+            content="config",
+            source_path="C:/workspace/skills/alpha-helper-with-a-very-long-name",
+        )
+        second = SkillDefinition.create(
+            "local-helper",
+            type="SCRIPT",
+            version="1.0.1",
+            content="script",
+        )
+        group = SkillGroup.create("Code Group", skills=[first, second])
+
+        displays = skill_group_dialog_card_displays(group)
+
+        self.assertEqual([display.skill_id for display in displays], [first.id, second.id])
+        self.assertLessEqual(len(displays[0].title), 26)
+        self.assertIn(" / ", displays[0].type_version_text)
+        self.assertTrue(displays[0].type_version_text.endswith("2.0.0"))
+        self.assertLessEqual(len(displays[0].source_text), 32)
+        self.assertTrue(displays[1].source_text)
+
+    def test_build_skill_group_dialog_layout_detects_when_relayout_is_needed(self) -> None:
+        stable = build_skill_group_dialog_layout(
+            width=480,
+            card_count=4,
+            previous_columns=2,
+            previous_count=4,
+        )
+        changed = build_skill_group_dialog_layout(
+            width=720,
+            card_count=5,
+            previous_columns=2,
+            previous_count=4,
+        )
+
+        self.assertEqual(stable.columns, 2)
+        self.assertFalse(stable.relayout_required)
+        self.assertEqual(changed.columns, 3)
+        self.assertTrue(changed.relayout_required)
 
     def test_refresh_skills_tab_syncs_project_skill_groups(self) -> None:
         stale_skill = SkillDefinition.create("python-helper", content="old")

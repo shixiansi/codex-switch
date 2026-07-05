@@ -357,6 +357,7 @@ from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_ur
 from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
+from codex_switch.ui.skills_logic import build_skill_group_dialog_layout, skill_group_dialog_card_displays, skill_group_detail_text
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -3889,15 +3890,7 @@ class CodexSwitchApp:
 
     def _refresh_skill_group_detail(self) -> None:
         group = self._selected_skill_group()
-        if not group:
-            self.skill_group_detail_var.set("未选择 Skills 组")
-            return
-        skill_names = ", ".join(
-            f"{skill.name}({SKILL_TYPE_LABELS.get(normalize_skill_type(skill.type), skill.type)})"
-            for skill in group.skills[:5]
-        )
-        suffix = " ..." if len(group.skills) > 5 else ""
-        self.skill_group_detail_var.set(f"{group.name}: {skill_names or '暂无 Skill'}{suffix}")
+        self.skill_group_detail_var.set(skill_group_detail_text(group))
 
     def _refresh_skill_project_detail(self) -> None:
         if not hasattr(self, "skill_project_tree"):
@@ -4456,17 +4449,28 @@ class CodexSwitchApp:
         canvas: tk.Canvas,
     ) -> None:
         canvas.itemconfigure(window_id, width=max(width, 1))
-        columns = max(1, int(width) // 240)
         children = cards_frame.winfo_children()
         previous_columns = getattr(cards_frame, "_codex_switch_layout_columns", 0)
-        if previous_columns == columns and getattr(cards_frame, "_codex_switch_layout_count", -1) == len(children):
+        layout = build_skill_group_dialog_layout(
+            width=width,
+            card_count=len(children),
+            previous_columns=previous_columns,
+            previous_count=getattr(cards_frame, "_codex_switch_layout_count", -1),
+        )
+        if not layout.relayout_required:
             return
-        setattr(cards_frame, "_codex_switch_layout_columns", columns)
-        setattr(cards_frame, "_codex_switch_layout_count", len(children))
+        setattr(cards_frame, "_codex_switch_layout_columns", layout.columns)
+        setattr(cards_frame, "_codex_switch_layout_count", layout.card_count)
         for index, child in enumerate(children):
-            child.grid_configure(row=index // columns, column=index % columns, sticky="ew", padx=6, pady=6)
-        for column in range(max(previous_columns, columns)):
-            if column < columns:
+            child.grid_configure(
+                row=index // layout.columns,
+                column=index % layout.columns,
+                sticky="ew",
+                padx=6,
+                pady=6,
+            )
+        for column in range(max(previous_columns, layout.columns)):
+            if column < layout.columns:
                 cards_frame.columnconfigure(column, weight=1, uniform="skill_group_dialog")
             else:
                 cards_frame.columnconfigure(column, weight=0, uniform="")
@@ -4477,7 +4481,8 @@ class CodexSwitchApp:
             child.destroy()
         setattr(cards_frame, "_codex_switch_layout_columns", 0)
         setattr(cards_frame, "_codex_switch_layout_count", -1)
-        if not current.skills:
+        card_displays = skill_group_dialog_card_displays(current)
+        if not card_displays:
             tk.Label(
                 cards_frame,
                 text="该组暂无 Skills。",
@@ -4486,7 +4491,7 @@ class CodexSwitchApp:
                 font=self.body_font,
             ).grid(row=0, column=0, sticky="w", padx=6, pady=6)
             return
-        for skill in current.skills:
+        for skill, display in zip(current.skills, card_displays):
             card = tk.Frame(
                 cards_frame,
                 bg="#FBFDFE",
@@ -4496,11 +4501,9 @@ class CodexSwitchApp:
                 pady=10,
             )
             card.columnconfigure(0, weight=1)
-            tk.Label(card, text=compact_text(skill.name, 26), bg="#FBFDFE", fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
-            type_label = SKILL_TYPE_LABELS.get(normalize_skill_type(skill.type), skill.type)
-            tk.Label(card, text=f"{type_label} / {skill.version}", bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
-            source_text = compact_text(skill.source_path or "本地内容", 32)
-            tk.Label(card, text=source_text, bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(2, 8))
+            tk.Label(card, text=display.title, bg="#FBFDFE", fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+            tk.Label(card, text=display.type_version_text, bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
+            tk.Label(card, text=display.source_text, bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(2, 8))
             buttons = tk.Frame(card, bg="#FBFDFE")
             buttons.grid(row=3, column=0, sticky="ew")
             buttons.columnconfigure(0, weight=1)

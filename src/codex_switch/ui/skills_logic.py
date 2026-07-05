@@ -21,6 +21,7 @@ from codex_switch.skills import SkillSource, discover_skill_sources
 from codex_switch.ui.utils import compact_text
 
 
+from codex_switch.models import SKILL_TYPE_LABELS, normalize_skill_type
 MODEL_METADATA_RELATIVE_PATHS = (
     Path("codex-switch-model-metadata.json"),
     Path("model-metadata.json"),
@@ -63,6 +64,21 @@ class SkillsTabDisplay:
     preview_status_text: str
     selected_repo_id: str | None = None
     selected_group_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SkillGroupDialogCardDisplay:
+    skill_id: str
+    title: str
+    type_version_text: str
+    source_text: str
+
+
+@dataclass(frozen=True)
+class SkillGroupDialogLayout:
+    columns: int
+    card_count: int
+    relayout_required: bool
 
 
 def github_repo_author(repo_url: str) -> str:
@@ -199,6 +215,47 @@ def build_skills_tab_display(
         preview_status_text=preview_status_text,
         selected_repo_id=resolved_repo_id,
         selected_group_id=resolved_group_id,
+    )
+
+
+def skill_group_detail_text(group: SkillGroup | None) -> str:
+    if group is None:
+        return "未选择 Skills 组"
+    skill_names = ", ".join(
+        f"{skill.name}({SKILL_TYPE_LABELS.get(normalize_skill_type(skill.type), skill.type)})"
+        for skill in group.skills[:5]
+    )
+    suffix = " ..." if len(group.skills) > 5 else ""
+    return f"{group.name}: {skill_names or '暂无 Skill'}{suffix}"
+
+
+def skill_group_dialog_card_displays(group: SkillGroup) -> list[SkillGroupDialogCardDisplay]:
+    displays: list[SkillGroupDialogCardDisplay] = []
+    for skill in group.skills:
+        type_label = SKILL_TYPE_LABELS.get(normalize_skill_type(skill.type), skill.type)
+        displays.append(
+            SkillGroupDialogCardDisplay(
+                skill_id=skill.id,
+                title=compact_text(skill.name, 26),
+                type_version_text=f"{type_label} / {skill.version}",
+                source_text=compact_text(skill.source_path or "本地内容", 32),
+            )
+        )
+    return displays
+
+
+def build_skill_group_dialog_layout(
+    *,
+    width: int,
+    card_count: int,
+    previous_columns: int,
+    previous_count: int,
+) -> SkillGroupDialogLayout:
+    columns = max(1, int(width) // 240)
+    return SkillGroupDialogLayout(
+        columns=columns,
+        card_count=card_count,
+        relayout_required=previous_columns != columns or previous_count != card_count,
     )
 
 
