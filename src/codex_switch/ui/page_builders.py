@@ -4,13 +4,113 @@ import tkinter as tk
 from typing import Any
 
 from codex_switch.codex_config import PROJECT_ROOT_PLACEHOLDER
-from codex_switch.models import ACCOUNT_POOL_GROUP_TYPE_LABELS
+from codex_switch.models import ACCOUNT_POOL_GROUP_TYPE_LABELS, VENDOR_CLAUDE, VENDOR_CODEX
+from codex_switch.storage import MODEL_BATCH_CONCURRENCY_MAX, MODEL_BATCH_CONCURRENCY_MIN
 from codex_switch.ui.account_pool_logic import (
     ACCOUNT_POOL_SOURCE_FILTER_ALL,
     ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
     ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
 )
 from codex_switch.ui.styles import HEALTH_OVERRIDE_DISPLAY, PALETTE, make_button, make_status_badge, ttk
+
+
+def build_global_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(1, weight=1)
+
+    metrics = tk.Frame(parent, bg=PALETTE["panel_bg"])
+    metrics.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    for column in range(4):
+        metrics.columnconfigure(column, weight=1)
+
+    app._make_metric_card(metrics, "配置总数", app.global_total_var, PALETTE["accent"], PALETTE["selection_bg"]).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    app._make_metric_card(metrics, "健康配置", app.global_healthy_var, PALETTE["success"], PALETTE["success_soft"], value_foreground="#16A34A").grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    app._make_metric_card(metrics, "受限配置", app.global_degraded_var, PALETTE["warning"], PALETTE["warning_soft"], value_foreground="#CA8A04").grid(row=0, column=2, sticky="ew", padx=(0, 8))
+    app._make_metric_card(metrics, "异常配置", app.global_error_var, PALETTE["danger"], PALETTE["danger_soft"], value_foreground="#DC2626").grid(row=0, column=3, sticky="ew")
+
+    content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+    content.grid(row=1, column=0, sticky="nsew")
+    content.columnconfigure(0, weight=6)
+    content.columnconfigure(1, weight=5)
+    content.rowconfigure(0, weight=1)
+
+    current = app._make_card(content)
+    current.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    current.columnconfigure(0, weight=1)
+    current.columnconfigure(1, weight=1)
+
+    left = tk.Frame(current, bg=PALETTE["card_bg"])
+    left.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+    left.columnconfigure(0, weight=1)
+    tk.Label(left, text="Codex 当前生效配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=0, column=0, sticky="w")
+    tk.Label(left, textvariable=app.codex_current_models_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.body_font, justify="left", wraplength=420).grid(row=1, column=0, sticky="w", pady=(8, 4))
+    tk.Label(left, textvariable=app.codex_current_api_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.body_font, justify="left", wraplength=420).grid(row=2, column=0, sticky="w")
+
+    tk.Label(left, text="Claude 当前生成配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=3, column=0, sticky="w", pady=(22, 0))
+    tk.Label(left, textvariable=app.claude_current_models_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.body_font, justify="left", wraplength=420).grid(row=4, column=0, sticky="w", pady=(8, 4))
+    tk.Label(left, textvariable=app.claude_current_api_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.body_font, justify="left", wraplength=420).grid(row=5, column=0, sticky="w")
+
+    right = tk.Frame(current, bg=PALETTE["card_bg"])
+    right.grid(row=0, column=1, sticky="nsew")
+    right.columnconfigure(0, weight=1)
+    tk.Label(right, text="配置文件位置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=0, column=0, sticky="w")
+    tk.Label(right, textvariable=app.current_path_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font, justify="left", wraplength=360).grid(row=1, column=0, sticky="w", pady=(10, 12))
+
+    tk.Label(right, text="全局 API 设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=2, column=0, sticky="w", pady=(18, 8))
+    codex_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
+    codex_profile_row.grid(row=3, column=0, sticky="ew")
+    codex_profile_row.columnconfigure(0, weight=1)
+    tk.Label(codex_profile_row, text="Codex", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.small_font).grid(row=0, column=0, sticky="w")
+    app.global_codex_profile_combo = ttk.Combobox(
+        codex_profile_row,
+        textvariable=app.global_codex_profile_choice_var,
+        state="readonly",
+        width=40,
+    )
+    app.global_codex_profile_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+    app.global_codex_profile_combo.bind("<<ComboboxSelected>>", lambda event: app._on_global_profile_choice_changed(VENDOR_CODEX, event))
+    claude_profile_row = tk.Frame(right, bg=PALETTE["card_bg"])
+    claude_profile_row.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+    claude_profile_row.columnconfigure(0, weight=1)
+    tk.Label(claude_profile_row, text="Claude", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.small_font).grid(row=0, column=0, sticky="w")
+    app.global_claude_profile_combo = ttk.Combobox(
+        claude_profile_row,
+        textvariable=app.global_claude_profile_choice_var,
+        state="readonly",
+        width=40,
+    )
+    app.global_claude_profile_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+    app.global_claude_profile_combo.bind("<<ComboboxSelected>>", lambda event: app._on_global_profile_choice_changed(VENDOR_CLAUDE, event))
+    global_api_actions = tk.Frame(right, bg=PALETTE["card_bg"])
+    global_api_actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+    for column in range(3):
+        global_api_actions.columnconfigure(column, weight=1)
+    make_button(global_api_actions, text="写入全局配置", variant="primary", command=app.apply_global_profile).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(global_api_actions, text="打开 Codex 配置", variant="secondary", command=app.open_global_codex_config).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(global_api_actions, text="打开 Claude 配置", variant="secondary", command=app.open_global_claude_config).grid(row=0, column=2, sticky="ew")
+
+    mcp_card = app._make_card(content)
+    mcp_card.grid(row=0, column=1, sticky="nsew")
+    mcp_card.columnconfigure(0, weight=1)
+    tk.Label(mcp_card, text="全局 MCP 配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    tk.Label(
+        mcp_card,
+        text="用于全局切换时自动注入托管的 MCP 服务器。清空后会显式退出默认注入。",
+        bg=PALETTE["card_bg"],
+        fg=PALETTE["muted"],
+        font=app.small_font,
+        justify="left",
+        wraplength=360,
+    ).grid(row=1, column=0, sticky="w", pady=(6, 12))
+    tk.Label(mcp_card, textvariable=app.global_mcp_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.body_font, justify="left", wraplength=360).grid(row=2, column=0, sticky="w")
+
+    actions = tk.Frame(mcp_card, bg=PALETTE["card_bg"])
+    actions.grid(row=3, column=0, sticky="ew", pady=(18, 0))
+    for column in range(3):
+        actions.columnconfigure(column, weight=1)
+    make_button(actions, text="选择 MCP", variant="primary", command=app.select_global_mcp).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(actions, text="禁用 MCP", variant="danger", command=app.clear_global_mcp).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(actions, text="刷新", variant="secondary", command=app.refresh_all).grid(row=0, column=2, sticky="ew")
 
 
 def build_mcp_tab_page(app: Any, parent: tk.Misc) -> None:
@@ -394,3 +494,130 @@ def build_test_tab_page(app: Any, parent: tk.Misc) -> None:
     app.chat_send_button.grid(row=0, column=0, sticky="ew", pady=(0, 8))
     make_button(buttons, text="清空记录", variant="secondary", command=app.clear_chat_history).grid(row=1, column=0, sticky="ew")
     content.after_idle(app._sync_test_layout_widths)
+
+
+def build_settings_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.columnconfigure(1, weight=1)
+    parent.rowconfigure(1, weight=1)
+
+    settings_card = app._make_card(parent)
+    settings_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
+    settings_card.columnconfigure(1, weight=1)
+
+    tk.Label(settings_card, text="设置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, columnspan=3, sticky="w")
+    tk.Label(settings_card, textvariable=app.settings_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=1,
+        column=0,
+        columnspan=3,
+        sticky="w",
+        pady=(4, 12),
+    )
+    tk.Label(settings_card, text="模型批量测试同时请求数", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=2,
+        column=0,
+        sticky="w",
+        padx=(0, 14),
+    )
+    tk.Spinbox(
+        settings_card,
+        from_=MODEL_BATCH_CONCURRENCY_MIN,
+        to=MODEL_BATCH_CONCURRENCY_MAX,
+        textvariable=app.model_batch_concurrency_var,
+        width=8,
+        font=app.body_font,
+        relief="solid",
+        borderwidth=1,
+    ).grid(row=2, column=1, sticky="w")
+    tk.Label(settings_card, text="号池检测间隔（分钟）", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=3,
+        column=0,
+        sticky="w",
+        padx=(0, 14),
+        pady=(10, 0),
+    )
+    tk.Spinbox(
+        settings_card,
+        from_=1,
+        to=1440,
+        textvariable=app.account_pool_recovery_interval_var,
+        width=8,
+        font=app.body_font,
+        relief="solid",
+        borderwidth=1,
+    ).grid(row=3, column=1, sticky="w", pady=(10, 0))
+    tk.Label(settings_card, text="软件更新", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=4,
+        column=0,
+        sticky="w",
+        padx=(0, 14),
+        pady=(10, 0),
+    )
+    tk.Label(settings_card, textvariable=app.software_update_status_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=4,
+        column=1,
+        sticky="w",
+        pady=(10, 0),
+    )
+    make_button(settings_card, text="检查软件更新", variant="secondary", command=app.check_software_update_now).grid(row=4, column=2, sticky="e", pady=(10, 0))
+    ttk.Checkbutton(
+        settings_card,
+        text="启用仓库同步轮询",
+        variable=app.hot_update_enabled_var,
+    ).grid(row=5, column=0, sticky="w", pady=(10, 0))
+    tk.Spinbox(
+        settings_card,
+        from_=5,
+        to=1440,
+        textvariable=app.hot_update_interval_var,
+        width=8,
+        font=app.body_font,
+        relief="solid",
+        borderwidth=1,
+    ).grid(row=5, column=1, sticky="w", pady=(10, 0))
+    make_button(settings_card, text="检查仓库同步", variant="secondary", command=app.check_hot_updates_now).grid(row=5, column=2, sticky="e", pady=(10, 0))
+    tk.Label(settings_card, textvariable=app.hot_update_status_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=6,
+        column=0,
+        columnspan=2,
+        sticky="w",
+        pady=(8, 0),
+    )
+    make_button(settings_card, text="保存设置", variant="primary", command=app.save_settings).grid(row=6, column=2, sticky="e", pady=(8, 0))
+
+    info_card = app._make_card(parent)
+    info_card.grid(row=0, column=1, sticky="nsew", pady=(0, 10))
+    info_card.columnconfigure(1, weight=1)
+    info_card.columnconfigure(3, weight=1)
+    tk.Label(info_card, text="版本信息 / 系统信息", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, columnspan=4, sticky="w")
+    app._create_dual_info_row(info_card, 1, "应用版本", app.settings_version_var, "Python", app.settings_python_var)
+    app._create_dual_info_row(info_card, 2, "Tk/Tcl", app.settings_tk_var, "ttkbootstrap", app.settings_ttkbootstrap_var)
+    app._create_info_row(info_card, 3, "配置库", app.settings_storage_path_var, wraplength=560)
+    app._create_info_row(info_card, 4, "Codex config", app.settings_codex_config_path_var, wraplength=560)
+    app._create_info_row(info_card, 5, "Codex auth", app.settings_codex_auth_path_var, wraplength=560)
+    app._create_info_row(info_card, 6, "当前工作目录", app.settings_project_root_var, wraplength=560)
+    app._create_info_row(info_card, 7, "平台", app.settings_platform_var, wraplength=560)
+
+    hot_update_log_card = app._make_card(parent)
+    hot_update_log_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+    hot_update_log_card.columnconfigure(0, weight=1)
+    tk.Label(hot_update_log_card, text="最近更新与同步记录", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=0, column=0, sticky="w")
+    hot_update_log_wrap = tk.Frame(hot_update_log_card, bg=PALETTE["card_bg"])
+    hot_update_log_wrap.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    hot_update_log_wrap.columnconfigure(0, weight=1)
+    app.hot_update_log_text = tk.Text(
+        hot_update_log_wrap,
+        height=6,
+        wrap="word",
+        relief="solid",
+        borderwidth=1,
+        highlightthickness=0,
+        font=app.small_font,
+        bg="#FBFDFE",
+        fg=PALETTE["text"],
+        state="disabled",
+    )
+    app.hot_update_log_text.grid(row=0, column=0, sticky="ew")
+    hot_update_log_scroll = ttk.Scrollbar(hot_update_log_wrap, orient="vertical", command=app.hot_update_log_text.yview)
+    hot_update_log_scroll.grid(row=0, column=1, sticky="ns")
+    app.hot_update_log_text.configure(yscrollcommand=hot_update_log_scroll.set)
