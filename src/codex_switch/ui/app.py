@@ -189,12 +189,15 @@ from codex_switch.ui.hot_update_logic import (
 from codex_switch.ui.library_logic import (
     build_global_tab_display,
     build_library_detail_display,
+    build_library_model_tag_layout,
+    build_library_model_tags_display,
     build_library_tab_display,
     build_test_detail_display,
     build_test_tab_display,
     current_status_counts,
     health_override_note,
     health_status_text,
+    library_model_stats_content,
     profile_key_summary,
     profile_library_model_summary,
     profile_library_sort_key,
@@ -1887,7 +1890,12 @@ class CodexSwitchApp:
         self._layout_library_model_tags(event.width)
 
     def _render_library_model_tags(self, models: list[str], empty_text: str) -> None:
-        normalized_models = [str(model).strip() for model in models if str(model).strip()]
+        display = build_library_model_tags_display(
+            models,
+            empty_text=empty_text,
+            model_vendor_keywords=self.model_vendor_keywords,
+            expanded=self.library_model_stats_expanded,
+        )
         if hasattr(self, "library_model_tags_frame"):
             for child in self.library_model_tags_frame.winfo_children():
                 child.destroy()
@@ -1896,37 +1904,28 @@ class CodexSwitchApp:
         self._library_model_tag_layout_columns = 0
         self._library_model_tag_layout_count = -1
 
-        if not normalized_models:
-            self.library_models_summary_var.set(empty_text)
-            self.library_model_stats_button_var.set("展开统计")
+        if display.empty_text is not None:
+            self.library_models_summary_var.set(display.summary_text)
+            self.library_model_stats_button_var.set(display.stats_button_text)
             self.library_model_stats_expanded = False
             if hasattr(self, "library_model_stats_text"):
-                self._set_text_content(self.library_model_stats_text, empty_text, disabled=True)
+                self._set_text_content(self.library_model_stats_text, display.empty_text, disabled=True)
                 self.library_model_stats_text.grid_remove()
             if hasattr(self, "library_model_tags_frame"):
                 tk.Label(
                     self.library_model_tags_frame,
-                    text=empty_text,
+                    text=display.empty_text,
                     bg="#FBFDFE",
                     fg=PALETTE["muted"],
                     font=self.small_font,
                 ).grid(row=0, column=0, sticky="w", padx=10, pady=10)
             return
 
-        visible_models = normalized_models[:20]
-        hidden_count = max(0, len(normalized_models) - len(visible_models))
-        stats = model_vendor_stats(normalized_models, self.model_vendor_keywords)
-        stats_summary = "，".join(f"{vendor} {count}" for vendor, count in stats.items())
-        summary = f"共 {len(normalized_models)} 个模型；标签显示前 {len(visible_models)} 个"
-        if hidden_count:
-            summary += f"，隐藏 {hidden_count} 个"
-        if stats_summary:
-            summary += f"。{stats_summary}"
-        self.library_models_summary_var.set(summary)
-        self.library_model_stats_button_var.set("收起统计" if self.library_model_stats_expanded else "展开统计")
+        self.library_models_summary_var.set(display.summary_text)
+        self.library_model_stats_button_var.set(display.stats_button_text)
 
         if hasattr(self, "library_model_tags_frame"):
-            for model in visible_models:
+            for model in display.visible_models:
                 tag = tk.Canvas(
                     self.library_model_tags_frame,
                     width=172,
@@ -1938,29 +1937,30 @@ class CodexSwitchApp:
                 self.library_model_tag_widgets.append((model, tag))
                 tag.bind("<Button-1>", lambda _event, name=model: self._select_library_model_tag(name))
 
-        self.library_model_tag_models = visible_models
+        self.library_model_tag_models = display.visible_models
         width = self.library_models_canvas.winfo_width() if hasattr(self, "library_models_canvas") else 520
         self._layout_library_model_tags(width)
         self._refresh_library_model_tag_styles()
-        self._render_library_model_stats(normalized_models)
+        self._render_library_model_stats(display.normalized_models)
 
     def _layout_library_model_tags(self, width: int) -> None:
         if not getattr(self, "library_model_tag_widgets", None) or not hasattr(self, "library_model_tags_frame"):
             return
-        tag_width = 172
-        gap = 8
-        available_width = max(tag_width, width - 12)
-        column_count = max(1, available_width // (tag_width + gap))
-        tag_count = len(self.library_model_tag_widgets)
         previous_columns = getattr(self, "_library_model_tag_layout_columns", 0)
-        if previous_columns == column_count and getattr(self, "_library_model_tag_layout_count", -1) == tag_count:
+        layout = build_library_model_tag_layout(
+            width=width,
+            tag_count=len(self.library_model_tag_widgets),
+            previous_columns=previous_columns,
+            previous_count=getattr(self, "_library_model_tag_layout_count", -1),
+        )
+        if not layout.relayout_required:
             return
-        self._library_model_tag_layout_columns = column_count
-        self._library_model_tag_layout_count = tag_count
-        for column in range(max(previous_columns, column_count)):
-            self.library_model_tags_frame.columnconfigure(column, weight=1 if column < column_count else 0)
+        self._library_model_tag_layout_columns = layout.column_count
+        self._library_model_tag_layout_count = layout.tag_count
+        for column in range(max(previous_columns, layout.column_count)):
+            self.library_model_tags_frame.columnconfigure(column, weight=1 if column < layout.column_count else 0)
         for index, (_model, tag) in enumerate(self.library_model_tag_widgets):
-            tag.grid(row=index // column_count, column=index % column_count, sticky="w", padx=6, pady=6)
+            tag.grid(row=index // layout.column_count, column=index % layout.column_count, sticky="w", padx=6, pady=6)
 
     def _refresh_library_model_tag_styles(self) -> None:
         selected_profile = self.get_selected_profile()
@@ -1990,12 +1990,10 @@ class CodexSwitchApp:
     def _render_library_model_stats(self, models: list[str]) -> None:
         if not hasattr(self, "library_model_stats_text"):
             return
-        grouped = models_by_vendor(models, self.model_vendor_keywords)
-        lines: list[str] = []
-        for vendor, names in grouped.items():
-            lines.append(f"{vendor}（{len(names)}）")
-            lines.extend(f"  - {name}" for name in names)
-        content = "\n".join(lines) if lines else "暂无统计。"
+        content = library_model_stats_content(
+            models,
+            model_vendor_keywords=self.model_vendor_keywords,
+        )
         self._set_text_content(self.library_model_stats_text, content, disabled=True)
         if self.library_model_stats_expanded:
             self.library_model_stats_text.grid()

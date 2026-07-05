@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from codex_switch.models import CurrentCodexConfig
+from codex_switch.models import CurrentCodexConfig, model_vendor_stats, models_by_vendor
 
 from codex_switch.models import Profile, VENDOR_CLAUDE, VENDOR_CODEX, VENDOR_GENERIC, VENDOR_OTHER
 from codex_switch.ui.utils import compact_text, hidden_secret
@@ -86,6 +86,22 @@ class TestTreeRow:
 class TestTabDisplay:
     selected_profile_id: str | None
     rows: list[TestTreeRow]
+
+
+@dataclass(frozen=True)
+class LibraryModelTagsDisplay:
+    normalized_models: list[str]
+    visible_models: list[str]
+    summary_text: str
+    stats_button_text: str
+    empty_text: str | None = None
+
+
+@dataclass(frozen=True)
+class LibraryModelTagLayout:
+    column_count: int
+    tag_count: int
+    relayout_required: bool
 
 
 def visible_profiles_for_filter(profiles: list[Profile], hide_error_profiles: bool) -> list[Profile]:
@@ -371,3 +387,68 @@ def build_test_tab_display(
         selected_profile_id=selected_profile_id,
         rows=rows,
     )
+
+
+def build_library_model_tags_display(
+    models: list[str],
+    *,
+    empty_text: str,
+    model_vendor_keywords: dict[str, list[str]],
+    expanded: bool,
+) -> LibraryModelTagsDisplay:
+    normalized_models = [str(model).strip() for model in models if str(model).strip()]
+    if not normalized_models:
+        return LibraryModelTagsDisplay(
+            normalized_models=[],
+            visible_models=[],
+            summary_text=empty_text,
+            stats_button_text="展开统计",
+            empty_text=empty_text,
+        )
+
+    visible_models = normalized_models[:20]
+    hidden_count = max(0, len(normalized_models) - len(visible_models))
+    stats = model_vendor_stats(normalized_models, model_vendor_keywords)
+    stats_summary = "；".join(f"{vendor} {count}" for vendor, count in stats.items())
+    summary = f"共 {len(normalized_models)} 个模型；标签显示前 {len(visible_models)} 个"
+    if hidden_count:
+        summary += f"，隐藏 {hidden_count} 个"
+    if stats_summary:
+        summary += f"。{stats_summary}"
+    return LibraryModelTagsDisplay(
+        normalized_models=normalized_models,
+        visible_models=visible_models,
+        summary_text=summary,
+        stats_button_text="收起统计" if expanded else "展开统计",
+    )
+
+
+def build_library_model_tag_layout(
+    *,
+    width: int,
+    tag_count: int,
+    previous_columns: int,
+    previous_count: int,
+) -> LibraryModelTagLayout:
+    tag_width = 172
+    gap = 8
+    available_width = max(tag_width, width - 12)
+    column_count = max(1, available_width // (tag_width + gap))
+    return LibraryModelTagLayout(
+        column_count=column_count,
+        tag_count=tag_count,
+        relayout_required=previous_columns != column_count or previous_count != tag_count,
+    )
+
+
+def library_model_stats_content(
+    models: list[str],
+    *,
+    model_vendor_keywords: dict[str, list[str]],
+) -> str:
+    grouped = models_by_vendor(models, model_vendor_keywords)
+    lines: list[str] = []
+    for vendor, names in grouped.items():
+        lines.append(f"{vendor}（{len(names)}）")
+        lines.extend(f"  - {name}" for name in names)
+    return "\n".join(lines) if lines else "暂无统计。"

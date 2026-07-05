@@ -289,6 +289,12 @@ from codex_switch.ui.profile_logic import (
 
 from codex_switch.ui.hot_update_logic import process_hot_update_targets
 
+from codex_switch.ui.library_logic import (
+    build_library_model_tag_layout,
+    build_library_model_tags_display,
+    library_model_stats_content,
+)
+
 class _ValueVar:
     def __init__(self, value: str) -> None:
         self.value = value
@@ -893,6 +899,15 @@ class UiFilterTests(unittest.TestCase):
         self.assertIn("隐藏 5 个", app.library_models_summary_var.get())
         self.assertIn("OpenAI 25", app.library_models_summary_var.get())
 
+        display = build_library_model_tags_display(
+            models,
+            empty_text="empty",
+            model_vendor_keywords={},
+            expanded=False,
+        )
+        self.assertEqual(display.visible_models, models[:20])
+        self.assertEqual(display.stats_button_text, "展开统计")
+
     def test_library_model_tag_layout_wraps_by_width(self) -> None:
         class FakeFrame:
             def __init__(self) -> None:
@@ -919,6 +934,15 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual([tag.grid_calls[-1]["column"] for tag in tags], [0, 1, 2, 0, 1])
         grid_counts = [len(tag.grid_calls) for tag in tags]
 
+        layout = build_library_model_tag_layout(
+            width=560,
+            tag_count=5,
+            previous_columns=0,
+            previous_count=-1,
+        )
+        self.assertEqual(layout.column_count, 3)
+        self.assertTrue(layout.relayout_required)
+
         app._layout_library_model_tags(600)
 
         self.assertEqual([len(tag.grid_calls) for tag in tags], grid_counts)
@@ -927,6 +951,7 @@ class UiFilterTests(unittest.TestCase):
 
         self.assertEqual([tag.grid_calls[-1]["row"] for tag in tags], [0, 1, 2, 3, 4])
         self.assertEqual([tag.grid_calls[-1]["column"] for tag in tags], [0, 0, 0, 0, 0])
+        self.assertIn("OpenAI（25）", library_model_stats_content([f"gpt-model-{index}" for index in range(25)], model_vendor_keywords={}))
 
     def test_show_tab_grids_only_selected_frame(self) -> None:
         app = _make_minimal_app()
