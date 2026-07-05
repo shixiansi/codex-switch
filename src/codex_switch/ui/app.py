@@ -393,6 +393,19 @@ from codex_switch.ui.page_builders import (
     build_skill_repos_panel_page,
     build_skills_tab_page,
 )
+from codex_switch.ui.page_builders import (
+    build_local_skills_panel_page,
+    build_project_skills_panel_page,
+    build_skill_repo_source_panel_page,
+    build_skill_repos_panel_page,
+    build_skills_tab_page,
+)
+from codex_switch.ui.page_builders import (
+    build_project_actions_panel,
+    build_project_detail_panel_page,
+    build_project_list_panel_page,
+    build_project_tab_page,
+)
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -842,126 +855,16 @@ class CodexSwitchApp:
         build_library_tab_page(self, parent, library_profile_view_tabs=LIBRARY_PROFILE_VIEW_TABS)
 
     def _build_project_tab(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
-        content.grid(row=0, column=0, sticky="nsew")
-        content.columnconfigure(0, weight=5)
-        content.columnconfigure(1, weight=6)
-        content.rowconfigure(0, weight=1)
-
-        self._build_project_list_panel(content)
-        detail = self._build_project_detail_panel(content)
-        self._build_project_actions(detail)
+        build_project_tab_page(self, parent)
 
     def _build_project_list_panel(self, parent: tk.Misc) -> None:
-        project_list = self._make_card(parent)
-        project_list.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        project_list.columnconfigure(0, weight=1)
-        project_list.rowconfigure(1, weight=1)
-        tk.Label(project_list, text="项目索引", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        tk.Label(project_list, textvariable=self.project_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="e")
-
-        project_tree_wrap = tk.Frame(project_list, bg=PALETTE["card_bg"])
-        project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
-        project_tree_wrap.columnconfigure(0, weight=1)
-        project_tree_wrap.rowconfigure(0, weight=1)
-        self.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "codex", "claude", "mcp"), show="headings")
-        self.project_tree.heading("name", text="项目")
-        self.project_tree.heading("dir", text="目录")
-        self.project_tree.heading("codex", text="绑定 Codex")
-        self.project_tree.heading("claude", text="绑定 Claude")
-        self.project_tree.heading("mcp", text="MCP")
-        self.project_tree.column("name", width=180, anchor="center")
-        self.project_tree.column("dir", width=230, anchor="center")
-        self.project_tree.column("codex", width=130, anchor="center")
-        self.project_tree.column("claude", width=130, anchor="center")
-        self.project_tree.column("mcp", width=110, anchor="center")
-        self.project_tree.grid(row=0, column=0, sticky="nsew")
-        self.project_tree.bind("<<TreeviewSelect>>", self._on_project_selection_changed)
-        project_scroll = ttk.Scrollbar(project_tree_wrap, orient="vertical", command=self.project_tree.yview)
-        project_scroll.grid(row=0, column=1, sticky="ns")
-        self.project_tree.configure(yscrollcommand=project_scroll.set)
-
-        actions = tk.Frame(project_list, bg=PALETTE["card_bg"])
-        actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
-        for column in range(3):
-            actions.columnconfigure(column, weight=1)
-        make_button(actions, text="添加项目", variant="primary", command=self.add_project).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="修改项目", variant="secondary", command=self.edit_project).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="删除项目", variant="danger", command=self.delete_project).grid(row=0, column=2, sticky="ew")
+        build_project_list_panel_page(self, parent)
 
     def _build_project_detail_panel(self, parent: tk.Misc) -> tk.Frame:
-        detail = self._make_card(parent)
-        detail.grid(row=0, column=1, sticky="nsew")
-        detail.columnconfigure(1, weight=1)
-        detail.columnconfigure(3, weight=1)
-
-        header = tk.Frame(detail, bg=PALETTE["card_bg"])
-        header.grid(row=0, column=0, columnspan=4, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        tk.Label(header, textvariable=self.project_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        self.project_status_badge = make_status_badge(header, text="未生成")
-        self.project_status_badge.grid(row=0, column=1, sticky="e")
-        tk.Label(header, text="这里展示项目目录、绑定配置、模板生成状态和项目级 MCP/Skills。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(
-            row=1,
-            column=0,
-            sticky="w",
-            pady=(4, 0),
-        )
-
-        self._create_info_row(detail, 1, "项目目录", self.project_selected_dir_var, wraplength=440)
-        self._create_dual_info_row(detail, 2, "绑定 Codex", self.project_selected_codex_profile_var, "绑定 Claude", self.project_selected_claude_profile_var)
-        self._create_dual_info_row(detail, 3, "Codex 模型", self.project_selected_codex_model_var, "Claude 模型", self.project_selected_claude_model_var)
-        self._create_dual_info_row(detail, 4, "Codex Key", self.project_selected_codex_key_var, "Claude Key", self.project_selected_claude_key_var)
-        self._create_dual_info_row(detail, 5, "最近备份", self.project_backup_var, "最近生成", self.project_generated_var)
-        self._create_info_row(detail, 6, "运行脚本", self.project_script_var, wraplength=440)
-        self._create_info_row(detail, 7, "运行命令", self.project_run_var, wraplength=440)
-        self._create_info_row(detail, 8, "GitHub 地址", self.project_github_var, wraplength=440)
-        self._create_info_row(detail, 9, "GitHub 更新", self.project_github_update_var, wraplength=440)
-        self._create_info_row(detail, 10, "项目 MCP", self.project_mcp_var, wraplength=440)
-        self._create_info_row(detail, 11, "项目 Skills", self.project_skills_var, wraplength=440)
-
-        return detail
+        return build_project_detail_panel_page(self, parent)
 
     def _build_project_actions(self, detail: tk.Misc) -> None:
-        actions = tk.Frame(detail, bg=PALETTE["card_bg"])
-        actions.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(18, 0))
-        actions.columnconfigure(0, weight=1)
-
-        self._create_project_action_group(
-            actions,
-            0,
-            "Codex 相关",
-            (
-                ("生成 Codex 模板", "primary", self.generate_project_template),
-                ("修改 config.toml", "secondary", self.edit_project_codex_config),
-                ("VS Code 运行", "secondary", self.run_project_vscode),
-                ("CMD 打开 Codex", "secondary", self.run_project_cmd),
-            ),
-        )
-        self._create_project_action_group(
-            actions,
-            1,
-            "Claude 相关",
-            (
-                ("生成 Claude 模板", "primary", self.generate_claude_template),
-                ("修改 settings.local.json", "secondary", self.edit_project_claude_settings),
-                ("VS Code 打开", "secondary", self.open_project_vscode),
-                ("CMD 打开 Claude", "secondary", self.open_project_claude_cmd),
-            ),
-        )
-        self._create_project_action_group(
-            actions,
-            2,
-            "项目相关",
-            (
-                ("运行项目", "primary", self.run_project),
-                ("打开项目文件夹", "secondary", self.open_project_folder),
-                ("检查项目更新", "secondary", self.check_selected_project_update),
-            ),
-        )
+        build_project_actions_panel(self, detail)
 
     def _build_proxy_tab(self, parent: tk.Misc) -> None:
         build_proxy_tab_page(self, parent)

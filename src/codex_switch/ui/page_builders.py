@@ -14,9 +14,6 @@ from codex_switch.ui.account_pool_logic import (
 from codex_switch.ui.styles import HEALTH_OVERRIDE_DISPLAY, PALETTE, make_button, make_status_badge, ttk
 
 
-from codex_switch.models import VENDOR_CLAUDE, VENDOR_CODEX
-
-
 from codex_switch.ui.route_proxy_logic import (
     CLAUDE_ROUTE_PROXY_PROTOCOLS,
     CODEX_ROUTE_PROXY_PROTOCOLS,
@@ -996,6 +993,423 @@ def build_settings_tab_page(app: Any, parent: tk.Misc) -> None:
     hot_update_log_scroll = ttk.Scrollbar(hot_update_log_wrap, orient="vertical", command=app.hot_update_log_text.yview)
     hot_update_log_scroll.grid(row=0, column=1, sticky="ns")
     app.hot_update_log_text.configure(yscrollcommand=hot_update_log_scroll.set)
+
+
+def build_skills_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+    card = app._make_card(parent)
+    card.grid(row=0, column=0, sticky="nsew")
+    card.columnconfigure(0, weight=1)
+    card.rowconfigure(1, weight=1)
+
+    tk.Label(card, text="Skills 管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    tk.Label(card, textvariable=app.skills_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="e")
+
+    notebook = ttk.Notebook(card)
+    notebook.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+    market_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+    repo_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+    local_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+    project_tab = tk.Frame(notebook, bg=PALETTE["card_bg"], padx=10, pady=10)
+    notebook.add(market_tab, text="技能市场")
+    notebook.add(repo_tab, text="仓库源管理")
+    notebook.add(local_tab, text="本地Skills")
+    notebook.add(project_tab, text="项目Skills")
+
+    build_skill_repos_panel_page(app, market_tab)
+    build_skill_repo_source_panel_page(app, repo_tab)
+    build_local_skills_panel_page(app, local_tab)
+    build_project_skills_panel_page(app, project_tab)
+
+
+def build_skill_repos_panel_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(1, weight=1)
+    repo_filter_bar = tk.Frame(parent, bg=PALETTE["card_bg"])
+    repo_filter_bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    repo_filter_bar.columnconfigure(1, weight=1)
+    tk.Label(repo_filter_bar, text="筛选 Skill", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    app.skill_market_filter_entry = ttk.Entry(repo_filter_bar, textvariable=app.skill_market_filter_var)
+    app.skill_market_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(repo_filter_bar, text="清除", variant="secondary", command=app.clear_skill_market_filter).grid(row=0, column=2, sticky="e")
+    app.skill_market_filter_var.trace_add("write", lambda *_args: app.apply_skill_market_filter())
+    make_button(repo_filter_bar, text="刷新市场", variant="secondary", command=app.refresh_skill_market_now).grid(row=0, column=3, sticky="e", padx=(8, 0))
+    tk.Label(parent, textvariable=app.skill_repo_preview_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=2, column=0, sticky="w", pady=(8, 0))
+
+    market_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+    market_wrap.grid(row=1, column=0, sticky="nsew")
+    market_wrap.columnconfigure(0, weight=1)
+    market_wrap.rowconfigure(0, weight=1)
+    app.skill_market_canvas = tk.Canvas(market_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
+    app.skill_market_canvas.grid(row=0, column=0, sticky="nsew")
+    market_scroll = ttk.Scrollbar(market_wrap, orient="vertical", command=app.skill_market_canvas.yview)
+    market_scroll.grid(row=0, column=1, sticky="ns")
+    app.skill_market_canvas.configure(yscrollcommand=market_scroll.set)
+    app.skill_market_frame = tk.Frame(app.skill_market_canvas, bg=PALETTE["card_bg"])
+    app.skill_market_window = app.skill_market_canvas.create_window((0, 0), window=app.skill_market_frame, anchor="nw")
+    app.skill_market_frame.bind(
+        "<Configure>",
+        lambda _event: app.skill_market_canvas.configure(scrollregion=app.skill_market_canvas.bbox("all")),
+    )
+    app.skill_market_canvas.bind("<Configure>", app._layout_skill_market_cards)
+
+
+def build_skill_repo_source_panel_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(2, weight=1)
+    tk.Label(parent, text="仓库源管理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=0, column=0, sticky="w")
+
+    toolbar = tk.Frame(parent, bg=PALETTE["card_bg"])
+    toolbar.grid(row=1, column=0, sticky="ew", pady=(8, 8))
+    toolbar.columnconfigure(1, weight=1)
+    tk.Label(toolbar, text="筛选仓库", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    app.skill_repo_filter_entry = ttk.Entry(toolbar, textvariable=app.skill_repo_filter_var)
+    app.skill_repo_filter_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(toolbar, text="清除", variant="secondary", command=app.clear_skill_repo_filter).grid(row=0, column=2, sticky="e", padx=(0, 8))
+    make_button(toolbar, text="新增仓库", variant="primary", command=app.add_skill_market_repo).grid(row=0, column=3, sticky="e", padx=(0, 8))
+    make_button(toolbar, text="检查更新", variant="secondary", command=app.check_selected_skill_repo_update).grid(row=0, column=4, sticky="e")
+    app.skill_repo_filter_var.trace_add("write", lambda *_args: app.apply_skill_repo_filter())
+
+    repo_wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+    repo_wrap.grid(row=2, column=0, sticky="nsew")
+    repo_wrap.columnconfigure(0, weight=1)
+    repo_wrap.rowconfigure(0, weight=1)
+    app.skill_repo_tree = ttk.Treeview(repo_wrap, columns=("url", "branch", "commit", "auto"), show="headings")
+    app.skill_repo_tree.heading("url", text="GitHub 仓库", anchor="w")
+    app.skill_repo_tree.heading("branch", text="Ref", anchor="center")
+    app.skill_repo_tree.heading("commit", text="最近提交", anchor="center")
+    app.skill_repo_tree.heading("auto", text="自动更新", anchor="center")
+    app.skill_repo_tree.column("url", width=300, anchor="w")
+    app.skill_repo_tree.column("branch", width=90, anchor="center", stretch=False)
+    app.skill_repo_tree.column("commit", width=110, anchor="center", stretch=False)
+    app.skill_repo_tree.column("auto", width=80, anchor="center", stretch=False)
+    app.skill_repo_tree.grid(row=0, column=0, sticky="nsew")
+    app.skill_repo_tree.bind("<<TreeviewSelect>>", lambda _event: app._refresh_skill_repo_detail())
+    repo_scroll = ttk.Scrollbar(repo_wrap, orient="vertical", command=app.skill_repo_tree.yview)
+    repo_scroll.grid(row=0, column=1, sticky="ns")
+    app.skill_repo_tree.configure(yscrollcommand=repo_scroll.set)
+
+    repo_actions = tk.Frame(parent, bg=PALETTE["card_bg"])
+    repo_actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+    repo_actions.columnconfigure(0, weight=1)
+    tk.Label(repo_actions, textvariable=app.skill_repo_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
+    make_button(repo_actions, text="编辑仓库", variant="secondary", command=app.edit_skill_market_repo).grid(row=0, column=1, sticky="e", padx=(0, 8))
+    make_button(repo_actions, text="删除仓库", variant="danger", command=app.delete_skill_market_repo).grid(row=0, column=2, sticky="e", padx=(0, 8))
+    make_button(repo_actions, text="安装到组", variant="secondary", command=app.install_selected_skill_repo_to_group).grid(row=0, column=3, sticky="e")
+
+
+def build_local_skills_panel_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+    wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+    wrap.grid(row=0, column=0, sticky="nsew")
+    wrap.columnconfigure(0, weight=1)
+    wrap.rowconfigure(0, weight=1)
+    app.skill_group_tree = ttk.Treeview(wrap, columns=("name", "count", "description"), show="headings")
+    app.skill_group_tree.heading("name", text="组名", anchor="w")
+    app.skill_group_tree.heading("count", text="Skills", anchor="center")
+    app.skill_group_tree.heading("description", text="描述", anchor="w")
+    app.skill_group_tree.column("name", width=180, anchor="w")
+    app.skill_group_tree.column("count", width=80, anchor="center", stretch=False)
+    app.skill_group_tree.column("description", width=420, anchor="w")
+    app.skill_group_tree.grid(row=0, column=0, sticky="nsew")
+    app.skill_group_tree.bind("<<TreeviewSelect>>", lambda _event: app._refresh_skill_group_detail())
+    group_scroll = ttk.Scrollbar(wrap, orient="vertical", command=app.skill_group_tree.yview)
+    group_scroll.grid(row=0, column=1, sticky="ns")
+    app.skill_group_tree.configure(yscrollcommand=group_scroll.set)
+
+    actions = tk.Frame(parent, bg=PALETTE["card_bg"])
+    actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+    for column in range(6):
+        actions.columnconfigure(column, weight=1)
+    make_button(actions, text="新增组", variant="primary", command=app.add_skill_group).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(actions, text="编辑组", variant="secondary", command=app.edit_skill_group).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(actions, text="删除组", variant="danger", command=app.delete_skill_group).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+    make_button(actions, text="刷新", variant="secondary", command=app.refresh_skills_tab).grid(row=0, column=3, sticky="ew", padx=(0, 8))
+    tk.Label(actions, textvariable=app.skill_group_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=4, columnspan=2, sticky="w")
+
+
+def build_project_skills_panel_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+    wrap = tk.Frame(parent, bg=PALETTE["card_bg"])
+    wrap.grid(row=0, column=0, sticky="nsew")
+    wrap.columnconfigure(0, weight=1)
+    wrap.rowconfigure(0, weight=1)
+    app.skill_project_tree = ttk.Treeview(wrap, columns=("name", "groups", "skills"), show="headings")
+    app.skill_project_tree.heading("name", text="项目", anchor="w")
+    app.skill_project_tree.heading("groups", text="关联组", anchor="w")
+    app.skill_project_tree.heading("skills", text="展开 Skills", anchor="w")
+    app.skill_project_tree.column("name", width=180, anchor="w")
+    app.skill_project_tree.column("groups", width=260, anchor="w")
+    app.skill_project_tree.column("skills", width=360, anchor="w")
+    app.skill_project_tree.grid(row=0, column=0, sticky="nsew")
+    app.skill_project_tree.bind("<<TreeviewSelect>>", lambda _event: app._refresh_skill_project_detail())
+    project_scroll = ttk.Scrollbar(wrap, orient="vertical", command=app.skill_project_tree.yview)
+    project_scroll.grid(row=0, column=1, sticky="ns")
+    app.skill_project_tree.configure(yscrollcommand=project_scroll.set)
+
+    actions = tk.Frame(parent, bg=PALETTE["card_bg"])
+    actions.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+    actions.columnconfigure(0, weight=1)
+    actions.columnconfigure(1, weight=1)
+    actions.columnconfigure(2, weight=3)
+    make_button(actions, text="编辑项目关联", variant="primary", command=app.edit_project).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(actions, text="刷新", variant="secondary", command=app.refresh_skills_tab).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    tk.Label(actions, textvariable=app.skill_project_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=2, sticky="w")
+
+
+def build_project_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+
+    content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+    content.grid(row=0, column=0, sticky="nsew")
+    content.columnconfigure(0, weight=5)
+    content.columnconfigure(1, weight=6)
+    content.rowconfigure(0, weight=1)
+
+    build_project_list_panel_page(app, content)
+    detail = build_project_detail_panel_page(app, content)
+    build_project_actions_panel(app, detail)
+
+
+def build_project_list_panel_page(app: Any, parent: tk.Misc) -> None:
+    project_list = app._make_card(parent)
+    project_list.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    project_list.columnconfigure(0, weight=1)
+    project_list.rowconfigure(1, weight=1)
+    tk.Label(project_list, text="项目索引", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    tk.Label(project_list, textvariable=app.project_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="e")
+
+    project_tree_wrap = tk.Frame(project_list, bg=PALETTE["card_bg"])
+    project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+    project_tree_wrap.columnconfigure(0, weight=1)
+    project_tree_wrap.rowconfigure(0, weight=1)
+    app.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "codex", "claude", "mcp"), show="headings")
+    app.project_tree.heading("name", text="项目")
+    app.project_tree.heading("dir", text="目录")
+    app.project_tree.heading("codex", text="绑定 Codex")
+    app.project_tree.heading("claude", text="绑定 Claude")
+    app.project_tree.heading("mcp", text="MCP")
+    app.project_tree.column("name", width=180, anchor="center")
+    app.project_tree.column("dir", width=230, anchor="center")
+    app.project_tree.column("codex", width=130, anchor="center")
+    app.project_tree.column("claude", width=130, anchor="center")
+    app.project_tree.column("mcp", width=110, anchor="center")
+    app.project_tree.grid(row=0, column=0, sticky="nsew")
+    app.project_tree.bind("<<TreeviewSelect>>", app._on_project_selection_changed)
+    project_scroll = ttk.Scrollbar(project_tree_wrap, orient="vertical", command=app.project_tree.yview)
+    project_scroll.grid(row=0, column=1, sticky="ns")
+    app.project_tree.configure(yscrollcommand=project_scroll.set)
+
+    actions = tk.Frame(project_list, bg=PALETTE["card_bg"])
+    actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+    for column in range(3):
+        actions.columnconfigure(column, weight=1)
+    make_button(actions, text="添加项目", variant="primary", command=app.add_project).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(actions, text="修改项目", variant="secondary", command=app.edit_project).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(actions, text="删除项目", variant="danger", command=app.delete_project).grid(row=0, column=2, sticky="ew")
+
+
+def build_project_detail_panel_page(app: Any, parent: tk.Misc) -> tk.Frame:
+    detail = app._make_card(parent)
+    detail.grid(row=0, column=1, sticky="nsew")
+    detail.columnconfigure(1, weight=1)
+    detail.columnconfigure(3, weight=1)
+
+    header = tk.Frame(detail, bg=PALETTE["card_bg"])
+    header.grid(row=0, column=0, columnspan=4, sticky="ew")
+    header.columnconfigure(0, weight=1)
+    tk.Label(header, textvariable=app.project_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    app.project_status_badge = make_status_badge(header, text="未生成")
+    app.project_status_badge.grid(row=0, column=1, sticky="e")
+    tk.Label(header, text="这里展示项目目录、绑定配置、模板生成状态和项目级 MCP/Skills。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=1,
+        column=0,
+        sticky="w",
+        pady=(4, 0),
+    )
+
+    app._create_info_row(detail, 1, "项目目录", app.project_selected_dir_var, wraplength=440)
+    app._create_dual_info_row(detail, 2, "绑定 Codex", app.project_selected_codex_profile_var, "绑定 Claude", app.project_selected_claude_profile_var)
+    app._create_dual_info_row(detail, 3, "Codex 模型", app.project_selected_codex_model_var, "Claude 模型", app.project_selected_claude_model_var)
+    app._create_dual_info_row(detail, 4, "Codex Key", app.project_selected_codex_key_var, "Claude Key", app.project_selected_claude_key_var)
+    app._create_dual_info_row(detail, 5, "最近备份", app.project_backup_var, "最近生成", app.project_generated_var)
+    app._create_info_row(detail, 6, "运行脚本", app.project_script_var, wraplength=440)
+    app._create_info_row(detail, 7, "运行命令", app.project_run_var, wraplength=440)
+    app._create_info_row(detail, 8, "GitHub 地址", app.project_github_var, wraplength=440)
+    app._create_info_row(detail, 9, "GitHub 更新", app.project_github_update_var, wraplength=440)
+    app._create_info_row(detail, 10, "项目 MCP", app.project_mcp_var, wraplength=440)
+    app._create_info_row(detail, 11, "项目 Skills", app.project_skills_var, wraplength=440)
+
+    return detail
+
+
+def build_project_actions_panel(app: Any, detail: tk.Misc) -> None:
+    actions = tk.Frame(detail, bg=PALETTE["card_bg"])
+    actions.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+    actions.columnconfigure(0, weight=1)
+
+    app._create_project_action_group(
+        actions,
+        0,
+        "Codex 相关",
+        (
+            ("生成 Codex 模板", "primary", app.generate_project_template),
+            ("修改 config.toml", "secondary", app.edit_project_codex_config),
+            ("VS Code 运行", "secondary", app.run_project_vscode),
+            ("CMD 打开 Codex", "secondary", app.run_project_cmd),
+        ),
+    )
+    app._create_project_action_group(
+        actions,
+        1,
+        "Claude 相关",
+        (
+            ("生成 Claude 模板", "primary", app.generate_claude_template),
+            ("修改 settings.local.json", "secondary", app.edit_project_claude_settings),
+            ("VS Code 打开", "secondary", app.open_project_vscode),
+            ("CMD 打开 Claude", "secondary", app.open_project_claude_cmd),
+        ),
+    )
+    app._create_project_action_group(
+        actions,
+        2,
+        "项目相关",
+        (
+            ("运行项目", "primary", app.run_project),
+            ("打开项目文件夹", "secondary", app.open_project_folder),
+            ("检查项目更新", "secondary", app.check_selected_project_update),
+        ),
+    )
+
+
+def build_project_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+
+    content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+    content.grid(row=0, column=0, sticky="nsew")
+    content.columnconfigure(0, weight=5)
+    content.columnconfigure(1, weight=6)
+    content.rowconfigure(0, weight=1)
+
+    build_project_list_panel_page(app, content)
+    detail = build_project_detail_panel_page(app, content)
+    build_project_actions_panel(app, detail)
+
+
+def build_project_list_panel_page(app: Any, parent: tk.Misc) -> None:
+    project_list = app._make_card(parent)
+    project_list.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    project_list.columnconfigure(0, weight=1)
+    project_list.rowconfigure(1, weight=1)
+    tk.Label(project_list, text="项目索引", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    tk.Label(project_list, textvariable=app.project_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="e")
+
+    project_tree_wrap = tk.Frame(project_list, bg=PALETTE["card_bg"])
+    project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+    project_tree_wrap.columnconfigure(0, weight=1)
+    project_tree_wrap.rowconfigure(0, weight=1)
+    app.project_tree = ttk.Treeview(project_tree_wrap, columns=("name", "dir", "codex", "claude", "mcp"), show="headings")
+    app.project_tree.heading("name", text="项目")
+    app.project_tree.heading("dir", text="目录")
+    app.project_tree.heading("codex", text="绑定 Codex")
+    app.project_tree.heading("claude", text="绑定 Claude")
+    app.project_tree.heading("mcp", text="MCP")
+    app.project_tree.column("name", width=180, anchor="center")
+    app.project_tree.column("dir", width=230, anchor="center")
+    app.project_tree.column("codex", width=130, anchor="center")
+    app.project_tree.column("claude", width=130, anchor="center")
+    app.project_tree.column("mcp", width=110, anchor="center")
+    app.project_tree.grid(row=0, column=0, sticky="nsew")
+    app.project_tree.bind("<<TreeviewSelect>>", app._on_project_selection_changed)
+    project_scroll = ttk.Scrollbar(project_tree_wrap, orient="vertical", command=app.project_tree.yview)
+    project_scroll.grid(row=0, column=1, sticky="ns")
+    app.project_tree.configure(yscrollcommand=project_scroll.set)
+
+    actions = tk.Frame(project_list, bg=PALETTE["card_bg"])
+    actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+    for column in range(3):
+        actions.columnconfigure(column, weight=1)
+    make_button(actions, text="添加项目", variant="primary", command=app.add_project).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(actions, text="修改项目", variant="secondary", command=app.edit_project).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(actions, text="删除项目", variant="danger", command=app.delete_project).grid(row=0, column=2, sticky="ew")
+
+
+def build_project_detail_panel_page(app: Any, parent: tk.Misc) -> tk.Frame:
+    detail = app._make_card(parent)
+    detail.grid(row=0, column=1, sticky="nsew")
+    detail.columnconfigure(1, weight=1)
+    detail.columnconfigure(3, weight=1)
+
+    header = tk.Frame(detail, bg=PALETTE["card_bg"])
+    header.grid(row=0, column=0, columnspan=4, sticky="ew")
+    header.columnconfigure(0, weight=1)
+    tk.Label(header, textvariable=app.project_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    app.project_status_badge = make_status_badge(header, text="未生成")
+    app.project_status_badge.grid(row=0, column=1, sticky="e")
+    tk.Label(header, text="这里展示项目目录、绑定配置、模板生成状态和项目级 MCP/Skills。", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(
+        row=1,
+        column=0,
+        sticky="w",
+        pady=(4, 0),
+    )
+
+    app._create_info_row(detail, 1, "项目目录", app.project_selected_dir_var, wraplength=440)
+    app._create_dual_info_row(detail, 2, "绑定 Codex", app.project_selected_codex_profile_var, "绑定 Claude", app.project_selected_claude_profile_var)
+    app._create_dual_info_row(detail, 3, "Codex 模型", app.project_selected_codex_model_var, "Claude 模型", app.project_selected_claude_model_var)
+    app._create_dual_info_row(detail, 4, "Codex Key", app.project_selected_codex_key_var, "Claude Key", app.project_selected_claude_key_var)
+    app._create_dual_info_row(detail, 5, "最近备份", app.project_backup_var, "最近生成", app.project_generated_var)
+    app._create_info_row(detail, 6, "运行脚本", app.project_script_var, wraplength=440)
+    app._create_info_row(detail, 7, "运行命令", app.project_run_var, wraplength=440)
+    app._create_info_row(detail, 8, "GitHub 地址", app.project_github_var, wraplength=440)
+    app._create_info_row(detail, 9, "GitHub 更新", app.project_github_update_var, wraplength=440)
+    app._create_info_row(detail, 10, "项目 MCP", app.project_mcp_var, wraplength=440)
+    app._create_info_row(detail, 11, "项目 Skills", app.project_skills_var, wraplength=440)
+
+    return detail
+
+
+def build_project_actions_panel(app: Any, detail: tk.Misc) -> None:
+    actions = tk.Frame(detail, bg=PALETTE["card_bg"])
+    actions.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+    actions.columnconfigure(0, weight=1)
+
+    app._create_project_action_group(
+        actions,
+        0,
+        "Codex 相关",
+        (
+            ("生成 Codex 模板", "primary", app.generate_project_template),
+            ("修改 config.toml", "secondary", app.edit_project_codex_config),
+            ("VS Code 运行", "secondary", app.run_project_vscode),
+            ("CMD 打开 Codex", "secondary", app.run_project_cmd),
+        ),
+    )
+    app._create_project_action_group(
+        actions,
+        1,
+        "Claude 相关",
+        (
+            ("生成 Claude 模板", "primary", app.generate_claude_template),
+            ("修改 settings.local.json", "secondary", app.edit_project_claude_settings),
+            ("VS Code 打开", "secondary", app.open_project_vscode),
+            ("CMD 打开 Claude", "secondary", app.open_project_claude_cmd),
+        ),
+    )
+    app._create_project_action_group(
+        actions,
+        2,
+        "项目相关",
+        (
+            ("运行项目", "primary", app.run_project),
+            ("打开项目文件夹", "secondary", app.open_project_folder),
+            ("检查项目更新", "secondary", app.check_selected_project_update),
+        ),
+    )
 
 
 def build_skills_tab_page(app: Any, parent: tk.Misc) -> None:
