@@ -110,6 +110,8 @@ from codex_switch.ui.global_logic import (
 )
 from codex_switch.ui.hot_update_logic import (
     HotUpdateDecisionTexts,
+    PROJECT_HOT_UPDATE_TEXTS,
+    SKILL_REPO_HOT_UPDATE_TEXTS,
     append_hot_update_event,
     hot_update_event_line,
     hot_update_summary_text,
@@ -1273,6 +1275,50 @@ command = "node"
         self.assertEqual(manual_declined.event_status, "pending")
         self.assertEqual(manual_declined.event_detail, "declined")
         self.assertFalse(manual_declined.event_automatic)
+
+    def test_check_selected_skill_repo_update_records_current_commit_via_shared_decision(self) -> None:
+        repo = SkillMarketRepo.create("https://github.com/example/skills")
+        app = _make_minimal_app()
+        app.skill_market_repos = [repo]
+        app._selected_skill_repo = lambda: repo
+        update = GitRemoteUpdate(latest_commit="a" * 40, previous_commit="a" * 40)
+        app._skill_repo_remote_update = lambda _repo: update
+
+        with patch("codex_switch.ui.app.messagebox.showinfo") as showinfo:
+            app.check_selected_skill_repo_update()
+
+        self.assertEqual(app.skill_market_repos[0].last_sync_commit, update.latest_commit)
+        self.assertEqual(app.hot_update_events[-1].status, "current")
+        self.assertEqual(app.hot_update_events[-1].detail, SKILL_REPO_HOT_UPDATE_TEXTS.current)
+        self.assertEqual(app.persist_count, 1)
+        showinfo.assert_called_once()
+
+    def test_check_selected_project_update_decline_records_pending_without_applying(self) -> None:
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "profile-id",
+            github_repo="https://github.com/example/project",
+            github_last_sync_commit="oldcommit",
+        )
+        app = _make_minimal_app()
+        app.projects = [project]
+        app.get_selected_project = lambda: project
+        update = GitRemoteUpdate(latest_commit="b" * 40, previous_commit="a" * 40)
+        app._project_remote_update = lambda _project: update
+
+        def fail_apply(*_args, **_kwargs):
+            raise AssertionError("should not apply project update when user declines")
+
+        app._apply_project_update = fail_apply
+
+        with patch("codex_switch.ui.app.messagebox.askyesno", return_value=False) as askyesno:
+            app.check_selected_project_update()
+
+        self.assertEqual(app.hot_update_events[-1].status, "pending")
+        self.assertEqual(app.hot_update_events[-1].detail, PROJECT_HOT_UPDATE_TEXTS.declined)
+        self.assertIn(update.short_latest, app.status_var.get())
+        self.assertEqual(app.persist_count, 1)
+        askyesno.assert_called_once()
 
     def test_project_tab_display_builds_rows_and_generated_count(self) -> None:
         with workspace_tempdir() as temp_dir:

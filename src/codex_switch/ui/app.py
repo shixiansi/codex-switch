@@ -166,9 +166,10 @@ from codex_switch.ui.model_batch_logic import (
 from codex_switch.ui.hot_update_logic import (
     HOT_UPDATE_SCOPE_LABELS,
     HOT_UPDATE_STATUS_LABELS,
+    PROJECT_HOT_UPDATE_TEXTS,
+    SKILL_REPO_HOT_UPDATE_TEXTS,
     append_hot_update_event,
     hot_update_event_line,
-    HotUpdateDecisionTexts,
     hot_update_summary_text,
     process_hot_update_candidate,
 )
@@ -2826,15 +2827,7 @@ class CodexSwitchApp:
                 latest_commit=update.latest_commit,
                 automatic=automatic,
                 auto_update_enabled=repo.auto_update,
-                texts=HotUpdateDecisionTexts(
-                    current="\u8fdc\u7aef\u63d0\u4ea4\u672a\u53d8\u5316\u3002",
-                    auto_updated="\u81ea\u52a8\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730 Skills\u3002",
-                    auto_pending="\u81ea\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
-                    manual_updated="\u7528\u6237\u786e\u8ba4\u540e\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730 Skills\u3002",
-                    manual_pending="\u624b\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
-                    declined="\u7528\u6237\u6682\u4e0d\u62c9\u53d6\u3002",
-                    auto_disabled="\u672a\u914d\u7f6e\u4ed3\u5e93\u81ea\u52a8\u66f4\u65b0\u3002",
-                ),
+                texts=SKILL_REPO_HOT_UPDATE_TEXTS,
                 apply_update=lambda: self._apply_skill_repo_update(
                     repo,
                     automatic=repo.auto_update,
@@ -2882,15 +2875,7 @@ class CodexSwitchApp:
                 latest_commit=update.latest_commit,
                 automatic=automatic,
                 auto_update_enabled=project.github_auto_update,
-                texts=HotUpdateDecisionTexts(
-                    current="\u8fdc\u7aef\u63d0\u4ea4\u672a\u53d8\u5316\u3002",
-                    auto_updated="\u81ea\u52a8\u6267\u884c git pull --ff-only \u5e76\u540c\u6b65\u9879\u76ee\u5143\u6570\u636e\u3002",
-                    auto_pending="\u81ea\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
-                    manual_updated="\u7528\u6237\u786e\u8ba4\u540e\u6267\u884c git pull --ff-only \u5e76\u540c\u6b65\u9879\u76ee\u5143\u6570\u636e\u3002",
-                    manual_pending="\u624b\u52a8\u66f4\u65b0\u672a\u5b8c\u6210\uff0c\u8bf7\u7a0d\u540e\u786e\u8ba4\u3002",
-                    declined="\u7528\u6237\u6682\u4e0d\u62c9\u53d6\u3002",
-                    auto_disabled="\u672a\u914d\u7f6e\u9879\u76ee\u81ea\u52a8\u66f4\u65b0\u3002",
-                ),
+                texts=PROJECT_HOT_UPDATE_TEXTS,
                 apply_update=lambda: self._apply_project_update(
                     project,
                     update.latest_commit,
@@ -4116,7 +4101,7 @@ class CodexSwitchApp:
         self.skill_market_repos = [updated if item.id == updated.id else item for item in self.skill_market_repos]
         return updated
 
-    def check_selected_skill_repo_update(self) -> None:
+    def _legacy_check_selected_skill_repo_update(self) -> None:
         repo = self._selected_skill_repo()
         if not repo:
             messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
@@ -4175,6 +4160,58 @@ class CodexSwitchApp:
                     automatic=False,
                 )
                 self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
+        self.persist_state()
+        self.refresh_skills_tab()
+
+    def check_selected_skill_repo_update(self) -> None:
+        repo = self._selected_skill_repo()
+        if not repo:
+            messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
+            return
+        try:
+            update = self._skill_repo_remote_update(repo)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            self._record_hot_update_event(
+                scope="skill_repo",
+                target=repo.url,
+                status="error",
+                detail=str(exc),
+                automatic=False,
+            )
+            self.persist_state()
+            messagebox.showerror("检查失败", f"无法检查仓库更新：{exc}", parent=self.root)
+            return
+        decision = process_hot_update_candidate(
+            has_update=update.has_update,
+            latest_commit=update.latest_commit,
+            automatic=False,
+            auto_update_enabled=False,
+            texts=SKILL_REPO_HOT_UPDATE_TEXTS,
+            apply_update=lambda: self._apply_skill_repo_update(
+                repo,
+                automatic=False,
+                expected_commit=update.latest_commit,
+            ),
+            set_current_commit=lambda commit: self._set_skill_repo_commit(repo, commit),
+            confirm_update=lambda: messagebox.askyesno(
+                "发现更新",
+                f"发现更新：{update.short_latest}。是否拉取并重载到本地组？",
+                parent=self.root,
+            ),
+        )
+        if decision.event_status:
+            self._record_hot_update_event(
+                scope="skill_repo",
+                target=repo.url,
+                status=decision.event_status,
+                detail=decision.event_detail,
+                commit=decision.commit,
+                automatic=decision.event_automatic,
+            )
+        if decision.event_status == "current":
+            messagebox.showinfo("检查完成", "当前已经最新。", parent=self.root)
+        elif update.has_update and decision.event_detail == SKILL_REPO_HOT_UPDATE_TEXTS.declined:
+            self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
         self.persist_state()
         self.refresh_skills_tab()
 
@@ -4446,7 +4483,7 @@ class CodexSwitchApp:
             self.status_var.set(f"已更新项目源码：{project.name} @ {synced_commit[:12]}{metadata_text}")
         return True
 
-    def check_selected_project_update(self) -> None:
+    def _legacy_check_selected_project_update(self) -> None:
         project = self.get_selected_project()
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
@@ -4509,6 +4546,57 @@ class CodexSwitchApp:
                 commit=update.latest_commit,
                 automatic=False,
             )
+            self.status_var.set(f"已保留待更新的项目：{update.short_latest}")
+        self.persist_state()
+        self.refresh_project_tab()
+
+    def check_selected_project_update(self) -> None:
+        project = self.get_selected_project()
+        if not project:
+            messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
+            return
+        if not project.github_repo:
+            messagebox.showinfo("提示", "该项目未配置 GitHub 地址。", parent=self.root)
+            return
+        try:
+            update = self._project_remote_update(project)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            self._record_hot_update_event(
+                scope="project",
+                target=project.name,
+                status="error",
+                detail=str(exc),
+                automatic=False,
+            )
+            self.persist_state()
+            messagebox.showerror("检查失败", f"无法检查项目更新：{exc}", parent=self.root)
+            return
+        decision = process_hot_update_candidate(
+            has_update=update.has_update,
+            latest_commit=update.latest_commit,
+            automatic=False,
+            auto_update_enabled=False,
+            texts=PROJECT_HOT_UPDATE_TEXTS,
+            apply_update=lambda: self._apply_project_update(project, update.latest_commit, automatic=False),
+            set_current_commit=lambda commit: self._set_project_commit(project, commit),
+            confirm_update=lambda: messagebox.askyesno(
+                "发现更新",
+                f"发现项目更新：{update.short_latest}。是否执行 git pull --ff-only？",
+                parent=self.root,
+            ),
+        )
+        if decision.event_status:
+            self._record_hot_update_event(
+                scope="project",
+                target=project.name,
+                status=decision.event_status,
+                detail=decision.event_detail,
+                commit=decision.commit,
+                automatic=decision.event_automatic,
+            )
+        if decision.event_status == "current":
+            messagebox.showinfo("检查完成", "项目远端已经最新。", parent=self.root)
+        elif update.has_update and decision.event_detail == PROJECT_HOT_UPDATE_TEXTS.declined:
             self.status_var.set(f"已保留待更新的项目：{update.short_latest}")
         self.persist_state()
         self.refresh_project_tab()
