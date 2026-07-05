@@ -347,6 +347,38 @@ def build_project_edit_application(
     )
 
 
+def project_with_metadata_update(
+    project: ProjectRecord,
+    *,
+    skill_group_ids: list[str] | None,
+    skills: list[SkillDefinition],
+    skill_names: list[str] | None,
+    codex_profile_id: str,
+    claude_profile_id: str,
+    updated_at: str,
+) -> ProjectRecord | None:
+    profile_id = codex_profile_id or claude_profile_id or project.profile_id
+    if (
+        project.skill_group_ids == skill_group_ids
+        and project.skills == skills
+        and project.skill_names == skill_names
+        and project_codex_profile_id(project) == codex_profile_id
+        and project_claude_profile_id(project) == claude_profile_id
+        and project.profile_id == profile_id
+    ):
+        return None
+    return replace(
+        project,
+        profile_id=profile_id,
+        codex_profile_id=codex_profile_id,
+        claude_profile_id=claude_profile_id,
+        skill_group_ids=skill_group_ids,
+        skills=skills,
+        skill_names=skill_names,
+        updated_at=updated_at,
+    )
+
+
 def updated_project_from_dialog(project: ProjectRecord, result: dict, *, updated_at: str) -> ProjectEditUpdate:
     updated = replace(
         project,

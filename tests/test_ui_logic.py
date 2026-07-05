@@ -188,6 +188,7 @@ from codex_switch.ui.project_logic import (
     project_tab_display,
     project_root_path,
     project_text_file_path,
+    project_with_metadata_update,
     updated_project_from_dialog,
     project_vscode_launch_plan,
     project_vscode_open_command,
@@ -1207,6 +1208,42 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(application.project.name, "renamed")
         self.assertTrue(application.sync_codex)
         self.assertTrue(application.sync_claude)
+
+    def test_project_with_metadata_update_returns_none_when_nothing_changes(self) -> None:
+        skill = SkillDefinition.create("helper", content="content")
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            "codex-profile",
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+            skill_group_ids=["group-1"],
+            skills=[skill],
+            skill_names=[skill.name],
+        )
+
+        unchanged = project_with_metadata_update(
+            project,
+            skill_group_ids=["group-1"],
+            skills=[skill],
+            skill_names=[skill.name],
+            codex_profile_id="codex-profile",
+            claude_profile_id="claude-profile",
+            updated_at="2026-07-05T00:00:00",
+        )
+        updated = project_with_metadata_update(
+            project,
+            skill_group_ids=["group-2"],
+            skills=[],
+            skill_names=[],
+            codex_profile_id="new-codex",
+            claude_profile_id="new-claude",
+            updated_at="2026-07-05T00:00:00",
+        )
+
+        self.assertIsNone(unchanged)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.skill_group_ids, ["group-2"])
+        self.assertEqual(updated.profile_id, "new-codex")
 
     def test_project_launch_helpers_build_paths_and_commands(self) -> None:
         with workspace_tempdir() as temp_dir:

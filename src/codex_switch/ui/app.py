@@ -258,6 +258,7 @@ from codex_switch.ui.project_logic import (
     project_tab_display,
     project_template_display,
     project_text_file_path,
+    project_with_metadata_update,
     updated_project_from_dialog,
     project_vscode_open_command,
 )
@@ -4288,27 +4289,18 @@ class CodexSwitchApp:
                 supports_codex=profile_supports_codex,
                 supports_claude=profile_supports_claude,
             )
-            profile_id = codex_profile_id or claude_profile_id or project.profile_id
-            if (
-                project.skill_group_ids == group_ids
-                and project.skills == skills
-                and project.skill_names == names
-                and project_codex_profile_id(project) == codex_profile_id
-                and project_claude_profile_id(project) == claude_profile_id
-                and project.profile_id == profile_id
-            ):
-                return project, False
-            updated = replace(
+            updated = project_with_metadata_update(
                 project,
-                profile_id=profile_id,
-                codex_profile_id=codex_profile_id,
-                claude_profile_id=claude_profile_id,
                 skill_group_ids=group_ids,
                 skills=skills,
                 skill_names=names,
+                codex_profile_id=codex_profile_id,
+                claude_profile_id=claude_profile_id,
                 updated_at=now_iso(),
             )
-            self.projects = [updated if item.id == updated.id else item for item in self.projects]
+            if updated is None:
+                return project, False
+            self.projects = project_collection_after_replace(self.projects, updated).projects
             return updated, True
         return project, False
 
