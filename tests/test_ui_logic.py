@@ -206,6 +206,7 @@ from codex_switch.ui.skills_logic import (
 )
 from codex_switch.ui.project_logic import (
     build_project_add_execution_plan,
+    build_project_claude_cmd_launch_preparation,
     build_project_delete_execution_plan,
     build_project_detail_display_for_project,
     build_project_edit_application,
@@ -2000,6 +2001,37 @@ class UiFilterTests(unittest.TestCase):
             self.assertEqual(codex_cmd_plan.command, ("cmd.exe", "/k", str(cmd_path)))
             self.assertEqual(claude_cmd_plan.command, ("cmd.exe", "/k", "claude"))
             self.assertEqual(claude_cmd_plan.cwd, temp_dir)
+
+            claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+            missing_preparation = build_project_claude_cmd_launch_preparation(
+                project,
+                profile_by_id=lambda _profile_id: None,
+                supports_claude=profile_supports_claude,
+                route_proxy_base_url="http://proxy.local",
+                model_override="sonnet",
+                fallback_model_override="haiku",
+                runtime_env_from_profile=lambda *_args: {},
+            )
+            ok_preparation = build_project_claude_cmd_launch_preparation(
+                project,
+                profile_by_id=lambda _profile_id: claude_profile,
+                supports_claude=profile_supports_claude,
+                route_proxy_base_url="http://proxy.local",
+                model_override="sonnet",
+                fallback_model_override="haiku",
+                runtime_env_from_profile=lambda _profile, base_url, model, fallback: {
+                    "BASE": base_url or "",
+                    "MODEL": model or "",
+                    "FALLBACK": fallback or "",
+                },
+            )
+
+            self.assertEqual(missing_preparation.error_message, "项目绑定的 Claude 配置已删除。")
+            self.assertEqual(ok_preparation.project_root, temp_dir)
+            self.assertEqual(ok_preparation.profile, claude_profile)
+            self.assertEqual(ok_preparation.route_proxy_base_url, "http://proxy.local")
+            self.assertEqual(ok_preparation.env_overrides, {"BASE": "http://proxy.local", "MODEL": "sonnet", "FALLBACK": "haiku"})
+            self.assertEqual(ok_preparation.launch_plan.success_status, claude_cmd_plan.success_status)
 
             launched_calls = []
             launch_result = execute_project_launch_plan(

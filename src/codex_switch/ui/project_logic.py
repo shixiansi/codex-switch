@@ -153,6 +153,18 @@ class ProjectLaunchExecutionResult:
 
 
 @dataclass(frozen=True)
+class ProjectClaudeCmdLaunchPreparation:
+    project_root: Path | None = None
+    profile: Profile | None = None
+    route_proxy_base_url: str | None = None
+    model_override: str | None = None
+    fallback_model_override: str | None = None
+    env_overrides: dict[str, str] | None = None
+    launch_plan: ProjectLaunchPlan | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True)
 class ProjectEditUpdate:
     project: ProjectRecord
     codex_binding_changed: bool
@@ -377,6 +389,37 @@ def project_claude_cmd_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
         command=project_claude_cmd_command(),
         cwd=project_root_path(project),
         success_status=f"已打开 Claude CMD：{project.name}",
+    )
+
+
+def build_project_claude_cmd_launch_preparation(
+    project: ProjectRecord,
+    *,
+    profile_by_id: Callable[[str], Profile | None],
+    supports_claude: Callable[[Profile], bool],
+    route_proxy_base_url: str | None,
+    model_override: str | None,
+    fallback_model_override: str | None,
+    runtime_env_from_profile: Callable[[Profile, str | None, str | None, str | None], dict[str, str]],
+) -> ProjectClaudeCmdLaunchPreparation:
+    profile = profile_by_id(project_claude_profile_id(project))
+    if profile is None:
+        return ProjectClaudeCmdLaunchPreparation(error_message="项目绑定的 Claude 配置已删除。")
+    if not supports_claude(profile):
+        return ProjectClaudeCmdLaunchPreparation(error_message="项目绑定的配置不支持 Claude。")
+    return ProjectClaudeCmdLaunchPreparation(
+        project_root=project_root_path(project),
+        profile=profile,
+        route_proxy_base_url=route_proxy_base_url,
+        model_override=model_override,
+        fallback_model_override=fallback_model_override,
+        env_overrides=runtime_env_from_profile(
+            profile,
+            route_proxy_base_url,
+            model_override,
+            fallback_model_override,
+        ),
+        launch_plan=project_claude_cmd_launch_plan(project),
     )
 
 

@@ -237,6 +237,7 @@ from codex_switch.ui.styles import (
 )
 from codex_switch.ui.project_logic import (
     build_project_add_execution_plan,
+    build_project_claude_cmd_launch_preparation,
     build_project_delete_execution_plan,
     build_project_detail_display_for_project,
     build_project_edit_application,
@@ -4718,39 +4719,41 @@ class CodexSwitchApp:
         if not project:
             messagebox.showinfo("提示", "请先选择一个项目。", parent=self.root)
             return
-        profile = self._profile_by_id(project_claude_profile_id(project))
-        if not profile:
-            messagebox.showerror("启动失败", "项目绑定的 Claude 配置已删除。", parent=self.root)
-            return
-        if not profile_supports_claude(profile):
-            messagebox.showerror("启动失败", "项目绑定的配置不支持 Claude。", parent=self.root)
-            return
         self._refresh_project_proxy_rules_before_action(project)
         route_proxy_base_url = self._route_proxy_base_url_for_project(project)
         claude_model, claude_fallback_model = self._claude_model_overrides_for_project(project)
+        preparation = build_project_claude_cmd_launch_preparation(
+            project,
+            profile_by_id=lambda profile_id: self._profile_by_id(profile_id),
+            supports_claude=profile_supports_claude,
+            route_proxy_base_url=route_proxy_base_url,
+            model_override=claude_model,
+            fallback_model_override=claude_fallback_model,
+            runtime_env_from_profile=lambda profile, base_url, model, fallback: claude_runtime_env_from_profile(
+                profile,
+                route_proxy_base_url=base_url,
+                model_override=model,
+                fallback_model_override=fallback,
+            ),
+        )
+        if preparation.error_message:
+            messagebox.showerror("启动失败", preparation.error_message, parent=self.root)
+            return
         try:
             self.project_template_service.sync_claude_binding(
-                project_root_path(project),
-                profile,
-                route_proxy_base_url=route_proxy_base_url,
-                model_override=claude_model,
-                fallback_model_override=claude_fallback_model,
+                preparation.project_root,
+                preparation.profile,
+                route_proxy_base_url=preparation.route_proxy_base_url,
+                model_override=preparation.model_override,
+                fallback_model_override=preparation.fallback_model_override,
             )
         except Exception as exc:
             messagebox.showerror("启动失败", f"同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
             return
         env = os.environ.copy()
-        env.update(
-            claude_runtime_env_from_profile(
-                profile,
-                route_proxy_base_url=route_proxy_base_url,
-                model_override=claude_model,
-                fallback_model_override=claude_fallback_model,
-            )
-        )
-        plan = project_claude_cmd_launch_plan(project)
+        env.update(preparation.env_overrides or {})
         result = execute_project_launch_plan(
-            plan,
+            preparation.launch_plan,
             popen=subprocess.Popen,
             creationflags=_CREATE_NEW_CONSOLE,
             env=env,
@@ -4758,7 +4761,7 @@ class CodexSwitchApp:
         if not result.launched:
             messagebox.showerror("启动失败", f"打开 Claude CMD 失败：\n{result.failure_detail}", parent=self.root)
             return
-        self.status_var.set(result.status_text or plan.success_status)
+        self.status_var.set(result.status_text or preparation.launch_plan.success_status)
 
     def run_project(self) -> None:
         project = self.get_selected_project()
