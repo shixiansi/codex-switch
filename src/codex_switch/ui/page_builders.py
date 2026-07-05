@@ -17,6 +17,13 @@ from codex_switch.ui.styles import HEALTH_OVERRIDE_DISPLAY, PALETTE, make_button
 from codex_switch.models import VENDOR_CLAUDE, VENDOR_CODEX
 
 
+from codex_switch.ui.route_proxy_logic import (
+    CLAUDE_ROUTE_PROXY_PROTOCOLS,
+    CODEX_ROUTE_PROXY_PROTOCOLS,
+    CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
+    ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES,
+)
+
 def build_library_tab_page(app: Any, parent: tk.Misc, *, library_profile_view_tabs: tuple[tuple[str, str], ...]) -> None:
     parent.columnconfigure(0, weight=1)
     parent.rowconfigure(0, weight=1)
@@ -540,6 +547,206 @@ def build_account_pool_tab_page(app: Any, parent: tk.Misc) -> None:
     right.columnconfigure(1, weight=1)
     tk.Label(right, textvariable=app.account_pool_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, columnspan=2, sticky="w")
     app._create_info_row(right, 1, "渠道详情", app.account_pool_selected_detail_var, wraplength=360)
+
+
+def build_proxy_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+
+    content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+    content.grid(row=0, column=0, sticky="nsew")
+    content.columnconfigure(0, weight=5)
+    content.columnconfigure(1, weight=6)
+    content.rowconfigure(0, weight=1)
+
+    left = app._make_card(content)
+    left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    left.columnconfigure(0, weight=1)
+    left.rowconfigure(9, weight=1)
+    tk.Label(left, text="路由代理", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    tk.Label(left, textvariable=app.proxy_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+    settings = tk.Frame(left, bg=PALETTE["card_bg"])
+    settings.grid(row=2, column=0, sticky="ew")
+    settings.columnconfigure(1, weight=1)
+    tk.Label(settings, text="监听地址", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Entry(settings, textvariable=app.proxy_host_var, width=18).grid(row=0, column=1, sticky="w", pady=4)
+    tk.Label(settings, text="端口", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=0, column=2, sticky="w", padx=(16, 10), pady=4)
+    ttk.Entry(settings, textvariable=app.proxy_port_var, width=8).grid(row=0, column=3, sticky="w", pady=4)
+    tk.Label(settings, text="号池策略", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Combobox(
+        settings,
+        textvariable=app.proxy_account_pool_strategy_var,
+        values=tuple(ROUTE_PROXY_ACCOUNT_POOL_STRATEGY_VALUES.keys()),
+        state="readonly",
+        width=12,
+    ).grid(row=1, column=1, sticky="w", pady=4)
+    tk.Label(settings, text="节点超时(秒)", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=1, column=2, sticky="w", padx=(16, 10), pady=4)
+    ttk.Entry(settings, textvariable=app.proxy_upstream_timeout_var, width=8).grid(row=1, column=3, sticky="w", pady=4)
+    tk.Label(settings, text="Codex 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Combobox(
+        settings,
+        textvariable=app.proxy_codex_upstream_source_var,
+        values=tuple(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.keys()),
+        state="readonly",
+        width=28,
+    ).grid(row=2, column=1, columnspan=3, sticky="w", pady=4)
+    tk.Label(settings, text="Codex 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
+    app.proxy_account_pool_group_combo = ttk.Combobox(
+        settings,
+        textvariable=app.proxy_account_pool_group_var,
+        state="readonly",
+        width=28,
+    )
+    app.proxy_account_pool_group_combo.grid(row=3, column=1, columnspan=3, sticky="w", pady=4)
+    tk.Label(settings, text="Codex 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=4, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Combobox(
+        settings,
+        textvariable=app.proxy_codex_protocol_var,
+        values=CODEX_ROUTE_PROXY_PROTOCOLS,
+        state="readonly",
+        width=28,
+    ).grid(row=4, column=1, columnspan=3, sticky="w", pady=4)
+    tk.Label(settings, text="Compact 模型", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=5, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Entry(settings, textvariable=app.proxy_codex_compact_model_var, width=28).grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
+    tk.Label(settings, text="Claude 来源", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=6, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Combobox(
+        settings,
+        textvariable=app.proxy_claude_upstream_source_var,
+        values=tuple(CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.keys()),
+        state="readonly",
+        width=28,
+    ).grid(row=6, column=1, columnspan=3, sticky="w", pady=4)
+    tk.Label(settings, text="Claude 号池组", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=7, column=0, sticky="w", padx=(0, 10), pady=4)
+    app.proxy_claude_account_pool_group_combo = ttk.Combobox(
+        settings,
+        textvariable=app.proxy_claude_account_pool_group_var,
+        state="readonly",
+        width=28,
+    )
+    app.proxy_claude_account_pool_group_combo.grid(row=7, column=1, columnspan=3, sticky="w", pady=4)
+    tk.Label(settings, text="Claude 协议", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=app.small_font).grid(row=8, column=0, sticky="w", padx=(0, 10), pady=4)
+    ttk.Combobox(
+        settings,
+        textvariable=app.proxy_claude_protocol_var,
+        values=CLAUDE_ROUTE_PROXY_PROTOCOLS,
+        state="readonly",
+        width=28,
+    ).grid(row=8, column=1, columnspan=3, sticky="w", pady=4)
+
+    proxy_tree_wrap = tk.Frame(left, bg=PALETTE["card_bg"])
+    proxy_tree_wrap.grid(row=9, column=0, sticky="nsew", pady=(12, 0))
+    proxy_tree_wrap.columnconfigure(0, weight=1)
+    proxy_tree_wrap.rowconfigure(0, weight=1)
+    app.proxy_project_tree = ttk.Treeview(proxy_tree_wrap, columns=("name", "codex", "claude", "pool", "enabled"), show="headings")
+    for column, title, width in (
+        ("name", "项目", 160),
+        ("codex", "Codex", 120),
+        ("claude", "Claude", 120),
+        ("pool", "号池", 80),
+        ("enabled", "代理", 80),
+    ):
+        app.proxy_project_tree.heading(column, text=title)
+        app.proxy_project_tree.column(column, width=width, anchor="center")
+    app.proxy_project_tree.grid(row=0, column=0, sticky="nsew")
+    app.proxy_project_tree.bind("<<TreeviewSelect>>", app._on_proxy_project_selection_changed)
+    proxy_scroll = ttk.Scrollbar(proxy_tree_wrap, orient="vertical", command=app.proxy_project_tree.yview)
+    proxy_scroll.grid(row=0, column=1, sticky="ns")
+    app.proxy_project_tree.configure(yscrollcommand=proxy_scroll.set)
+
+    actions = tk.Frame(left, bg=PALETTE["card_bg"])
+    actions.grid(row=10, column=0, sticky="ew", pady=(14, 0))
+    for column in range(4):
+        actions.columnconfigure(column, weight=1)
+    make_button(actions, text="保存设置", variant="secondary", command=app.save_route_proxy_settings).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    make_button(actions, text="启动代理", variant="primary", command=app.start_route_proxy).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    make_button(actions, text="停止代理", variant="danger", command=app.stop_route_proxy).grid(row=0, column=2, sticky="ew", padx=(0, 8))
+    make_button(actions, text="刷新", variant="secondary", command=app.refresh_proxy_tab).grid(row=0, column=3, sticky="ew")
+    make_button(actions, text="启用项目代理", variant="primary", command=app.enable_route_proxy_for_project).grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(8, 0))
+    make_button(actions, text="关闭项目代理", variant="secondary", command=app.disable_route_proxy_for_project).grid(row=1, column=2, columnspan=2, sticky="ew", pady=(8, 0))
+
+    right = app._make_card(content)
+    right.grid(row=0, column=1, sticky="nsew")
+    right.columnconfigure(0, weight=1)
+    right.rowconfigure(5, weight=1)
+    tk.Label(right, textvariable=app.proxy_status_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    app._create_info_row(right, 1, "选中项目", app.proxy_selected_project_var, wraplength=460)
+    app._create_info_row(right, 2, "当前规则", app.proxy_selected_rules_var, wraplength=460)
+    tk.Label(right, text="最近代理日志", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.section_font).grid(row=3, column=0, sticky="w", pady=(16, 6))
+    log_wrap = tk.Frame(right, bg=PALETTE["card_bg"])
+    log_wrap.grid(row=5, column=0, sticky="nsew")
+    log_wrap.columnconfigure(0, weight=1)
+    log_wrap.rowconfigure(0, weight=1)
+    app.proxy_log_text = tk.Text(
+        log_wrap,
+        height=18,
+        wrap="word",
+        relief="solid",
+        borderwidth=1,
+        highlightthickness=0,
+        font=app.small_font,
+        bg="#FBFDFE",
+        fg=PALETTE["text"],
+        state="disabled",
+    )
+    app.proxy_log_text.grid(row=0, column=0, sticky="nsew")
+    proxy_log_scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=app.proxy_log_text.yview)
+    proxy_log_scroll.grid(row=0, column=1, sticky="ns")
+    app.proxy_log_text.configure(yscrollcommand=proxy_log_scroll.set)
+
+
+def build_stats_tab_page(app: Any, parent: tk.Misc) -> None:
+    parent.columnconfigure(0, weight=1)
+    parent.rowconfigure(0, weight=1)
+
+    content = tk.Frame(parent, bg=PALETTE["panel_bg"])
+    content.grid(row=0, column=0, sticky="nsew")
+    content.columnconfigure(0, weight=5)
+    content.columnconfigure(1, weight=6)
+    content.rowconfigure(1, weight=1)
+
+    metrics = tk.Frame(content, bg=PALETTE["panel_bg"])
+    metrics.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+    for column in range(4):
+        metrics.columnconfigure(column, weight=1)
+    app._make_metric_card(metrics, "总 Token", app.stats_total_tokens_var, PALETTE["accent"], PALETTE["selection_bg"]).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    app._make_metric_card(metrics, "今日 Token", app.stats_today_tokens_var, PALETTE["success"], PALETTE["success_soft"], value_foreground="#16A34A").grid(row=0, column=1, sticky="ew", padx=(0, 8))
+    app._make_metric_card(metrics, "项目数", app.stats_project_count_var, PALETTE["warning"], PALETTE["warning_soft"], value_foreground="#CA8A04").grid(row=0, column=2, sticky="ew", padx=(0, 8))
+    app._make_metric_card(metrics, "API 数", app.stats_api_count_var, PALETTE["danger"], PALETTE["danger_soft"], value_foreground="#DC2626").grid(row=0, column=3, sticky="ew")
+
+    left = app._make_card(content)
+    left.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+    left.columnconfigure(0, weight=1)
+    left.rowconfigure(1, weight=1)
+    header = tk.Frame(left, bg=PALETTE["card_bg"])
+    header.grid(row=0, column=0, sticky="ew")
+    header.columnconfigure(0, weight=1)
+    tk.Label(header, text="日消耗", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    make_button(header, text="刷新", variant="secondary", command=app.refresh_stats_tab).grid(row=0, column=1, sticky="e")
+    day_tree_wrap, app.stats_day_tree = app._build_usage_tree(left)
+    day_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+    right = tk.Frame(content, bg=PALETTE["panel_bg"])
+    right.grid(row=1, column=1, sticky="nsew")
+    right.columnconfigure(0, weight=1)
+    right.rowconfigure(0, weight=1)
+    right.rowconfigure(1, weight=1)
+
+    project_card = app._make_card(right)
+    project_card.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+    project_card.columnconfigure(0, weight=1)
+    project_card.rowconfigure(1, weight=1)
+    tk.Label(project_card, text="项目消耗", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    project_tree_wrap, app.stats_project_tree = app._build_usage_tree(project_card)
+    project_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+    api_card = app._make_card(right)
+    api_card.grid(row=1, column=0, sticky="nsew")
+    api_card.columnconfigure(0, weight=1)
+    api_card.rowconfigure(1, weight=1)
+    tk.Label(api_card, text="API 消耗", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=app.hero_font).grid(row=0, column=0, sticky="w")
+    api_tree_wrap, app.stats_api_tree = app._build_usage_tree(api_card)
+    api_tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
 
 
 def build_test_tab_page(app: Any, parent: tk.Misc) -> None:
