@@ -5,6 +5,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import subprocess
 
+from codex_switch.models import now_iso
+
 from codex_switch.models import (
     PROFILE_CATEGORY_IMAGE_GENERATION,
     Profile,
@@ -198,6 +200,48 @@ def build_skills_tab_display(
         selected_repo_id=resolved_repo_id,
         selected_group_id=resolved_group_id,
     )
+
+
+def expanded_skills_for_group_ids(
+    groups: list[SkillGroup],
+    group_ids: list[str] | None,
+) -> tuple[list[SkillDefinition], list[str]]:
+    if group_ids is None:
+        return [], []
+    group_by_id = {group.id: group for group in groups}
+    skills: list[SkillDefinition] = []
+    names: list[str] = []
+    for group_id in group_ids:
+        group = group_by_id.get(group_id)
+        if group is None:
+            continue
+        for skill in group.skills:
+            skills.append(skill)
+            if skill.name and skill.name not in names:
+                names.append(skill.name)
+    return skills, names
+
+
+def sync_projects_from_skill_groups(
+    projects: list[ProjectRecord],
+    groups: list[SkillGroup],
+    *,
+    updated_at: str | None = None,
+) -> tuple[list[ProjectRecord], bool]:
+    changed = False
+    updated_projects: list[ProjectRecord] = []
+    timestamp = updated_at or now_iso()
+    for project in projects:
+        if project.skill_group_ids is None:
+            updated_projects.append(project)
+            continue
+        skills, names = expanded_skills_for_group_ids(groups, project.skill_group_ids)
+        if project.skills != skills or project.skill_names != names:
+            updated_projects.append(replace(project, skills=skills, skill_names=names, updated_at=timestamp))
+            changed = True
+        else:
+            updated_projects.append(project)
+    return updated_projects, changed
 
 
 def existing_repo_files(repo_root: Path, relative_paths: tuple[Path, ...]) -> list[Path]:

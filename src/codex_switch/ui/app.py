@@ -317,11 +317,13 @@ from codex_switch.ui.skills_logic import (
     SkillMarketEntry,
     apply_profile_metadata,
     build_skills_tab_display,
+    expanded_skills_for_group_ids,
     existing_repo_files,
     import_skill_sources_to_group,
     load_skill_market_entries,
     profile_metadata_entries,
     skill_repo_checksum_required_paths,
+    sync_projects_from_skill_groups,
 )
 from codex_switch.ui.single_instance import _acquire_single_instance, _release_single_instance, _show_single_instance_message
 from codex_switch.ui.update_logic import (
@@ -3834,34 +3836,13 @@ class CodexSwitchApp:
         return sources
 
     def _expanded_skills_for_group_ids(self, group_ids: list[str] | None) -> tuple[list[SkillDefinition], list[str]]:
-        if group_ids is None:
-            return [], []
-        group_by_id = {group.id: group for group in self.skill_groups}
-        skills: list[SkillDefinition] = []
-        names: list[str] = []
-        for group_id in group_ids:
-            group = group_by_id.get(group_id)
-            if group is None:
-                continue
-            for skill in group.skills:
-                skills.append(skill)
-                if skill.name and skill.name not in names:
-                    names.append(skill.name)
-        return skills, names
+        return expanded_skills_for_group_ids(self.skill_groups, group_ids)
 
     def _sync_projects_from_skill_groups(self) -> None:
-        changed = False
-        updated_projects: list[ProjectRecord] = []
-        for project in self.projects:
-            if project.skill_group_ids is None:
-                updated_projects.append(project)
-                continue
-            skills, names = self._expanded_skills_for_group_ids(project.skill_group_ids)
-            if project.skills != skills or project.skill_names != names:
-                updated_projects.append(replace(project, skills=skills, skill_names=names, updated_at=now_iso()))
-                changed = True
-            else:
-                updated_projects.append(project)
+        updated_projects, changed = sync_projects_from_skill_groups(
+            self.projects,
+            self.skill_groups,
+        )
         if changed:
             self.projects = updated_projects
             self.persist_state()

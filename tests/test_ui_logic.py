@@ -161,6 +161,7 @@ from codex_switch.ui.mcp_logic import (
     safe_mcp_server_names,
 )
 from codex_switch.ui.skills_logic import build_skills_tab_display
+from codex_switch.ui.skills_logic import expanded_skills_for_group_ids, sync_projects_from_skill_groups
 from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
@@ -2418,6 +2419,13 @@ command = "node"
         self.assertEqual([skill.name for skill in app.projects[0].skills], ["python-helper"])
         self.assertEqual(app.projects[0].skill_names, ["python-helper"])
         self.assertEqual(app.persist_count, 1)
+
+        skills, names = expanded_skills_for_group_ids([group], [group.id])
+        synced_projects, changed = sync_projects_from_skill_groups([project], [group], updated_at="2026-07-05T00:00:00")
+        self.assertEqual([skill.name for skill in skills], ["python-helper"])
+        self.assertEqual(names, ["python-helper"])
+        self.assertTrue(changed)
+        self.assertEqual([skill.name for skill in synced_projects[0].skills], ["python-helper"])
 
         updated_skill = SkillDefinition.create("python-helper", content="new")
         extra_skill = SkillDefinition.create("review-helper", content="review")
