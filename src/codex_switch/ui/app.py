@@ -223,6 +223,8 @@ from codex_switch.ui.project_logic import (
     claude_template_success_message,
     codex_template_success_message,
     project_binding_sync_status,
+    project_add_prerequisite_error,
+    project_collection_after_delete,
     preferred_project_script_path,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -245,6 +247,7 @@ from codex_switch.ui.project_logic import (
     project_github_update_label,
     project_vscode_launch_plan,
     project_mcp_selection_summary,
+    project_from_dialog_result,
     project_root_path,
     project_skill_selection_summary,
     project_tab_display,
@@ -5729,11 +5732,13 @@ class CodexSwitchApp:
 
     def add_project(self) -> None:
         profiles = self._healthy_profiles()
-        if not profiles:
-            messagebox.showinfo("提示", "请先添加至少一套可用配置。", parent=self.root)
-            return
-        if not any(profile_supports_codex(profile) for profile in profiles) or not any(profile_supports_claude(profile) for profile in profiles):
-            messagebox.showinfo("提示", "请先准备可用于 Codex 和 Claude 的配置。通用配置可同时用于两侧。", parent=self.root)
+        prerequisite_error = project_add_prerequisite_error(
+            profiles,
+            supports_codex=profile_supports_codex,
+            supports_claude=profile_supports_claude,
+        )
+        if prerequisite_error:
+            messagebox.showinfo("提示", prerequisite_error, parent=self.root)
             return
         dialog = ProjectDialog(
             self.root,
@@ -5748,21 +5753,7 @@ class CodexSwitchApp:
         if self._project_by_dir(dialog.result["project_dir"]):
             messagebox.showerror("重复项目", "该项目目录已经添加过了。", parent=self.root)
             return
-        project = ProjectRecord.create(
-            project_dir=dialog.result["project_dir"],
-            profile_id=dialog.result["profile_id"],
-            name=dialog.result["name"],
-            run_command=dialog.result["run_command"],
-            mcp_server_names=dialog.result["mcp_server_names"],
-            skill_names=dialog.result["skill_names"],
-            skill_group_ids=dialog.result["skill_group_ids"],
-            skills=dialog.result["skills"],
-            github_repo=dialog.result["github_repo"],
-            github_ref=dialog.result["github_ref"],
-            github_auto_update=dialog.result["github_auto_update"],
-            codex_profile_id=dialog.result["codex_profile_id"],
-            claude_profile_id=dialog.result["claude_profile_id"],
-        )
+        project = project_from_dialog_result(dialog.result)
         self.projects.append(project)
         self.selected_project_id = project.id
         self.persist_state()
@@ -5885,9 +5876,13 @@ class CodexSwitchApp:
             return
         if not messagebox.askyesno("确认删除", f"确定要删除项目“{project.name}”吗？", parent=self.root):
             return
-        self.projects = [item for item in self.projects if item.id != project.id]
-        if self.selected_project_id == project.id:
-            self.selected_project_id = self.projects[0].id if self.projects else None
+        update = project_collection_after_delete(
+            self.projects,
+            selected_project_id=self.selected_project_id,
+            deleted_project_id=project.id,
+        )
+        self.projects = update.projects
+        self.selected_project_id = update.selected_project_id
         self.persist_state()
         self.refresh_project_tab()
         self.status_var.set(f"已删除项目：{project.name}")

@@ -160,6 +160,7 @@ from codex_switch.ui.project_logic import (
     codex_template_success_message,
     codex_project_template_options,
     preferred_project_script_path,
+    project_add_prerequisite_error,
     project_binding_sync_status,
     project_bound_profile_ids,
     project_claude_binding_changed,
@@ -175,8 +176,10 @@ from codex_switch.ui.project_logic import (
     project_codex_script_paths,
     project_codex_vscode_launch_plan,
     project_codex_vscode_command,
+    project_collection_after_delete,
     project_custom_run_command,
     project_custom_run_launch_plan,
+    project_from_dialog_result,
     project_tab_display,
     project_root_path,
     project_text_file_path,
@@ -1084,6 +1087,72 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(plan.claude_profile, claude_profile)
         self.assertFalse(plan.sync_claude)
         self.assertEqual(project_binding_sync_status("Demo", [Path("a.txt")]), "已同步项目配置：Demo")
+
+    def test_project_add_prerequisite_error_requires_profiles_and_both_clients(self) -> None:
+        codex_profile = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        claude_profile = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+
+        self.assertEqual(
+            project_add_prerequisite_error([], supports_codex=profile_supports_codex, supports_claude=profile_supports_claude),
+            "请先添加至少一套可用配置。",
+        )
+        self.assertEqual(
+            project_add_prerequisite_error(
+                [codex_profile],
+                supports_codex=profile_supports_codex,
+                supports_claude=profile_supports_claude,
+            ),
+            "请先准备可用于 Codex 和 Claude 的配置。通用配置可同时用于两侧。",
+        )
+        self.assertIsNone(
+            project_add_prerequisite_error(
+                [codex_profile, claude_profile],
+                supports_codex=profile_supports_codex,
+                supports_claude=profile_supports_claude,
+            )
+        )
+
+    def test_project_from_dialog_result_creates_project_with_expected_fields(self) -> None:
+        result = {
+            "project_dir": str(Path.cwd() / "demo"),
+            "profile_id": "profile-id",
+            "name": "Demo",
+            "run_command": "npm run dev",
+            "mcp_server_names": ["alpha"],
+            "skill_names": ["frontend-dev"],
+            "skill_group_ids": ["group-1"],
+            "skills": [],
+            "github_repo": "https://github.com/example/project",
+            "github_ref": "release",
+            "github_auto_update": True,
+            "codex_profile_id": "codex-profile",
+            "claude_profile_id": "claude-profile",
+        }
+
+        project = project_from_dialog_result(result)
+
+        self.assertEqual(project.project_dir, result["project_dir"])
+        self.assertEqual(project.profile_id, "profile-id")
+        self.assertEqual(project.name, "Demo")
+        self.assertEqual(project.run_command, "npm run dev")
+        self.assertEqual(project.github_repo, result["github_repo"])
+        self.assertEqual(project.github_ref, "release")
+        self.assertTrue(project.github_auto_update)
+        self.assertEqual(project.codex_profile_id, "codex-profile")
+        self.assertEqual(project.claude_profile_id, "claude-profile")
+
+    def test_project_collection_after_delete_updates_selected_project(self) -> None:
+        first = ProjectRecord.create(str(Path.cwd() / "first"), "profile-a", name="First")
+        second = ProjectRecord.create(str(Path.cwd() / "second"), "profile-b", name="Second")
+
+        update = project_collection_after_delete(
+            [first, second],
+            selected_project_id=first.id,
+            deleted_project_id=first.id,
+        )
+
+        self.assertEqual(update.projects, [second])
+        self.assertEqual(update.selected_project_id, second.id)
         self.assertEqual(project_binding_sync_status("Demo", []), "已更新项目：Demo")
 
     def test_project_launch_helpers_build_paths_and_commands(self) -> None:

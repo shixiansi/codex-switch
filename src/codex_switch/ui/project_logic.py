@@ -104,6 +104,12 @@ class ProjectEditUpdate:
 
 
 @dataclass(frozen=True)
+class ProjectCollectionUpdate:
+    projects: list[ProjectRecord]
+    selected_project_id: str | None
+
+
+@dataclass(frozen=True)
 class ProjectBindingSyncPlan:
     project_root: Path
     route_proxy_base_url: str | None
@@ -223,6 +229,55 @@ def project_claude_cmd_launch_plan(project: ProjectRecord) -> ProjectLaunchPlan:
         command=project_claude_cmd_command(),
         cwd=project_root_path(project),
         success_status=f"已打开 Claude CMD：{project.name}",
+    )
+
+
+def project_add_prerequisite_error(
+    profiles: list[Profile],
+    *,
+    supports_codex: Callable[[Profile], bool],
+    supports_claude: Callable[[Profile], bool],
+) -> str | None:
+    if not profiles:
+        return "请先添加至少一套可用配置。"
+    if not any(supports_codex(profile) for profile in profiles) or not any(
+        supports_claude(profile) for profile in profiles
+    ):
+        return "请先准备可用于 Codex 和 Claude 的配置。通用配置可同时用于两侧。"
+    return None
+
+
+def project_from_dialog_result(result: dict) -> ProjectRecord:
+    return ProjectRecord.create(
+        project_dir=result["project_dir"],
+        profile_id=result["profile_id"],
+        name=result["name"],
+        run_command=result["run_command"],
+        mcp_server_names=result["mcp_server_names"],
+        skill_names=result["skill_names"],
+        skill_group_ids=result["skill_group_ids"],
+        skills=result["skills"],
+        github_repo=result["github_repo"],
+        github_ref=result["github_ref"],
+        github_auto_update=result["github_auto_update"],
+        codex_profile_id=result["codex_profile_id"],
+        claude_profile_id=result["claude_profile_id"],
+    )
+
+
+def project_collection_after_delete(
+    projects: list[ProjectRecord],
+    *,
+    selected_project_id: str | None,
+    deleted_project_id: str,
+) -> ProjectCollectionUpdate:
+    remaining_projects = [project for project in projects if project.id != deleted_project_id]
+    resolved_selected_id = selected_project_id
+    if resolved_selected_id == deleted_project_id:
+        resolved_selected_id = remaining_projects[0].id if remaining_projects else None
+    return ProjectCollectionUpdate(
+        projects=remaining_projects,
+        selected_project_id=resolved_selected_id,
     )
 
 
