@@ -158,6 +158,19 @@ class ProjectEditExecutionPlan:
 
 
 @dataclass(frozen=True)
+class ProjectAddExecutionPlan:
+    project: ProjectRecord
+    collection: ProjectCollectionUpdate
+    status_text: str
+
+
+@dataclass(frozen=True)
+class ProjectDeleteExecutionPlan:
+    collection: ProjectCollectionUpdate
+    status_text: str
+
+
+@dataclass(frozen=True)
 class ProjectMetadataUpdateResult:
     handled: bool
     project: ProjectRecord
@@ -395,6 +408,35 @@ def project_collection_after_delete(
     return ProjectCollectionUpdate(
         projects=remaining_projects,
         selected_project_id=resolved_selected_id,
+    )
+
+
+def build_project_add_execution_plan(
+    projects: list[ProjectRecord],
+    result: dict,
+) -> ProjectAddExecutionPlan:
+    project = project_from_dialog_result(result)
+    collection = project_collection_after_add(projects, project)
+    return ProjectAddExecutionPlan(
+        project=project,
+        collection=collection,
+        status_text=f"已新增项目：{project.name}",
+    )
+
+
+def build_project_delete_execution_plan(
+    projects: list[ProjectRecord],
+    *,
+    selected_project_id: str | None,
+    project: ProjectRecord,
+) -> ProjectDeleteExecutionPlan:
+    return ProjectDeleteExecutionPlan(
+        collection=project_collection_after_delete(
+            projects,
+            selected_project_id=selected_project_id,
+            deleted_project_id=project.id,
+        ),
+        status_text=f"已删除项目：{project.name}",
     )
 
 

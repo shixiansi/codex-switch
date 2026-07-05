@@ -236,6 +236,8 @@ from codex_switch.ui.styles import (
     ttk,
 )
 from codex_switch.ui.project_logic import (
+    build_project_add_execution_plan,
+    build_project_delete_execution_plan,
     build_project_detail_display_for_project,
     build_project_edit_application,
     build_project_edit_execution_plan,
@@ -4325,13 +4327,12 @@ class CodexSwitchApp:
         if duplicate_error:
             messagebox.showerror("重复项目", duplicate_error, parent=self.root)
             return
-        project = project_from_dialog_result(dialog.result)
-        collection = project_collection_after_add(self.projects, project)
-        self.projects = collection.projects
-        self.selected_project_id = collection.selected_project_id
+        plan = build_project_add_execution_plan(self.projects, dialog.result)
+        self.projects = plan.collection.projects
+        self.selected_project_id = plan.collection.selected_project_id
         self.persist_state()
         self.refresh_project_tab()
-        self.status_var.set(f"已新增项目：{project.name}")
+        self.status_var.set(plan.status_text)
 
     def _sync_project_api_binding(
         self,
@@ -4438,16 +4439,16 @@ class CodexSwitchApp:
             return
         if not messagebox.askyesno("确认删除", f"确定要删除项目“{project.name}”吗？", parent=self.root):
             return
-        update = project_collection_after_delete(
+        plan = build_project_delete_execution_plan(
             self.projects,
             selected_project_id=self.selected_project_id,
-            deleted_project_id=project.id,
+            project=project,
         )
-        self.projects = update.projects
-        self.selected_project_id = update.selected_project_id
+        self.projects = plan.collection.projects
+        self.selected_project_id = plan.collection.selected_project_id
         self.persist_state()
         self.refresh_project_tab()
-        self.status_var.set(f"已删除项目：{project.name}")
+        self.status_var.set(plan.status_text)
 
     def _apply_codex_profile_to_global_config(self, profile: Profile, result: GlobalApplyResult) -> bool:
         effective_global_mcp = self._effective_global_mcp_toml()

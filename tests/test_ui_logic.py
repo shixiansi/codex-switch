@@ -205,6 +205,8 @@ from codex_switch.ui.skills_logic import (
     sync_projects_from_skill_groups,
 )
 from codex_switch.ui.project_logic import (
+    build_project_add_execution_plan,
+    build_project_delete_execution_plan,
     build_project_detail_display_for_project,
     build_project_edit_application,
     build_project_edit_execution_plan,
@@ -1603,6 +1605,38 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(delete_update.projects, [second])
         self.assertEqual(delete_update.selected_project_id, second.id)
         self.assertEqual(project_binding_sync_status("Demo", []), "已更新项目：Demo")
+
+    def test_project_add_and_delete_execution_plans_wrap_collection_updates(self) -> None:
+        first = ProjectRecord.create(str(Path.cwd() / "first"), "profile-a", name="First")
+        result = {
+            "project_dir": str(Path.cwd() / "demo"),
+            "profile_id": "profile-id",
+            "name": "Demo",
+            "run_command": "npm run dev",
+            "mcp_server_names": ["alpha"],
+            "skill_names": ["frontend-dev"],
+            "skill_group_ids": ["group-1"],
+            "skills": [],
+            "github_repo": "https://github.com/example/project",
+            "github_ref": "release",
+            "github_auto_update": True,
+            "codex_profile_id": "codex-profile",
+            "claude_profile_id": "claude-profile",
+        }
+        add_plan = build_project_add_execution_plan([first], result)
+        delete_plan = build_project_delete_execution_plan(
+            add_plan.collection.projects,
+            selected_project_id=add_plan.project.id,
+            project=add_plan.project,
+        )
+
+        self.assertEqual(add_plan.collection.projects[0], first)
+        self.assertEqual(add_plan.collection.projects[1].name, "Demo")
+        self.assertEqual(add_plan.collection.selected_project_id, add_plan.project.id)
+        self.assertEqual(add_plan.status_text, "已新增项目：Demo")
+        self.assertEqual(delete_plan.collection.projects, [first])
+        self.assertEqual(delete_plan.collection.selected_project_id, first.id)
+        self.assertEqual(delete_plan.status_text, "已删除项目：Demo")
 
     def test_build_project_edit_application_uses_binding_change_flags(self) -> None:
         project = ProjectRecord.create(
