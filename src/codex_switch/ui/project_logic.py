@@ -149,6 +149,13 @@ class ProjectEditApplication:
 
 
 @dataclass(frozen=True)
+class ProjectMetadataUpdateResult:
+    handled: bool
+    project: ProjectRecord
+    changed: bool
+
+
+@dataclass(frozen=True)
 class ProjectCollectionUpdate:
     projects: list[ProjectRecord]
     selected_project_id: str | None
@@ -477,6 +484,52 @@ def project_with_metadata_update(
         updated_at=updated_at,
     )
 
+
+def resolve_project_metadata_update(
+    payload: dict,
+    project: ProjectRecord,
+    *,
+    known_group_ids: set[str],
+    expand_skills_for_group_ids: Callable[[list[str]], tuple[list[SkillDefinition], list[str] | None]],
+    profile_by_id: Callable[[str], Profile | None],
+    supports_codex: Callable[[Profile], bool],
+    supports_claude: Callable[[Profile], bool],
+    updated_at: str,
+) -> ProjectMetadataUpdateResult:
+    has_group_metadata = "skill_group_ids" in payload or "skill_groups" in payload
+    has_profile_metadata = any(key in payload for key in ("profile_id", "codex_profile_id", "claude_profile_id"))
+    if not has_group_metadata and not has_profile_metadata:
+        return ProjectMetadataUpdateResult(handled=False, project=project, changed=False)
+
+    if has_group_metadata:
+        group_ids = project_metadata_group_ids(payload, known_group_ids)
+        if group_ids is None:
+            return ProjectMetadataUpdateResult(handled=False, project=project, changed=False)
+        skills, names = expand_skills_for_group_ids(group_ids)
+    else:
+        group_ids = project.skill_group_ids
+        skills = list(project.skills)
+        names = None if project.skill_names is None else list(project.skill_names)
+
+    codex_profile_id, claude_profile_id = project_metadata_profile_ids(
+        payload,
+        project,
+        profile_by_id=profile_by_id,
+        supports_codex=supports_codex,
+        supports_claude=supports_claude,
+    )
+    updated = project_with_metadata_update(
+        project,
+        skill_group_ids=group_ids,
+        skills=skills,
+        skill_names=names,
+        codex_profile_id=codex_profile_id,
+        claude_profile_id=claude_profile_id,
+        updated_at=updated_at,
+    )
+    if updated is None:
+        return ProjectMetadataUpdateResult(handled=True, project=project, changed=False)
+    return ProjectMetadataUpdateResult(handled=True, project=updated, changed=True)
 
 def updated_project_from_dialog(project: ProjectRecord, result: dict, *, updated_at: str) -> ProjectEditUpdate:
     updated = replace(

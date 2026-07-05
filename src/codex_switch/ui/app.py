@@ -276,14 +276,12 @@ from codex_switch.ui.project_logic import (
     project_from_dialog_result,
     project_detail_display,
     PROJECT_METADATA_RELATIVE_PATHS,
-    project_metadata_group_ids,
-    project_metadata_profile_ids,
     project_root_path,
+    resolve_project_metadata_update,
     project_skill_selection_summary,
     project_tab_display,
     project_template_display,
     project_text_file_path,
-    project_with_metadata_update,
     updated_project_from_dialog,
     project_vscode_open_command,
 )
@@ -2942,6 +2940,7 @@ class CodexSwitchApp:
         return False
 
     def _load_project_metadata_from_repo(self, project: ProjectRecord, repo_root: Path) -> tuple[ProjectRecord, bool]:
+        known_group_ids = {group.id for group in self.skill_groups}
         for relative_path in PROJECT_METADATA_RELATIVE_PATHS:
             metadata_path = repo_root / relative_path
             if not metadata_path.exists() or not metadata_path.is_file():
@@ -2952,42 +2951,22 @@ class CodexSwitchApp:
                 continue
             if not isinstance(payload, dict):
                 continue
-            has_group_metadata = "skill_group_ids" in payload or "skill_groups" in payload
-            has_profile_metadata = any(
-                key in payload
-                for key in ("profile_id", "codex_profile_id", "claude_profile_id")
-            )
-            if not has_group_metadata and not has_profile_metadata:
-                continue
-            if has_group_metadata:
-                group_ids = project_metadata_group_ids(payload, {group.id for group in self.skill_groups})
-                if group_ids is None:
-                    continue
-                skills, names = self._expanded_skills_for_group_ids(group_ids)
-            else:
-                group_ids = project.skill_group_ids
-                skills = list(project.skills)
-                names = None if project.skill_names is None else list(project.skill_names)
-            codex_profile_id, claude_profile_id = project_metadata_profile_ids(
+            resolution = resolve_project_metadata_update(
                 payload,
                 project,
+                known_group_ids=known_group_ids,
+                expand_skills_for_group_ids=self._expanded_skills_for_group_ids,
                 profile_by_id=lambda profile_id: self._profile_by_id(profile_id),
                 supports_codex=profile_supports_codex,
                 supports_claude=profile_supports_claude,
-            )
-            updated = project_with_metadata_update(
-                project,
-                skill_group_ids=group_ids,
-                skills=skills,
-                skill_names=names,
-                codex_profile_id=codex_profile_id,
-                claude_profile_id=claude_profile_id,
                 updated_at=now_iso(),
             )
-            if updated is None:
+            if not resolution.handled:
+                continue
+            if not resolution.changed:
                 return project, False
-            self.projects = project_collection_after_replace(self.projects, updated).projects
-            return updated, True
+            self.projects = project_collection_after_replace(self.projects, resolution.project).projects
+            return resolution.project, True
         return project, False
 
     def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool, expected_commit: str | None = None) -> bool:

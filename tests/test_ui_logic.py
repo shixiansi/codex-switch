@@ -244,6 +244,7 @@ from codex_switch.ui.project_logic import (
     PROJECT_METADATA_RELATIVE_PATHS,
     project_metadata_group_ids,
     project_metadata_profile_ids,
+    resolve_project_metadata_update,
     project_tab_display,
     project_template_display,
     project_root_path,
@@ -1617,6 +1618,69 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(group_ids, ["group-1", "group-2"])
         self.assertEqual(profile_ids, (codex.id, claude.id))
         self.assertTrue(any(path.name == "project.json" for path in PROJECT_METADATA_RELATIVE_PATHS))
+
+    def test_resolve_project_metadata_update_applies_groups_and_profiles(self) -> None:
+        codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        codex.id = "codex-profile"
+        claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude.id = "claude-profile"
+        next_codex = Profile.create("codex-next", "https://codex-next.example.com", "sk-next-codex", vendor=VENDOR_CODEX)
+        next_codex.id = "next-codex"
+        next_claude = Profile.create("claude-next", "https://claude-next.example.com", "sk-next-claude", vendor=VENDOR_CLAUDE)
+        next_claude.id = "next-claude"
+        skill = SkillDefinition.create("new-helper", content="new")
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            codex.id,
+            codex_profile_id=codex.id,
+            claude_profile_id=claude.id,
+            skill_group_ids=["group-1"],
+        )
+
+        result = resolve_project_metadata_update(
+            {
+                "skill_group_ids": ["group-2"],
+                "codex_profile_id": next_codex.id,
+                "claude_profile_id": next_claude.id,
+            },
+            project,
+            known_group_ids={"group-1", "group-2"},
+            expand_skills_for_group_ids=lambda group_ids: ([skill], [skill.name]) if group_ids == ["group-2"] else ([], []),
+            profile_by_id=lambda profile_id: {
+                codex.id: codex,
+                claude.id: claude,
+                next_codex.id: next_codex,
+                next_claude.id: next_claude,
+            }.get(profile_id),
+            supports_codex=profile_supports_codex,
+            supports_claude=profile_supports_claude,
+            updated_at="2026-07-05T00:00:00",
+        )
+
+        self.assertTrue(result.handled)
+        self.assertTrue(result.changed)
+        self.assertEqual(result.project.skill_group_ids, ["group-2"])
+        self.assertEqual([item.name for item in result.project.skills], ["new-helper"])
+        self.assertEqual(result.project.codex_profile_id, next_codex.id)
+        self.assertEqual(result.project.claude_profile_id, next_claude.id)
+
+    def test_resolve_project_metadata_update_skips_invalid_groups(self) -> None:
+        project = ProjectRecord.create(str(Path.cwd()), "profile-id", skill_group_ids=["group-1"])
+
+        result = resolve_project_metadata_update(
+            {"skill_group_ids": ["missing-group"]},
+            project,
+            known_group_ids={"group-1"},
+            expand_skills_for_group_ids=lambda group_ids: ([], group_ids),
+            profile_by_id=lambda _profile_id: None,
+            supports_codex=profile_supports_codex,
+            supports_claude=profile_supports_claude,
+            updated_at="2026-07-05T00:00:00",
+        )
+
+        self.assertFalse(result.handled)
+        self.assertFalse(result.changed)
+        self.assertEqual(result.project.skill_group_ids, ["group-1"])
 
     def test_project_detail_display_covers_empty_and_filled_states(self) -> None:
         empty = project_detail_display(None)
