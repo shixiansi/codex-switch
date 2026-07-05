@@ -185,6 +185,23 @@ class SoftwareUpdateFinishPlan:
     prompt_url: str | None = None
 
 
+@dataclass(frozen=True)
+class SoftwareUpdateEventSpec:
+    target: str
+    status: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class SoftwareUpdateUiPlan:
+    status_text: str
+    initial_event: SoftwareUpdateEventSpec | None = None
+    dialog_kind: str = "none"
+    dialog_title: str | None = None
+    dialog_message: str | None = None
+    prompt_url: str | None = None
+
+
 def software_update_error_detail(error: object) -> str:
     message = str(error or "").strip()
     normalized = message.casefold()
@@ -230,4 +247,62 @@ def build_software_update_finish_plan(
         event_detail=detail,
         prompt_message=f"{detail}\n\n是否打开下载页面？",
         prompt_url=target_url,
+    )
+
+
+def build_software_update_ui_plan(
+    plan: SoftwareUpdateFinishPlan,
+    *,
+    automatic: bool,
+) -> SoftwareUpdateUiPlan:
+    if plan.kind == "none":
+        return SoftwareUpdateUiPlan(status_text="")
+    event = SoftwareUpdateEventSpec(
+        target=plan.event_target or "Codex Switch",
+        status=plan.event_status or plan.kind,
+        detail=plan.event_detail,
+    )
+    if plan.kind == "error":
+        return SoftwareUpdateUiPlan(
+            status_text=plan.status_text,
+            initial_event=event,
+            dialog_kind="error" if not automatic else "none",
+            dialog_title="软件更新检查失败",
+            dialog_message=plan.event_detail,
+        )
+    if plan.kind == "current":
+        return SoftwareUpdateUiPlan(
+            status_text=plan.status_text,
+            initial_event=event,
+            dialog_kind="info" if not automatic else "none",
+            dialog_title="软件更新",
+            dialog_message=plan.status_text,
+        )
+    if not plan.prompt_url:
+        return SoftwareUpdateUiPlan(
+            status_text=plan.status_text,
+            initial_event=event,
+            dialog_kind="info",
+            dialog_title="软件更新",
+            dialog_message=f"{plan.status_text}\n\n该 Release 没有可打开的下载地址。",
+        )
+    return SoftwareUpdateUiPlan(
+        status_text=plan.status_text,
+        initial_event=event,
+        dialog_kind="prompt",
+        dialog_title="发现软件新版本",
+        dialog_message=plan.prompt_message or plan.status_text,
+        prompt_url=plan.prompt_url,
+    )
+
+
+def software_update_opened_event_spec(
+    plan: SoftwareUpdateFinishPlan,
+    *,
+    url: str,
+) -> SoftwareUpdateEventSpec:
+    return SoftwareUpdateEventSpec(
+        target=plan.event_target or "Codex Switch",
+        status="opened",
+        detail=url,
     )

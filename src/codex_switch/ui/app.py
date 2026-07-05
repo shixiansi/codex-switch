@@ -374,7 +374,9 @@ from codex_switch.ui.update_logic import (
     remote_commit_from_ls_remote,
     same_git_commit,
     build_software_update_finish_plan,
+    build_software_update_ui_plan,
     software_update_error_detail,
+    software_update_opened_event_spec,
     verify_hot_update_checksums,
 )
 from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_url, is_http_url, replace_treeview_rows
@@ -1552,58 +1554,39 @@ class CodexSwitchApp:
     ) -> None:
         self.software_update_check_running = False
         plan = build_software_update_finish_plan(info, error)
-        if plan.kind == "error":
-            self.software_update_status_var.set(plan.status_text)
-            if not automatic:
-                messagebox.showerror("软件更新检查失败", plan.event_detail, parent=self.root)
-            self.status_var.set(plan.status_text)
+        ui_plan = build_software_update_ui_plan(plan, automatic=automatic)
+        if ui_plan.status_text:
+            self.software_update_status_var.set(ui_plan.status_text)
+            self.status_var.set(ui_plan.status_text)
+        if ui_plan.initial_event is not None:
             self._record_hot_update_event(
                 scope="software",
-                target=plan.event_target or "Codex Switch",
-                status=plan.event_status or "error",
-                detail=plan.event_detail,
+                target=ui_plan.initial_event.target,
+                status=ui_plan.initial_event.status,
+                detail=ui_plan.initial_event.detail,
                 automatic=automatic,
             )
             self.persist_state()
+        if ui_plan.dialog_kind == "none":
             return
-        if plan.kind == "none":
+        if ui_plan.dialog_kind == "error":
+            messagebox.showerror(ui_plan.dialog_title, ui_plan.dialog_message, parent=self.root)
             return
-        if plan.kind == "current":
-            self.software_update_status_var.set(plan.status_text)
-            if not automatic:
-                messagebox.showinfo("软件更新", plan.status_text, parent=self.root)
-            self.status_var.set(plan.status_text)
+        if ui_plan.dialog_kind == "info":
+            messagebox.showinfo(ui_plan.dialog_title, ui_plan.dialog_message, parent=self.root)
+            return
+        if ui_plan.dialog_kind == "prompt" and messagebox.askyesno(
+            ui_plan.dialog_title,
+            ui_plan.dialog_message,
+            parent=self.root,
+        ):
+            webbrowser.open(ui_plan.prompt_url)
+            opened_event = software_update_opened_event_spec(plan, url=ui_plan.prompt_url)
             self._record_hot_update_event(
                 scope="software",
-                target=plan.event_target or "Codex Switch",
-                status=plan.event_status or "current",
-                detail=plan.event_detail,
-                automatic=automatic,
-            )
-            self.persist_state()
-            return
-
-        self.software_update_status_var.set(plan.status_text)
-        self.status_var.set(plan.status_text)
-        self._record_hot_update_event(
-            scope="software",
-            target=plan.event_target or "Codex Switch",
-            status=plan.event_status or "available",
-            detail=plan.event_detail,
-            automatic=automatic,
-        )
-        self.persist_state()
-        target_url = plan.prompt_url
-        if not target_url:
-            messagebox.showinfo("软件更新", f"{plan.status_text}\n\n该 Release 没有可打开的下载地址。", parent=self.root)
-            return
-        if messagebox.askyesno("发现软件新版本", plan.prompt_message or plan.status_text, parent=self.root):
-            webbrowser.open(target_url)
-            self._record_hot_update_event(
-                scope="software",
-                target=plan.event_target or "Codex Switch",
-                status="opened",
-                detail=target_url,
+                target=opened_event.target,
+                status=opened_event.status,
+                detail=opened_event.detail,
                 automatic=automatic,
             )
             self.persist_state()

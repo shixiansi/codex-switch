@@ -148,7 +148,11 @@ from codex_switch.ui.hot_update_logic import (
     hot_update_summary_text,
     process_hot_update_candidate,
 )
-from codex_switch.ui.update_logic import build_software_update_finish_plan
+from codex_switch.ui.update_logic import (
+    build_software_update_finish_plan,
+    build_software_update_ui_plan,
+    software_update_opened_event_spec,
+)
 from codex_switch.ui.library_logic import (
     build_library_detail_display,
     build_library_tab_display,
@@ -584,6 +588,46 @@ class SoftwareUpdateTests(unittest.TestCase):
         self.assertIn("是否打开下载页面", available_plan.prompt_message)
         self.assertEqual(error_plan.kind, "error")
         self.assertIn("未能获取 GitHub 最新版本信息", error_plan.event_detail)
+
+    def test_build_software_update_ui_plan_maps_error_current_and_available(self) -> None:
+        current_ui = build_software_update_ui_plan(
+            build_software_update_finish_plan(
+                SoftwareUpdateInfo(
+                    current_version="0.2.2",
+                    latest_version="0.2.2",
+                    release_url="https://github.com/shixiansi/codex-switch/releases/tag/v0.2.2",
+                ),
+                "",
+            ),
+            automatic=False,
+        )
+        available_ui = build_software_update_ui_plan(
+            build_software_update_finish_plan(
+                SoftwareUpdateInfo(
+                    current_version="0.2.2",
+                    latest_version="v0.3.0",
+                    release_url="https://github.com/shixiansi/codex-switch/releases/tag/v0.3.0",
+                    download_url="https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip",
+                    release_name="Codex Switch v0.3.0",
+                ),
+                "",
+            ),
+            automatic=True,
+        )
+        error_plan = build_software_update_finish_plan(None, "None")
+        error_ui = build_software_update_ui_plan(error_plan, automatic=False)
+        opened_event = software_update_opened_event_spec(error_plan, url="https://example.com/download.zip")
+
+        self.assertEqual(current_ui.dialog_kind, "info")
+        self.assertEqual(current_ui.dialog_title, "软件更新")
+        self.assertEqual(current_ui.initial_event.status, "current")
+        self.assertEqual(available_ui.dialog_kind, "prompt")
+        self.assertEqual(available_ui.prompt_url, "https://github.com/shixiansi/codex-switch/releases/download/v0.3.0/CodexSwitch-windows-x64.zip")
+        self.assertEqual(available_ui.initial_event.target, "Codex Switch v0.3.0")
+        self.assertEqual(error_ui.dialog_kind, "error")
+        self.assertEqual(error_ui.dialog_message, "未能获取 GitHub 最新版本信息，请检查网络或稍后重试。")
+        self.assertEqual(opened_event.status, "opened")
+        self.assertEqual(opened_event.detail, "https://example.com/download.zip")
 
     def test_existing_software_update_none_error_renders_readable_detail(self) -> None:
         app = _make_minimal_app()
