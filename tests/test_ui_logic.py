@@ -124,8 +124,10 @@ from codex_switch.ui.account_pool_logic import (
 )
 from codex_switch.ui.hot_update_logic import (
     HotUpdateDecisionTexts,
+    project_manual_hot_update_spec,
     PROJECT_HOT_UPDATE_TEXTS,
     SKILL_REPO_HOT_UPDATE_TEXTS,
+    skill_repo_manual_hot_update_spec,
     append_hot_update_event,
     hot_update_event_line,
     hot_update_summary_text,
@@ -1538,6 +1540,13 @@ command = "node"
         self.assertEqual(manual_declined.event_status, "pending")
         self.assertEqual(manual_declined.event_detail, "declined")
         self.assertFalse(manual_declined.event_automatic)
+
+        repo_spec = skill_repo_manual_hot_update_spec("https://github.com/example/skills", "abc123")
+        project_spec = project_manual_hot_update_spec("Demo", "def456")
+        self.assertEqual(repo_spec.scope, "skill_repo")
+        self.assertIn("abc123", repo_spec.confirm_message)
+        self.assertEqual(project_spec.scope, "project")
+        self.assertIn("Demo", project_spec.target)
 
     def test_check_selected_skill_repo_update_records_current_commit_via_shared_decision(self) -> None:
         repo = SkillMarketRepo.create("https://github.com/example/skills")

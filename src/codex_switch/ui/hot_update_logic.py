@@ -46,6 +46,18 @@ class HotUpdateDecision:
     commit: str
 
 
+@dataclass(frozen=True)
+class ManualHotUpdateSpec:
+    scope: str
+    target: str
+    texts: HotUpdateDecisionTexts
+    confirm_title: str
+    confirm_message: str
+    error_message_prefix: str
+    current_info_message: str
+    declined_status_message: str
+
+
 SKILL_REPO_HOT_UPDATE_TEXTS = HotUpdateDecisionTexts(
     current="\u8fdc\u7aef\u63d0\u4ea4\u672a\u53d8\u5316\u3002",
     auto_updated="\u81ea\u52a8\u62c9\u53d6\u5e76\u66f4\u65b0\u672c\u5730 Skills\u3002",
@@ -65,6 +77,32 @@ PROJECT_HOT_UPDATE_TEXTS = HotUpdateDecisionTexts(
     declined="\u7528\u6237\u6682\u4e0d\u62c9\u53d6\u3002",
     auto_disabled="\u672a\u914d\u7f6e\u9879\u76ee\u81ea\u52a8\u66f4\u65b0\u3002",
 )
+
+
+def skill_repo_manual_hot_update_spec(repo_url: str, short_latest: str) -> ManualHotUpdateSpec:
+    return ManualHotUpdateSpec(
+        scope="skill_repo",
+        target=repo_url,
+        texts=SKILL_REPO_HOT_UPDATE_TEXTS,
+        confirm_title="发现更新",
+        confirm_message=f"发现更新：{short_latest}。是否拉取并重载到本地组？",
+        error_message_prefix="无法检查仓库更新",
+        current_info_message="当前已经最新。",
+        declined_status_message=f"已保留待更新的 Skills 仓库：{short_latest}",
+    )
+
+
+def project_manual_hot_update_spec(project_name: str, short_latest: str) -> ManualHotUpdateSpec:
+    return ManualHotUpdateSpec(
+        scope="project",
+        target=project_name,
+        texts=PROJECT_HOT_UPDATE_TEXTS,
+        confirm_title="发现更新",
+        confirm_message=f"发现项目更新：{short_latest}。是否执行 git pull --ff-only？",
+        error_message_prefix="无法检查项目更新",
+        current_info_message="项目远端已经最新。",
+        declined_status_message=f"已保留待更新的项目：{short_latest}",
+    )
 
 
 def append_hot_update_event(

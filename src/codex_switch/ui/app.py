@@ -174,8 +174,10 @@ from codex_switch.ui.model_batch_logic import (
 from codex_switch.ui.hot_update_logic import (
     HOT_UPDATE_SCOPE_LABELS,
     HOT_UPDATE_STATUS_LABELS,
+    project_manual_hot_update_spec,
     PROJECT_HOT_UPDATE_TEXTS,
     SKILL_REPO_HOT_UPDATE_TEXTS,
+    skill_repo_manual_hot_update_spec,
     append_hot_update_event,
     hot_update_event_line,
     hot_update_summary_text,
@@ -4042,6 +4044,60 @@ class CodexSwitchApp:
             run_command=subprocess.run,
         )
 
+    def _run_manual_hot_update_check(
+        self,
+        *,
+        fetch_update,
+        spec_builder,
+        apply_update,
+        set_current_commit,
+        refresh_callback,
+    ) -> None:
+        try:
+            update = fetch_update()
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            spec = spec_builder(None)
+            self._record_hot_update_event(
+                scope=spec.scope,
+                target=spec.target,
+                status="error",
+                detail=str(exc),
+                automatic=False,
+            )
+            self.persist_state()
+            messagebox.showerror("检查失败", f"{spec.error_message_prefix}：{exc}", parent=self.root)
+            return
+        spec = spec_builder(update)
+        decision = process_hot_update_candidate(
+            has_update=update.has_update,
+            latest_commit=update.latest_commit,
+            automatic=False,
+            auto_update_enabled=False,
+            texts=spec.texts,
+            apply_update=lambda: apply_update(update),
+            set_current_commit=set_current_commit,
+            confirm_update=lambda: messagebox.askyesno(
+                spec.confirm_title,
+                spec.confirm_message,
+                parent=self.root,
+            ),
+        )
+        if decision.event_status:
+            self._record_hot_update_event(
+                scope=spec.scope,
+                target=spec.target,
+                status=decision.event_status,
+                detail=decision.event_detail,
+                commit=decision.commit,
+                automatic=decision.event_automatic,
+            )
+        if decision.event_status == "current":
+            messagebox.showinfo("检查完成", spec.current_info_message, parent=self.root)
+        elif update.has_update and decision.event_detail == spec.texts.declined:
+            self.status_var.set(spec.declined_status_message)
+        self.persist_state()
+        refresh_callback()
+
     def _set_skill_repo_commit(self, repo: SkillMarketRepo, latest_commit: str) -> SkillMarketRepo:
         if repo.last_sync_commit == latest_commit:
             return repo
@@ -4054,52 +4110,20 @@ class CodexSwitchApp:
         if not repo:
             messagebox.showinfo("提示", "请先选择一个 Skills 仓库。", parent=self.root)
             return
-        try:
-            update = self._skill_repo_remote_update(repo)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            self._record_hot_update_event(
-                scope="skill_repo",
-                target=repo.url,
-                status="error",
-                detail=str(exc),
-                automatic=False,
-            )
-            self.persist_state()
-            messagebox.showerror("检查失败", f"无法检查仓库更新：{exc}", parent=self.root)
-            return
-        decision = process_hot_update_candidate(
-            has_update=update.has_update,
-            latest_commit=update.latest_commit,
-            automatic=False,
-            auto_update_enabled=False,
-            texts=SKILL_REPO_HOT_UPDATE_TEXTS,
-            apply_update=lambda: self._apply_skill_repo_update(
+        self._run_manual_hot_update_check(
+            fetch_update=lambda: self._skill_repo_remote_update(repo),
+            spec_builder=lambda update: skill_repo_manual_hot_update_spec(
+                repo.url,
+                update.short_latest if update is not None else "-",
+            ),
+            apply_update=lambda update: self._apply_skill_repo_update(
                 repo,
                 automatic=False,
                 expected_commit=update.latest_commit,
             ),
             set_current_commit=lambda commit: self._set_skill_repo_commit(repo, commit),
-            confirm_update=lambda: messagebox.askyesno(
-                "发现更新",
-                f"发现更新：{update.short_latest}。是否拉取并重载到本地组？",
-                parent=self.root,
-            ),
+            refresh_callback=self.refresh_skills_tab,
         )
-        if decision.event_status:
-            self._record_hot_update_event(
-                scope="skill_repo",
-                target=repo.url,
-                status=decision.event_status,
-                detail=decision.event_detail,
-                commit=decision.commit,
-                automatic=decision.event_automatic,
-            )
-        if decision.event_status == "current":
-            messagebox.showinfo("检查完成", "当前已经最新。", parent=self.root)
-        elif update.has_update and decision.event_detail == SKILL_REPO_HOT_UPDATE_TEXTS.declined:
-            self.status_var.set(f"已保留待更新的 Skills 仓库：{update.short_latest}")
-        self.persist_state()
-        self.refresh_skills_tab()
 
     def preview_selected_skill_repo(self) -> None:
         repo = self._selected_skill_repo()
@@ -4368,48 +4392,20 @@ class CodexSwitchApp:
         if not project.github_repo:
             messagebox.showinfo("提示", "该项目未配置 GitHub 地址。", parent=self.root)
             return
-        try:
-            update = self._project_remote_update(project)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            self._record_hot_update_event(
-                scope="project",
-                target=project.name,
-                status="error",
-                detail=str(exc),
-                automatic=False,
-            )
-            self.persist_state()
-            messagebox.showerror("检查失败", f"无法检查项目更新：{exc}", parent=self.root)
-            return
-        decision = process_hot_update_candidate(
-            has_update=update.has_update,
-            latest_commit=update.latest_commit,
-            automatic=False,
-            auto_update_enabled=False,
-            texts=PROJECT_HOT_UPDATE_TEXTS,
-            apply_update=lambda: self._apply_project_update(project, update.latest_commit, automatic=False),
-            set_current_commit=lambda commit: self._set_project_commit(project, commit),
-            confirm_update=lambda: messagebox.askyesno(
-                "发现更新",
-                f"发现项目更新：{update.short_latest}。是否执行 git pull --ff-only？",
-                parent=self.root,
+        self._run_manual_hot_update_check(
+            fetch_update=lambda: self._project_remote_update(project),
+            spec_builder=lambda update: project_manual_hot_update_spec(
+                project.name,
+                update.short_latest if update is not None else "-",
             ),
+            apply_update=lambda update: self._apply_project_update(
+                project,
+                update.latest_commit,
+                automatic=False,
+            ),
+            set_current_commit=lambda commit: self._set_project_commit(project, commit),
+            refresh_callback=self.refresh_project_tab,
         )
-        if decision.event_status:
-            self._record_hot_update_event(
-                scope="project",
-                target=project.name,
-                status=decision.event_status,
-                detail=decision.event_detail,
-                commit=decision.commit,
-                automatic=decision.event_automatic,
-            )
-        if decision.event_status == "current":
-            messagebox.showinfo("检查完成", "项目远端已经最新。", parent=self.root)
-        elif update.has_update and decision.event_detail == PROJECT_HOT_UPDATE_TEXTS.declined:
-            self.status_var.set(f"已保留待更新的项目：{update.short_latest}")
-        self.persist_state()
-        self.refresh_project_tab()
 
     def add_skill_group(self) -> None:
         name = simpledialog.askstring("Skills组", "组名：", parent=self.root)
