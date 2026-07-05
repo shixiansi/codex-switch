@@ -376,6 +376,7 @@ from codex_switch.ui.profile_logic import (
     profile_initial_vendor,
     updated_profile_from_dialog as updated_profile_record_from_dialog,
 )
+from codex_switch.ui.page_builders import build_docs_tab_page, build_mcp_tab_page
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -1566,100 +1567,7 @@ class CodexSwitchApp:
         self._create_info_row(right, 1, "渠道详情", self.account_pool_selected_detail_var, wraplength=360)
 
     def _build_mcp_tab(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        content = tk.Frame(parent, bg=PALETTE["panel_bg"])
-        content.grid(row=0, column=0, sticky="nsew")
-        content.columnconfigure(0, weight=7)
-        content.columnconfigure(1, weight=5)
-        content.rowconfigure(0, weight=1)
-
-        list_card = self._make_card(content)
-        list_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        list_card.columnconfigure(0, weight=1)
-        list_card.rowconfigure(1, weight=1)
-
-        tk.Label(list_card, text="MCP配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        tk.Label(list_card, textvariable=self.mcp_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="e")
-
-        tree_wrap = tk.Frame(list_card, bg=PALETTE["card_bg"])
-        tree_wrap.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
-        tree_wrap.columnconfigure(0, weight=1)
-        tree_wrap.rowconfigure(0, weight=1)
-
-        self.mcp_tree = ttk.Treeview(
-            tree_wrap,
-            columns=("name", "type", "command", "args", "cwd", "env", "project"),
-            show="headings",
-        )
-        for column, title, width, anchor in (
-            ("name", "名称", 130, "w"),
-            ("type", "type", 80, "center"),
-            ("command", "command", 150, "w"),
-            ("args", "args", 230, "w"),
-            ("cwd", "cwd", 140, "w"),
-            ("env", "env", 130, "w"),
-            ("project", "{project_root}", 120, "center"),
-        ):
-            self.mcp_tree.heading(column, text=title, anchor=anchor)
-            self.mcp_tree.column(column, width=width, anchor=anchor)
-        self.mcp_tree.grid(row=0, column=0, sticky="nsew")
-        self.mcp_tree.bind("<<TreeviewSelect>>", self._on_mcp_server_selection_changed)
-
-        y_scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.mcp_tree.yview)
-        y_scroll.grid(row=0, column=1, sticky="ns")
-        x_scroll = ttk.Scrollbar(tree_wrap, orient="horizontal", command=self.mcp_tree.xview)
-        x_scroll.grid(row=1, column=0, sticky="ew")
-        self.mcp_tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
-
-        actions = tk.Frame(list_card, bg=PALETTE["card_bg"])
-        actions.grid(row=2, column=0, sticky="ew", pady=(14, 0))
-        for column in range(3):
-            actions.columnconfigure(column, weight=1)
-        make_button(actions, text="新增 MCP", variant="primary", command=self.add_mcp_server).grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(actions, text="修改 MCP", variant="secondary", command=self.edit_mcp_server).grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 8))
-        make_button(actions, text="删除 MCP", variant="danger", command=self.delete_mcp_server).grid(row=0, column=2, sticky="ew", pady=(0, 8))
-        make_button(actions, text="保存 MCP", variant="primary", command=self.save_mcp_servers).grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="恢复默认", variant="secondary", command=self.restore_default_mcp_servers).grid(row=1, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="清空禁用", variant="danger", command=self.disable_global_mcp_from_page).grid(row=1, column=2, sticky="ew")
-
-        detail = self._make_card(content)
-        detail.grid(row=0, column=1, sticky="nsew")
-        detail.columnconfigure(0, weight=1)
-        detail.rowconfigure(3, weight=1)
-        tk.Label(detail, textvariable=self.mcp_selected_name_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            detail,
-            text=f"在 command、args、cwd、env 或高级字段里写 {PROJECT_ROOT_PLACEHOLDER}，生成项目配置时会替换为项目目录。",
-            bg=PALETTE["card_bg"],
-            fg=PALETTE["muted"],
-            font=self.small_font,
-            justify="left",
-            wraplength=420,
-        ).grid(row=1, column=0, sticky="w", pady=(6, 10))
-        tk.Label(detail, textvariable=self.mcp_selected_summary_var, bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.body_font, justify="left", wraplength=420).grid(row=2, column=0, sticky="w")
-
-        preview_wrap = tk.Frame(detail, bg=PALETTE["card_bg"])
-        preview_wrap.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
-        preview_wrap.columnconfigure(0, weight=1)
-        preview_wrap.rowconfigure(0, weight=1)
-        self.mcp_preview_text = tk.Text(
-            preview_wrap,
-            wrap="none",
-            relief="solid",
-            borderwidth=1,
-            highlightthickness=0,
-            font=("Consolas", 10),
-            bg="#FBFDFE",
-            fg=PALETTE["text"],
-        )
-        self.mcp_preview_text.grid(row=0, column=0, sticky="nsew")
-        preview_y = ttk.Scrollbar(preview_wrap, orient="vertical", command=self.mcp_preview_text.yview)
-        preview_y.grid(row=0, column=1, sticky="ns")
-        preview_x = ttk.Scrollbar(preview_wrap, orient="horizontal", command=self.mcp_preview_text.xview)
-        preview_x.grid(row=1, column=0, sticky="ew")
-        self.mcp_preview_text.configure(yscrollcommand=preview_y.set, xscrollcommand=preview_x.set)
+        build_mcp_tab_page(self, parent)
 
     def _build_skills_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1822,45 +1730,7 @@ class CodexSwitchApp:
         tk.Label(actions, textvariable=self.skill_project_detail_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=2, sticky="w")
 
     def _build_docs_tab(self, parent: tk.Misc) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        card = self._make_card(parent)
-        card.grid(row=0, column=0, sticky="nsew")
-        card.columnconfigure(0, weight=1)
-        card.rowconfigure(2, weight=1)
-
-        header = tk.Frame(card, bg=PALETTE["card_bg"])
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        tk.Label(header, text="文档配置", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.hero_font).grid(row=0, column=0, sticky="w")
-        tk.Label(header, textvariable=self.docs_hint_var, bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
-
-        actions = tk.Frame(card, bg=PALETTE["card_bg"])
-        actions.grid(row=1, column=0, sticky="e", pady=(0, 10))
-        make_button(actions, text="保存文档", variant="primary", command=self.save_agents_doc).grid(row=0, column=0, padx=(0, 8))
-        make_button(actions, text="恢复默认", variant="secondary", command=self.restore_default_agents_doc).grid(row=0, column=1)
-
-        editor_wrap = tk.Frame(card, bg=PALETTE["card_bg"])
-        editor_wrap.grid(row=2, column=0, sticky="nsew")
-        editor_wrap.columnconfigure(0, weight=1)
-        editor_wrap.rowconfigure(0, weight=1)
-        self.agents_doc_editor = tk.Text(
-            editor_wrap,
-            wrap="word",
-            relief="solid",
-            borderwidth=1,
-            highlightthickness=0,
-            font=("Consolas", 10),
-            bg="#FBFDFE",
-            fg=PALETTE["text"],
-            undo=True,
-        )
-        self.agents_doc_editor.grid(row=0, column=0, sticky="nsew")
-        self.agents_doc_editor.insert("1.0", self.agents_doc_text)
-        doc_scroll = ttk.Scrollbar(editor_wrap, orient="vertical", command=self.agents_doc_editor.yview)
-        doc_scroll.grid(row=0, column=1, sticky="ns")
-        self.agents_doc_editor.configure(yscrollcommand=doc_scroll.set)
+        build_docs_tab_page(self, parent)
 
     def _build_settings_tab(self, parent: tk.Misc) -> None:
         parent.columnconfigure(0, weight=1)
