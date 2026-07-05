@@ -110,7 +110,11 @@ from codex_switch.ui.global_logic import (
     resolve_global_profile_id,
 )
 from codex_switch.ui.account_pool_logic import (
+    account_pool_channel_rows,
+    account_pool_detail_display,
     account_pool_group_delete_error,
+    account_pool_group_choices_display,
+    account_pool_summary_text,
     prepare_account_pool_channel_submission,
     resolve_account_pool_group_settings_update,
 )
@@ -3714,6 +3718,44 @@ command = "node"
             account_pool_group_delete_error(settings, extra_group.id),
             "当前号池组还有渠道，请先删除或移动渠道。",
         )
+
+    def test_account_pool_group_choices_and_summary_display_build_expected_text(self) -> None:
+        settings = AccountPoolSettings()
+        default_group = settings.ensure_default_group()
+        default_group.default_model = "gpt-pool"
+        extra_group = settings.add_group("claude-pool", pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE)
+        settings.selected_group_id = extra_group.id
+
+        display = account_pool_group_choices_display(settings)
+        summary = account_pool_summary_text(settings, group_id=extra_group.id, project_count=2)
+
+        self.assertIn(default_group.id, display.choices.values())
+        self.assertIn(extra_group.id, display.choices.values())
+        self.assertTrue(display.selected_label)
+        self.assertIsNotNone(display.form)
+        self.assertEqual(display.form.group_type_label, "Claude")
+        self.assertIn("连接号池项目 2 个", summary)
+
+    def test_account_pool_channel_rows_and_detail_display_format_fields(self) -> None:
+        channel = AccountPoolChannel.create(
+            name="pool-a",
+            base_url="https://pool.example.com",
+            api_key="sk-pool",
+            wire_api="responses",
+            default_model="gpt-pool",
+        )
+        channel.status = "error"
+        channel.failure_reason = "timeout"
+        channel.last_checked_at = "2026-06-06T10:00:00"
+
+        rows = account_pool_channel_rows([channel])
+        detail = account_pool_detail_display(channel)
+
+        self.assertEqual(rows[0].channel_id, channel.id)
+        self.assertEqual(rows[0].values[0], "pool-a")
+        self.assertEqual(rows[0].values[5], "异常")
+        self.assertIn("API：https://pool.example.com", detail.detail_text)
+        self.assertEqual(detail.selected_name, "pool-a")
 
 
 class McpEditorPrefillTests(unittest.TestCase):

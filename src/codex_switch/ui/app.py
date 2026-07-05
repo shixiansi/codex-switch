@@ -133,11 +133,13 @@ from codex_switch.ui.account_pool_logic import (
     ACCOUNT_POOL_SOURCE_FILTER_ALL,
     ACCOUNT_POOL_SOURCE_FILTER_PROFILE,
     ACCOUNT_POOL_SOURCE_FILTER_TEMPORARY,
+    account_pool_channel_rows,
     account_pool_group_delete_error,
+    account_pool_group_choices_display,
     account_pool_channel_by_id,
-    account_pool_group_label,
+    account_pool_detail_display,
     account_pool_project_count,
-    account_pool_source_label,
+    account_pool_summary_text,
     account_pool_visible_channels,
     apply_account_pool_group_settings,
     check_account_pool_channel,
@@ -3370,46 +3372,20 @@ class CodexSwitchApp:
         group = self._selected_account_pool_group()
         return group.id if group is not None else ""
 
-    def _account_pool_group_label(self, group: AccountPoolGroup) -> str:
-        return account_pool_group_label(group, self.account_pool_settings)
-
     def _refresh_account_pool_group_choices(self) -> None:
         self.account_pool_settings.ensure_default_group()
-        self.account_pool_group_choices = {}
-        labels = []
-        for group in self.account_pool_settings.groups:
-            label = self._account_pool_group_label(group)
-            labels.append(label)
-            self.account_pool_group_choices[label] = group.id
+        display = account_pool_group_choices_display(self.account_pool_settings)
+        self.account_pool_group_choices = display.choices
         if hasattr(self, "account_pool_group_combo"):
-            self.account_pool_group_combo.configure(values=labels)
-        selected_group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
-        if selected_group is not None:
-            selected_label = next(
-                (label for label, group_id in self.account_pool_group_choices.items() if group_id == selected_group.id),
-                "",
-            )
-            if selected_label:
-                self.account_pool_group_var.set(selected_label)
-            self.account_pool_group_enabled_var.set(selected_group.enabled)
-            self.account_pool_group_type_var.set(
-                ACCOUNT_POOL_GROUP_TYPE_LABELS.get(selected_group.pool_type, ACCOUNT_POOL_GROUP_TYPE_LABELS[ACCOUNT_POOL_GROUP_TYPE_CODEX])
-            )
-            self.account_pool_group_default_model_var.set(selected_group.default_model or DEFAULT_CODEX_MODEL)
-            self.account_pool_group_claude_model_var.set(selected_group.claude_model or DEFAULT_CLAUDE_MODEL)
-            self.account_pool_group_claude_fallback_model_var.set(
-                selected_group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL
-            )
-
-    def _account_pool_source_label(self, channel: AccountPoolChannel) -> str:
-        return account_pool_source_label(channel)
-
-    def _account_pool_visible_channels(self) -> list[AccountPoolChannel]:
-        return account_pool_visible_channels(
-            self.account_pool_settings,
-            self._selected_account_pool_group_id(),
-            self.account_pool_source_filter_var.get(),
-        )
+            self.account_pool_group_combo.configure(values=display.labels)
+        if display.selected_label:
+            self.account_pool_group_var.set(display.selected_label)
+        if display.form is not None:
+            self.account_pool_group_enabled_var.set(display.form.enabled)
+            self.account_pool_group_type_var.set(display.form.group_type_label)
+            self.account_pool_group_default_model_var.set(display.form.default_model)
+            self.account_pool_group_claude_model_var.set(display.form.claude_model)
+            self.account_pool_group_claude_fallback_model_var.set(display.form.claude_fallback_model)
 
     def _selected_account_pool_channel(self) -> AccountPoolChannel | None:
         if not hasattr(self, "account_pool_tree"):
@@ -3429,9 +3405,6 @@ class CodexSwitchApp:
             project_id,
         )
 
-    def _account_pool_project_count(self) -> int:
-        return account_pool_project_count(self.projects, self.route_proxy_settings)
-
     def refresh_account_pool_tab(self) -> None:
         self.account_pool_settings.ensure_default_group()
         self._refresh_account_pool_group_choices()
@@ -3439,9 +3412,11 @@ class CodexSwitchApp:
         group_id = group.id if group else ""
         self.account_pool_enabled_var.set(self.account_pool_settings.enabled)
         self.account_pool_summary_var.set(
-            f"连接号池项目 {self._account_pool_project_count()} 个，"
-            f"当前组正常渠道 {len(self.account_pool_settings.normal_channels_for_group(group_id))} 个，"
-            f"异常渠道 {len(self.account_pool_settings.failed_channels_for_group(group_id))} 个。"
+            account_pool_summary_text(
+                self.account_pool_settings,
+                group_id=group_id,
+                project_count=account_pool_project_count(self.projects, self.route_proxy_settings),
+            )
         )
         if not hasattr(self, "account_pool_tree"):
             return
@@ -3449,25 +3424,23 @@ class CodexSwitchApp:
         selection = self.account_pool_tree.selection()
         if selection:
             selected_id = selection[0]
+        rows = account_pool_channel_rows(
+            account_pool_visible_channels(
+                self.account_pool_settings,
+                group_id,
+                self.account_pool_source_filter_var.get(),
+            )
+        )
         self.suppress_selection_events = True
         try:
             for item in self.account_pool_tree.get_children():
                 self.account_pool_tree.delete(item)
-            for channel in self._account_pool_visible_channels():
+            for row in rows:
                 self.account_pool_tree.insert(
                     "",
                     "end",
-                    iid=channel.id,
-                    values=(
-                        channel.name,
-                        self._account_pool_source_label(channel),
-                        compact_text(channel.base_url, 34),
-                        channel.wire_api,
-                        channel.api_key_masked,
-                        "正常" if channel.is_normal else "异常",
-                        channel.last_checked_at or "-",
-                        compact_text(channel.failure_reason or "-", 34),
-                    ),
+                    iid=row.channel_id,
+                    values=row.values,
                 )
         finally:
             self.suppress_selection_events = False
@@ -3482,23 +3455,9 @@ class CodexSwitchApp:
             self.account_pool_selected_name_var.set("未选择渠道")
             self.account_pool_selected_detail_var.set("-")
             return
-        self.account_pool_selected_name_var.set(channel.name)
-        source_detail = "临时填写"
-        if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
-            source_detail = f"配置库：{channel.source_profile_name or channel.source_profile_id or '-'} / Key {channel.source_api_key_index + 1}"
-        detail = (
-            f"API：{channel.base_url}\n"
-            f"来源：{self._account_pool_source_label(channel)}（{source_detail}）\n"
-            f"Wire API：{channel.wire_api}\n"
-            f"默认模型：{channel.default_model}\n"
-            f"自定义请求头：{len(channel.custom_headers)} 个\n"
-            f"Key：{channel.api_key_masked}\n"
-            f"状态：{'正常' if channel.is_normal else '异常'}\n"
-            f"最后检测：{channel.last_checked_at or '-'}\n"
-            f"最后成功：{channel.last_success_at or '-'}\n"
-            f"失败原因：{channel.failure_reason or '-'}"
-        )
-        self.account_pool_selected_detail_var.set(detail)
+        detail = account_pool_detail_display(channel)
+        self.account_pool_selected_name_var.set(detail.selected_name)
+        self.account_pool_selected_detail_var.set(detail.detail_text)
 
     def _refresh_project_detail(self) -> None:
         project = self.get_selected_project()

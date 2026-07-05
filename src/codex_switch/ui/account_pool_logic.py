@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from codex_switch.chat import AccountPoolSessionValidator
+from codex_switch.ui.utils import compact_text
 from codex_switch.models import (
     AccountPoolChannel,
     AccountPoolGroup,
@@ -49,6 +50,35 @@ class AccountPoolGroupSettingsUpdate:
     claude_fallback_model: str
 
 
+@dataclass(frozen=True)
+class AccountPoolGroupFormDisplay:
+    enabled: bool
+    group_type_label: str
+    default_model: str
+    claude_model: str
+    claude_fallback_model: str
+
+
+@dataclass(frozen=True)
+class AccountPoolGroupChoicesDisplay:
+    choices: dict[str, str]
+    labels: list[str]
+    selected_label: str
+    form: AccountPoolGroupFormDisplay | None
+
+
+@dataclass(frozen=True)
+class AccountPoolChannelRow:
+    channel_id: str
+    values: tuple[str, str, str, str, str, str, str, str]
+
+
+@dataclass(frozen=True)
+class AccountPoolDetailDisplay:
+    selected_name: str
+    detail_text: str
+
+
 def account_pool_group_type_from_label(label: str) -> str:
     for group_type, group_label in ACCOUNT_POOL_GROUP_TYPE_LABELS.items():
         if group_label == label:
@@ -62,6 +92,37 @@ def account_pool_group_label(group: AccountPoolGroup, settings: AccountPoolSetti
     normal_count = len(settings.normal_channels_for_group(group.id))
     failed_count = len(settings.failed_channels_for_group(group.id))
     return f"{group.name}    {type_label} / {state} / 正常 {normal_count} / 异常 {failed_count}"
+
+
+def account_pool_group_form_display(group: AccountPoolGroup | None) -> AccountPoolGroupFormDisplay | None:
+    if group is None:
+        return None
+    return AccountPoolGroupFormDisplay(
+        enabled=group.enabled,
+        group_type_label=ACCOUNT_POOL_GROUP_TYPE_LABELS.get(group.pool_type, ACCOUNT_POOL_GROUP_TYPE_LABELS[ACCOUNT_POOL_GROUP_TYPE_CODEX]),
+        default_model=group.default_model or DEFAULT_CODEX_MODEL,
+        claude_model=group.claude_model or DEFAULT_CLAUDE_MODEL,
+        claude_fallback_model=group.claude_fallback_model or DEFAULT_CLAUDE_FALLBACK_MODEL,
+    )
+
+
+def account_pool_group_choices_display(settings: AccountPoolSettings) -> AccountPoolGroupChoicesDisplay:
+    choices: dict[str, str] = {}
+    labels: list[str] = []
+    for group in settings.groups:
+        label = account_pool_group_label(group, settings)
+        labels.append(label)
+        choices[label] = group.id
+    selected_group = settings.group_by_id(settings.selected_group_id)
+    selected_label = ""
+    if selected_group is not None:
+        selected_label = next((label for label, group_id in choices.items() if group_id == selected_group.id), "")
+    return AccountPoolGroupChoicesDisplay(
+        choices=choices,
+        labels=labels,
+        selected_label=selected_label,
+        form=account_pool_group_form_display(selected_group),
+    )
 
 
 def account_pool_source_label(channel: AccountPoolChannel) -> str:
@@ -81,6 +142,57 @@ def account_pool_visible_channels(
     if source_filter == ACCOUNT_POOL_SOURCE_FILTER_PROFILE:
         return [channel for channel in channels if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE]
     return channels
+
+
+def account_pool_summary_text(
+    settings: AccountPoolSettings,
+    *,
+    group_id: str,
+    project_count: int,
+) -> str:
+    return (
+        f"连接号池项目 {project_count} 个，"
+        f"当前组正常渠道 {len(settings.normal_channels_for_group(group_id))} 个，"
+        f"异常渠道 {len(settings.failed_channels_for_group(group_id))} 个。"
+    )
+
+
+def account_pool_channel_rows(channels: list[AccountPoolChannel]) -> list[AccountPoolChannelRow]:
+    return [
+        AccountPoolChannelRow(
+            channel_id=channel.id,
+            values=(
+                channel.name,
+                account_pool_source_label(channel),
+                compact_text(channel.base_url, 34),
+                channel.wire_api,
+                channel.api_key_masked,
+                "正常" if channel.is_normal else "异常",
+                channel.last_checked_at or "-",
+                compact_text(channel.failure_reason or "-", 34),
+            ),
+        )
+        for channel in channels
+    ]
+
+
+def account_pool_detail_display(channel: AccountPoolChannel) -> AccountPoolDetailDisplay:
+    source_detail = "临时填写"
+    if channel.source_type == ACCOUNT_POOL_CHANNEL_SOURCE_PROFILE:
+        source_detail = f"配置库：{channel.source_profile_name or channel.source_profile_id or '-'} / Key {channel.source_api_key_index + 1}"
+    detail = (
+        f"API：{channel.base_url}\n"
+        f"来源：{account_pool_source_label(channel)}（{source_detail}）\n"
+        f"Wire API：{channel.wire_api}\n"
+        f"默认模型：{channel.default_model}\n"
+        f"自定义请求头：{len(channel.custom_headers)} 个\n"
+        f"Key：{channel.api_key_masked}\n"
+        f"状态：{'正常' if channel.is_normal else '异常'}\n"
+        f"最后检测：{channel.last_checked_at or '-'}\n"
+        f"最后成功：{channel.last_success_at or '-'}\n"
+        f"失败原因：{channel.failure_reason or '-'}"
+    )
+    return AccountPoolDetailDisplay(selected_name=channel.name, detail_text=detail)
 
 
 def project_uses_account_pool(route_proxy_settings: RouteProxySettings, project_id: str) -> bool:
