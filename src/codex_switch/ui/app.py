@@ -320,6 +320,7 @@ from codex_switch.ui.skills_logic import (
     MODEL_METADATA_RELATIVE_PATHS,
     SkillMarketEntry,
     apply_profile_metadata,
+    build_skill_market_layout,
     build_skills_tab_display,
     expanded_skills_for_group_ids,
     existing_repo_files,
@@ -331,6 +332,7 @@ from codex_switch.ui.skills_logic import (
     projects_after_skill_group_delete,
     remove_skill_group,
     replace_skill_group,
+    skill_market_card_displays,
     skill_repo_preview_display,
     skill_repo_checksum_required_paths,
     skill_group_with_added_skill,
@@ -3623,17 +3625,28 @@ class CodexSwitchApp:
             return
         width = max(int(getattr(event, "width", 0) or self.skill_market_canvas.winfo_width()), 1)
         self.skill_market_canvas.itemconfigure(self.skill_market_window, width=width)
-        columns = max(1, width // 260)
         children = self.skill_market_frame.winfo_children()
         previous_columns = getattr(self, "_skill_market_layout_columns", 0)
-        if previous_columns == columns and getattr(self, "_skill_market_layout_count", -1) == len(children):
+        layout = build_skill_market_layout(
+            width=width,
+            card_count=len(children),
+            previous_columns=previous_columns,
+            previous_count=getattr(self, "_skill_market_layout_count", -1),
+        )
+        if not layout.relayout_required:
             return
-        self._skill_market_layout_columns = columns
-        self._skill_market_layout_count = len(children)
+        self._skill_market_layout_columns = layout.columns
+        self._skill_market_layout_count = layout.card_count
         for index, child in enumerate(children):
-            child.grid_configure(row=index // columns, column=index % columns, sticky="ew", padx=6, pady=6)
-        for column in range(max(previous_columns, columns)):
-            if column < columns:
+            child.grid_configure(
+                row=index // layout.columns,
+                column=index % layout.columns,
+                sticky="ew",
+                padx=6,
+                pady=6,
+            )
+        for column in range(max(previous_columns, layout.columns)):
+            if column < layout.columns:
                 self.skill_market_frame.columnconfigure(column, weight=1, uniform="skill_market")
             else:
                 self.skill_market_frame.columnconfigure(column, weight=0, uniform="")
@@ -3655,7 +3668,8 @@ class CodexSwitchApp:
             )
             empty.grid(row=0, column=0, sticky="w", padx=6, pady=6)
             return
-        for entry in entries:
+        card_displays = skill_market_card_displays(entries)
+        for entry, display in zip(entries, card_displays):
             card = tk.Frame(
                 self.skill_market_frame,
                 bg="#FBFDFE",
@@ -3665,9 +3679,9 @@ class CodexSwitchApp:
                 pady=10,
             )
             card.columnconfigure(0, weight=1)
-            tk.Label(card, text=compact_text(entry.source.display_name or entry.source.name, 28), bg="#FBFDFE", fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
-            tk.Label(card, text=f"作者：{entry.author}", bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
-            tk.Label(card, text=compact_text(entry.repo_url, 34), bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(2, 8))
+            tk.Label(card, text=display.title, bg="#FBFDFE", fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w")
+            tk.Label(card, text=display.author_text, bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", pady=(4, 0))
+            tk.Label(card, text=display.repo_text, bg="#FBFDFE", fg=PALETTE["muted"], font=self.small_font).grid(row=2, column=0, sticky="w", pady=(2, 8))
             make_button(
                 card,
                 text="安装",

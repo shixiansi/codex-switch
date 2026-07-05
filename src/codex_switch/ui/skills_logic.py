@@ -79,6 +79,20 @@ class SkillRepoPreviewDisplay:
 
 
 @dataclass(frozen=True)
+class SkillMarketCardDisplay:
+    title: str
+    author_text: str
+    repo_text: str
+
+
+@dataclass(frozen=True)
+class SkillMarketLayout:
+    columns: int
+    card_count: int
+    relayout_required: bool
+
+
+@dataclass(frozen=True)
 class SkillGroupDialogCardDisplay:
     skill_id: str
     title: str
@@ -156,6 +170,32 @@ def load_skill_market_entries(
             for source in sources
         )
     return filter_skill_market_entries(entries, query), errors
+
+
+def skill_market_card_displays(entries: list[SkillMarketEntry]) -> list[SkillMarketCardDisplay]:
+    return [
+        SkillMarketCardDisplay(
+            title=compact_text(entry.source.display_name or entry.source.name, 28),
+            author_text=f"作者：{entry.author}",
+            repo_text=compact_text(entry.repo_url, 34),
+        )
+        for entry in entries
+    ]
+
+
+def build_skill_market_layout(
+    *,
+    width: int,
+    card_count: int,
+    previous_columns: int,
+    previous_count: int,
+) -> SkillMarketLayout:
+    columns = max(1, width // 260)
+    return SkillMarketLayout(
+        columns=columns,
+        card_count=card_count,
+        relayout_required=previous_columns != columns or previous_count != card_count,
+    )
 
 
 def build_skills_tab_display(

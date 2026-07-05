@@ -168,9 +168,12 @@ from codex_switch.ui.mcp_logic import (
     safe_mcp_server_names,
 )
 from codex_switch.ui.skills_logic import (
+    SkillMarketEntry,
+    build_skill_market_layout,
     build_skills_tab_display,
     filter_skill_market_repos,
     filter_skill_repo_preview_sources,
+    skill_market_card_displays,
     skill_repo_preview_display,
 )
 from codex_switch.ui.skills_logic import (
@@ -3118,6 +3121,53 @@ args = ["-m", "alpha"]
         self.assertEqual([row.values[0] for row in display.rows], ["beta-helper"])
         self.assertIn("1 / 3", display.status_text)
         self.assertIn("beta", display.status_text)
+
+    def test_skill_market_card_helpers_build_labels_and_layout(self) -> None:
+        entries = [
+            SkillMarketEntry(
+                repo_id="repo-1",
+                repo_url="https://github.com/example/skills-market-repo",
+                author="alice",
+                source=SkillSource(
+                    name="alpha-helper",
+                    display_name="Alpha Helper With A Long Name",
+                    source_path=Path("skills/alpha-helper"),
+                ),
+            ),
+            SkillMarketEntry(
+                repo_id="repo-2",
+                repo_url="https://github.com/example/other",
+                author="bob",
+                source=SkillSource(
+                    name="beta-helper",
+                    display_name="",
+                    source_path=Path("skills/beta-helper"),
+                ),
+            ),
+        ]
+
+        displays = skill_market_card_displays(entries)
+        stable_layout = build_skill_market_layout(
+            width=520,
+            card_count=2,
+            previous_columns=2,
+            previous_count=2,
+        )
+        changed_layout = build_skill_market_layout(
+            width=800,
+            card_count=3,
+            previous_columns=2,
+            previous_count=2,
+        )
+
+        self.assertEqual(displays[0].author_text, "作者：alice")
+        self.assertLessEqual(len(displays[0].title), 28)
+        self.assertLessEqual(len(displays[0].repo_text), 34)
+        self.assertTrue(displays[1].title)
+        self.assertEqual(stable_layout.columns, 2)
+        self.assertFalse(stable_layout.relayout_required)
+        self.assertEqual(changed_layout.columns, 3)
+        self.assertTrue(changed_layout.relayout_required)
 
     def test_skill_repo_preview_sync_does_not_mark_repo_synced(self) -> None:
         class FakeCompleted:
