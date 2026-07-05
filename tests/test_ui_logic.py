@@ -275,6 +275,16 @@ from codex_switch.ui.skills_logic import (
     skill_group_detail_text,
 )
 
+from codex_switch.ui.profile_logic import (
+    profile_collection_after_add,
+    profile_collection_after_delete,
+    profile_collection_after_replace,
+    profile_delete_error,
+    profile_from_dialog_result,
+    profile_initial_vendor,
+    updated_profile_from_dialog as updated_profile_record_from_dialog,
+)
+
 class _ValueVar:
     def __init__(self, value: str) -> None:
         self.value = value
@@ -1235,6 +1245,79 @@ class UiFilterTests(unittest.TestCase):
         self.assertTrue(target_state.settings_enabled)
         self.assertTrue(target_state.clear_history)
         self.assertIn("当前测试配置：demo", target_state.announcement_text or "")
+
+    def test_profile_logic_helpers_build_collections_and_delete_guard(self) -> None:
+        first = Profile.create("first", "https://first.example.com", "sk-first")
+        second = Profile.create("second", "https://second.example.com", "sk-second")
+        updated = updated_profile_record_from_dialog(
+            first,
+            {
+                "name": "first-updated",
+                "base_url": "https://updated.example.com",
+                "api_keys": ["sk-updated"],
+                "active_api_key_index": 0,
+                "model": "gpt-4.1",
+                "vendor": VENDOR_CODEX,
+                "codex_model": "gpt-4.1",
+                "claude_model": "",
+                "claude_fallback_model": "",
+                "provider_name": "Updated",
+                "category": PROFILE_CATEGORY_TEXT,
+                "api_provided": True,
+                "wire_api": WIRE_API_RESPONSES,
+                "custom_headers": [],
+                "requires_sign_in": False,
+                "sign_in_url": "",
+                "last_signed_date": "",
+                "notes": "note",
+            },
+        )
+        created = profile_from_dialog_result(
+            {
+                "name": "third",
+                "base_url": "https://third.example.com",
+                "api_key": "sk-third",
+                "api_keys": ["sk-third"],
+                "active_api_key_index": 0,
+                "model": "gpt-4o",
+                "vendor": VENDOR_CODEX,
+                "codex_model": "gpt-4o",
+                "claude_model": "",
+                "claude_fallback_model": "",
+                "provider_name": "Third",
+                "category": PROFILE_CATEGORY_TEXT,
+                "api_provided": True,
+                "wire_api": WIRE_API_RESPONSES,
+                "custom_headers": [],
+                "requires_sign_in": False,
+                "sign_in_url": "",
+                "last_signed_date": "",
+                "notes": "",
+            }
+        )
+        project = ProjectRecord.create(str(Path.cwd()), first.id, codex_profile_id=first.id)
+
+        added = profile_collection_after_add([first], second)
+        replaced = profile_collection_after_replace([first, second], updated)
+        deleted = profile_collection_after_delete(
+            [updated, second],
+            selected_profile_id=updated.id,
+            deleted_profile_id=updated.id,
+        )
+        delete_error = profile_delete_error(
+            first.id,
+            [project],
+            project_bound_profile_ids=project_bound_profile_ids,
+        )
+
+        self.assertEqual(profile_initial_vendor(VENDOR_CODEX), VENDOR_CODEX)
+        self.assertIsNone(profile_initial_vendor("all"))
+        self.assertEqual(updated.name, "first-updated")
+        self.assertEqual(created.name, "third")
+        self.assertEqual(added.selected_profile_id, second.id)
+        self.assertEqual(replaced.selected_profile_id, updated.id)
+        self.assertEqual(deleted.selected_profile_id, second.id)
+        self.assertIn("以下项目仍绑定此配置", delete_error or "")
 
     def test_project_binding_helpers_keep_legacy_profile_fallback(self) -> None:
         project = ProjectRecord.create(

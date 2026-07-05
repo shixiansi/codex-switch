@@ -367,6 +367,15 @@ from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
 from codex_switch.ui.skills_logic import build_skill_group_dialog_layout, skill_group_dialog_card_displays, skill_group_detail_text
+from codex_switch.ui.profile_logic import (
+    profile_collection_after_add,
+    profile_collection_after_delete,
+    profile_collection_after_replace,
+    profile_delete_error,
+    profile_from_dialog_result,
+    profile_initial_vendor,
+    updated_profile_from_dialog as updated_profile_record_from_dialog,
+)
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -5551,18 +5560,15 @@ class CodexSwitchApp:
         self.status_var.set("已恢复默认 AGENTS 模板预览。")
 
     def add_profile(self) -> None:
-        initial_vendor = (
-            self.library_profile_view
-            if self.library_profile_view in {VENDOR_CODEX, VENDOR_CLAUDE, VENDOR_OTHER}
-            else None
-        )
+        initial_vendor = profile_initial_vendor(self.library_profile_view)
         dialog = ProfileDialog(self.root, initial_vendor=initial_vendor)
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        profile = Profile.create(**dialog.result)
-        self.profiles.append(profile)
-        self.selected_profile_id = profile.id
+        profile = profile_from_dialog_result(dialog.result)
+        collection = profile_collection_after_add(self.profiles, profile)
+        self.profiles = collection.profiles
+        self.selected_profile_id = collection.selected_profile_id
         self.persist_state()
         self.refresh_global_tab()
         self.refresh_library_tab()
@@ -5578,29 +5584,10 @@ class CodexSwitchApp:
         self.root.wait_window(dialog)
         if not dialog.result:
             return
-        updated = replace(
-            profile,
-            name=dialog.result["name"],
-            base_url=dialog.result["base_url"],
-            api_keys=dialog.result["api_keys"],
-            active_api_key_index=dialog.result["active_api_key_index"],
-            model=dialog.result["model"],
-            vendor=dialog.result["vendor"],
-            codex_model=dialog.result["codex_model"],
-            claude_model=dialog.result["claude_model"],
-            claude_fallback_model=dialog.result["claude_fallback_model"],
-            provider_name=dialog.result["provider_name"],
-            category=dialog.result["category"],
-            api_provided=dialog.result["api_provided"],
-            wire_api=dialog.result["wire_api"],
-            custom_headers=dialog.result["custom_headers"],
-            requires_sign_in=dialog.result["requires_sign_in"],
-            sign_in_url=dialog.result["sign_in_url"],
-            last_signed_date=dialog.result["last_signed_date"],
-            notes=dialog.result["notes"],
-        )
-        self.profiles = [updated if item.id == updated.id else item for item in self.profiles]
-        self.selected_profile_id = updated.id
+        updated = updated_profile_record_from_dialog(profile, dialog.result)
+        collection = profile_collection_after_replace(self.profiles, updated)
+        self.profiles = collection.profiles
+        self.selected_profile_id = collection.selected_profile_id
         self._normalize_global_profile_ids()
         self.persist_state()
         self.refresh_global_tab()
@@ -5614,19 +5601,23 @@ class CodexSwitchApp:
         if not profile:
             messagebox.showinfo("提示", "请先选择一个配置项。", parent=self.root)
             return
-        bound_projects = [
-            project.name
-            for project in self.projects
-            if profile.id in project_bound_profile_ids(project)
-        ]
-        if bound_projects:
-            messagebox.showerror("无法删除", f"以下项目仍绑定此配置：\n{', '.join(bound_projects)}", parent=self.root)
+        delete_error = profile_delete_error(
+            profile.id,
+            self.projects,
+            project_bound_profile_ids=project_bound_profile_ids,
+        )
+        if delete_error:
+            messagebox.showerror("无法删除", delete_error, parent=self.root)
             return
         if not messagebox.askyesno("确认删除", f"确定要删除配置“{profile.name}”吗？", parent=self.root):
             return
-        self.profiles = [item for item in self.profiles if item.id != profile.id]
-        if self.selected_profile_id == profile.id:
-            self.selected_profile_id = self.profiles[0].id if self.profiles else None
+        collection = profile_collection_after_delete(
+            self.profiles,
+            selected_profile_id=self.selected_profile_id,
+            deleted_profile_id=profile.id,
+        )
+        self.profiles = collection.profiles
+        self.selected_profile_id = collection.selected_profile_id
         self._normalize_global_profile_ids()
         self.persist_state()
         self.refresh_global_tab()
