@@ -177,6 +177,7 @@ from codex_switch.ui.model_batch_logic import (
 from codex_switch.ui.hot_update_logic import (
     HOT_UPDATE_SCOPE_LABELS,
     HOT_UPDATE_STATUS_LABELS,
+    execute_manual_hot_update_check,
     project_manual_hot_update_spec,
     PROJECT_HOT_UPDATE_TEXTS,
     SKILL_REPO_HOT_UPDATE_TEXTS,
@@ -2749,48 +2750,41 @@ class CodexSwitchApp:
         set_current_commit,
         refresh_callback,
     ) -> None:
-        try:
-            update = fetch_update()
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            spec = spec_builder(None)
-            self._record_hot_update_event(
-                scope=spec.scope,
-                target=spec.target,
-                status="error",
-                detail=str(exc),
-                automatic=False,
-            )
-            self.persist_state()
-            messagebox.showerror("检查失败", f"{spec.error_message_prefix}：{exc}", parent=self.root)
-            return
-        spec = spec_builder(update)
-        decision = process_hot_update_candidate(
-            has_update=update.has_update,
-            latest_commit=update.latest_commit,
-            automatic=False,
-            auto_update_enabled=False,
-            texts=spec.texts,
-            apply_update=lambda: apply_update(update),
+        result = execute_manual_hot_update_check(
+            fetch_update=fetch_update,
+            spec_builder=spec_builder,
+            apply_update=apply_update,
             set_current_commit=set_current_commit,
-            confirm_update=lambda: messagebox.askyesno(
+            confirm_update=lambda spec: messagebox.askyesno(
                 spec.confirm_title,
                 spec.confirm_message,
                 parent=self.root,
             ),
         )
-        if decision.event_status:
+        if result.error_detail is not None:
             self._record_hot_update_event(
-                scope=spec.scope,
-                target=spec.target,
-                status=decision.event_status,
-                detail=decision.event_detail,
-                commit=decision.commit,
-                automatic=decision.event_automatic,
+                scope=result.spec.scope,
+                target=result.spec.target,
+                status="error",
+                detail=result.error_detail,
+                automatic=False,
             )
-        if decision.event_status == "current":
-            messagebox.showinfo("检查完成", spec.current_info_message, parent=self.root)
-        elif update.has_update and decision.event_detail == spec.texts.declined:
-            self.status_var.set(spec.declined_status_message)
+            self.persist_state()
+            messagebox.showerror("检查失败", f"{result.spec.error_message_prefix}：{result.error_detail}", parent=self.root)
+            return
+        if result.decision is not None and result.decision.event_status:
+            self._record_hot_update_event(
+                scope=result.spec.scope,
+                target=result.spec.target,
+                status=result.decision.event_status,
+                detail=result.decision.event_detail,
+                commit=result.decision.commit,
+                automatic=result.decision.event_automatic,
+            )
+        if result.current_info_message:
+            messagebox.showinfo("检查完成", result.current_info_message, parent=self.root)
+        elif result.declined_status_message:
+            self.status_var.set(result.declined_status_message)
         self.persist_state()
         refresh_callback()
 

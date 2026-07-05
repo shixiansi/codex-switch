@@ -61,6 +61,14 @@ class ManualHotUpdateSpec:
 
 
 @dataclass(frozen=True)
+class ManualHotUpdateExecutionResult:
+    spec: ManualHotUpdateSpec
+    decision: HotUpdateDecision | None = None
+    error_detail: str | None = None
+    current_info_message: str | None = None
+    declined_status_message: str | None = None
+
+@dataclass(frozen=True)
 class HotUpdateBatchEvent:
     target: str
     status: str
@@ -264,6 +272,39 @@ def process_hot_update_candidate(
         commit=latest_commit,
     )
 
+
+def execute_manual_hot_update_check(
+    *,
+    fetch_update: Callable[[], Any],
+    spec_builder: Callable[[Any | None], ManualHotUpdateSpec],
+    apply_update: Callable[[Any], bool],
+    set_current_commit: Callable[[str], None] | None = None,
+    confirm_update: Callable[[ManualHotUpdateSpec], bool] | None = None,
+) -> ManualHotUpdateExecutionResult:
+    try:
+        update = fetch_update()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return ManualHotUpdateExecutionResult(
+            spec=spec_builder(None),
+            error_detail=str(exc),
+        )
+    spec = spec_builder(update)
+    decision = process_hot_update_candidate(
+        has_update=update.has_update,
+        latest_commit=update.latest_commit,
+        automatic=False,
+        auto_update_enabled=False,
+        texts=spec.texts,
+        apply_update=lambda: apply_update(update),
+        set_current_commit=set_current_commit,
+        confirm_update=(lambda: confirm_update(spec)) if confirm_update is not None else None,
+    )
+    return ManualHotUpdateExecutionResult(
+        spec=spec,
+        decision=decision,
+        current_info_message=spec.current_info_message if decision.event_status == "current" else None,
+        declined_status_message=spec.declined_status_message if update.has_update and decision.event_detail == spec.texts.declined else None,
+    )
 
 T = TypeVar("T")
 

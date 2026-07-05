@@ -139,6 +139,7 @@ from codex_switch.ui.account_pool_logic import (
 )
 from codex_switch.ui.hot_update_logic import (
     HotUpdateDecisionTexts,
+    execute_manual_hot_update_check,
     project_manual_hot_update_spec,
     PROJECT_HOT_UPDATE_TEXTS,
     SKILL_REPO_HOT_UPDATE_TEXTS,
@@ -2361,6 +2362,39 @@ args = ["-m", "alpha"]
         self.assertEqual(project_spec.scope, "project")
         self.assertIn("Demo", project_spec.target)
 
+    def test_execute_manual_hot_update_check_handles_error_current_and_decline(self) -> None:
+        class FakeUpdate:
+            def __init__(self, *, has_update: bool, latest_commit: str, short_latest: str) -> None:
+                self.has_update = has_update
+                self.latest_commit = latest_commit
+                self.short_latest = short_latest
+
+        commits: list[str] = []
+        error_result = execute_manual_hot_update_check(
+            fetch_update=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            spec_builder=lambda update: project_manual_hot_update_spec("Demo", update.short_latest if update is not None else "-"),
+            apply_update=lambda _update: False,
+        )
+        current_result = execute_manual_hot_update_check(
+            fetch_update=lambda: FakeUpdate(has_update=False, latest_commit="abc", short_latest="abc"),
+            spec_builder=lambda update: project_manual_hot_update_spec("Demo", update.short_latest if update is not None else "-"),
+            apply_update=lambda _update: False,
+            set_current_commit=commits.append,
+        )
+        declined_result = execute_manual_hot_update_check(
+            fetch_update=lambda: FakeUpdate(has_update=True, latest_commit="def", short_latest="def"),
+            spec_builder=lambda update: project_manual_hot_update_spec("Demo", update.short_latest if update is not None else "-"),
+            apply_update=lambda _update: False,
+            confirm_update=lambda _spec: False,
+        )
+
+        self.assertEqual(error_result.spec.scope, "project")
+        self.assertEqual(error_result.error_detail, "boom")
+        self.assertEqual(commits, ["abc"])
+        self.assertEqual(current_result.decision.event_status, "current")
+        self.assertEqual(current_result.current_info_message, "项目远端已经最新。")
+        self.assertEqual(declined_result.decision.event_status, "pending")
+        self.assertEqual(declined_result.declined_status_message, "已保留待更新的项目：def")
     def test_process_hot_update_targets_collects_counts_errors_and_events(self) -> None:
         class FakeUpdate:
             def __init__(self, *, has_update: bool, latest_commit: str, short_latest: str) -> None:
