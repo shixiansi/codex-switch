@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 import json
@@ -150,7 +150,11 @@ from codex_switch.ui.account_pool_logic import (
 )
 from codex_switch.ui.global_logic import (
     claude_settings_env_values,
+    global_apply_detail,
+    global_apply_targets,
     global_profile_choice_names,
+    global_profile_apply_error,
+    GlobalApplyResult,
     profile_for_choice_index,
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
@@ -349,14 +353,6 @@ LIBRARY_TREE_COLUMNS = ("name", "base_url", "model", "sign_in", "health")
 LIBRARY_TREE_COLUMNS_WITH_VENDOR = ("name", "vendor", "base_url", "model", "sign_in", "health")
 PROXY_LOG_RENDER_DELAY_MS = 80
 PROXY_STATE_FLUSH_DELAY_MS = 250
-
-
-@dataclass
-class GlobalApplyResult:
-    codex_backup_dir: Path | None = None
-    claude_backup_dir: Path | None = None
-    claude_settings_path: Path | None = None
-
 class CodexSwitchApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -5855,8 +5851,12 @@ class CodexSwitchApp:
     def _apply_profile_to_global_config(self, profile: Profile) -> GlobalApplyResult | None:
         supports_codex = profile_supports_codex(profile)
         supports_claude = profile_supports_claude(profile)
-        if not supports_codex and not supports_claude:
-            messagebox.showerror("切换失败", "当前配置不能写入 Codex 或 Claude 全局配置。", parent=self.root)
+        apply_error = global_profile_apply_error(
+            supports_codex=supports_codex,
+            supports_claude=supports_claude,
+        )
+        if apply_error:
+            messagebox.showerror("切换失败", apply_error, parent=self.root)
             return None
         result = GlobalApplyResult()
         if supports_codex and not self._apply_codex_profile_to_global_config(profile, result):
@@ -5888,29 +5888,13 @@ class CodexSwitchApp:
         self.refresh_test_tab()
         return result
 
-    def _global_apply_targets(self, result: GlobalApplyResult) -> str:
-        targets = []
-        if result.codex_backup_dir is not None:
-            targets.append("Codex")
-        if result.claude_backup_dir is not None:
-            targets.append("Claude")
-        return " / ".join(targets)
-
-    def _global_apply_detail(self, result: GlobalApplyResult) -> str:
-        parts: list[str] = []
-        if result.codex_backup_dir is not None:
-            parts.append(f"Codex 备份位置：\n{result.codex_backup_dir}")
-        if result.claude_backup_dir is not None:
-            parts.append(f"Claude settings：\n{result.claude_settings_path}\nClaude 备份位置：\n{result.claude_backup_dir}")
-        return "\n\n".join(parts)
-
     def apply_global_profile(self) -> None:
         result = self._apply_selected_global_profiles()
         if result is None:
             return
-        targets = self._global_apply_targets(result)
+        targets = global_apply_targets(result)
         self.status_var.set(f"已写入全局配置：{targets}")
-        messagebox.showinfo("写入成功", f"已写入全局配置：{targets}\n\n{self._global_apply_detail(result)}", parent=self.root)
+        messagebox.showinfo("写入成功", f"已写入全局配置：{targets}\n\n{global_apply_detail(result)}", parent=self.root)
 
     def apply_selected_profile(self) -> None:
         profile = self.get_selected_profile()
@@ -5923,9 +5907,9 @@ class CodexSwitchApp:
         result = self._apply_profile_to_global_config(profile)
         if result is None:
             return
-        targets = self._global_apply_targets(result)
+        targets = global_apply_targets(result)
         self.status_var.set(f"已切换到 {profile.name}（{targets}），并已备份原配置。")
-        messagebox.showinfo("切换成功", f"已切换到配置“{profile.name}”。\n\n{self._global_apply_detail(result)}", parent=self.root)
+        messagebox.showinfo("切换成功", f"已切换到配置“{profile.name}”。\n\n{global_apply_detail(result)}", parent=self.root)
 
     def _refresh_project_proxy_rules_before_action(self, project: ProjectRecord) -> None:
         if self._refresh_route_proxy_rules_for_project(project):

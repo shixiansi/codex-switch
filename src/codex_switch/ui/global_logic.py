@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 from codex_switch.models import Profile
+
+
+@dataclass
+class GlobalApplyResult:
+    codex_backup_dir: Path | None = None
+    claude_backup_dir: Path | None = None
+    claude_settings_path: Path | None = None
 
 
 def resolve_global_profile_id(
@@ -58,6 +67,30 @@ def claude_settings_env_values(
         _clean_display_value(env.get(model_key)),
         _clean_display_value(env.get(fallback_model_key)),
     )
+
+
+def global_profile_apply_error(*, supports_codex: bool, supports_claude: bool) -> str | None:
+    if not supports_codex and not supports_claude:
+        return "当前配置不能写入 Codex 或 Claude 全局配置。"
+    return None
+
+
+def global_apply_targets(result: GlobalApplyResult) -> str:
+    targets = []
+    if result.codex_backup_dir is not None:
+        targets.append("Codex")
+    if result.claude_backup_dir is not None:
+        targets.append("Claude")
+    return " / ".join(targets)
+
+
+def global_apply_detail(result: GlobalApplyResult) -> str:
+    parts: list[str] = []
+    if result.codex_backup_dir is not None:
+        parts.append(f"Codex 备份位置：\n{result.codex_backup_dir}")
+    if result.claude_backup_dir is not None:
+        parts.append(f"Claude settings：\n{result.claude_settings_path}\nClaude 备份位置：\n{result.claude_backup_dir}")
+    return "\n\n".join(parts)
 
 
 def _clean_display_value(value) -> str:

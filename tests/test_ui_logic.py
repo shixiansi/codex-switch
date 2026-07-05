@@ -104,7 +104,11 @@ from codex_switch.ui.app import (
 from codex_switch.ui.dialogs import next_api_provided_state_for_category
 from codex_switch.ui.global_logic import (
     claude_settings_env_values,
+    global_apply_detail,
+    global_apply_targets,
     global_profile_choice_names,
+    global_profile_apply_error,
+    GlobalApplyResult,
     profile_for_choice_index,
     resolve_global_mcp_server_names,
     resolve_global_profile_id,
@@ -876,6 +880,24 @@ class UiFilterTests(unittest.TestCase):
             ),
             ("-", "-", "-"),
         )
+
+    def test_global_apply_helpers_build_targets_detail_and_validation(self) -> None:
+        result = GlobalApplyResult(
+            codex_backup_dir=Path("codex-backup"),
+            claude_backup_dir=Path("claude-backup"),
+            claude_settings_path=Path("settings.local.json"),
+        )
+
+        self.assertIsNone(global_profile_apply_error(supports_codex=True, supports_claude=False))
+        self.assertEqual(
+            global_profile_apply_error(supports_codex=False, supports_claude=False),
+            "当前配置不能写入 Codex 或 Claude 全局配置。",
+        )
+        self.assertEqual(global_apply_targets(result), "Codex / Claude")
+        detail = global_apply_detail(result)
+        self.assertIn("codex-backup", detail)
+        self.assertIn("claude-backup", detail)
+        self.assertIn("settings.local.json", detail)
 
     def test_profile_library_sort_key_prioritizes_unsigned_profiles(self) -> None:
         signed = Profile.create(
