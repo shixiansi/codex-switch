@@ -99,6 +99,19 @@ class RouteProxySettingsForm:
     upstream_timeout_seconds: int
 
 
+@dataclass(frozen=True)
+class RouteProxyProjectRuleForm:
+    codex_protocol: str
+    codex_source: str
+    codex_account_pool_group_id: str
+    claude_protocol: str
+    claude_source: str
+    claude_account_pool_group_id: str
+    compact_model: str
+    codex_pool_model: str | None
+    claude_pool_model: str | None
+
+
 def route_proxy_codex_protocol_for_profile(profile: Profile) -> str:
     wire_api = default_wire_api_for_profile(profile)
     if wire_api == WIRE_API_RESPONSES:
@@ -336,6 +349,76 @@ def normalize_route_proxy_settings_form(
             strategy_values.get(strategy_label, strategy_label)
         ),
         upstream_timeout_seconds=normalize_route_proxy_upstream_timeout_seconds(upstream_timeout_value),
+    )
+
+
+def resolve_route_proxy_project_rule_form(
+    account_pool_settings: AccountPoolSettings,
+    *,
+    codex_protocol: str,
+    codex_source_label: str,
+    codex_source_values: dict[str, str],
+    codex_group_label: str,
+    codex_group_choices: dict[str, str],
+    claude_protocol: str,
+    claude_source_label: str,
+    claude_source_values: dict[str, str],
+    claude_group_label: str,
+    claude_group_choices: dict[str, str],
+    compact_model: str,
+) -> RouteProxyProjectRuleForm:
+    codex_source = codex_source_values.get(codex_source_label, codex_source_label)
+    codex_account_pool_group_id = codex_group_choices.get(codex_group_label, "")
+    if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL and not codex_account_pool_group_id:
+        group = account_pool_settings.group_by_id(account_pool_settings.selected_group_id)
+        if group is None or group.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE:
+            group = next(
+                (item for item in account_pool_settings.groups if item.pool_type != ACCOUNT_POOL_GROUP_TYPE_CLAUDE),
+                None,
+            )
+        codex_account_pool_group_id = group.id if group is not None else ""
+
+    claude_source = claude_source_values.get(claude_source_label, claude_source_label)
+    claude_account_pool_group_id = claude_group_choices.get(claude_group_label, "")
+    if claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL and not claude_account_pool_group_id:
+        group = next(
+            (item for item in account_pool_settings.groups if item.pool_type == ACCOUNT_POOL_GROUP_TYPE_CLAUDE),
+            None,
+        )
+        claude_account_pool_group_id = group.id if group is not None else ""
+
+    codex_pool_group = (
+        account_pool_settings.group_by_id(codex_account_pool_group_id)
+        if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+        else None
+    )
+    codex_pool_model = (
+        (codex_pool_group.default_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+        if codex_pool_group is not None
+        else None
+    )
+
+    claude_pool_group = (
+        account_pool_settings.group_by_id(claude_account_pool_group_id)
+        if claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
+        else None
+    )
+    claude_pool_model = (
+        (claude_pool_group.claude_model or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
+        if claude_pool_group is not None
+        else None
+    )
+
+    return RouteProxyProjectRuleForm(
+        codex_protocol=codex_protocol,
+        codex_source=codex_source,
+        codex_account_pool_group_id=codex_account_pool_group_id,
+        claude_protocol=claude_protocol,
+        claude_source=claude_source,
+        claude_account_pool_group_id=claude_account_pool_group_id,
+        compact_model=compact_model,
+        codex_pool_model=codex_pool_model,
+        claude_pool_model=claude_pool_model,
     )
 
 

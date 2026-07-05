@@ -262,6 +262,7 @@ from codex_switch.ui.route_proxy_logic import (
     normalize_route_proxy_settings_form,
     route_proxy_account_pool_choices,
     route_proxy_project_rows,
+    resolve_route_proxy_project_rule_form,
     route_proxy_status_text,
     refresh_route_proxy_upstream_models,
     route_proxy_detail_display,
@@ -5227,64 +5228,40 @@ class CodexSwitchApp:
         project = self._selected_proxy_project()
         if project is None:
             return
-        codex_protocol = self.proxy_codex_protocol_var.get()
-        codex_source = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
-            self.proxy_codex_upstream_source_var.get(),
-            self.proxy_codex_upstream_source_var.get(),
-        )
         proxy_group_choices = getattr(self, "proxy_account_pool_group_choices", {})
         proxy_group_var = getattr(self, "proxy_account_pool_group_var", None)
-        proxy_group_label = proxy_group_var.get() if proxy_group_var is not None else ""
-        account_pool_group_id = proxy_group_choices.get(proxy_group_label, "")
-        if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL and not account_pool_group_id:
-            group = self.account_pool_settings.group_by_id(self.account_pool_settings.selected_group_id)
-            account_pool_group_id = group.id if group is not None else ""
-        claude_protocol = self.proxy_claude_protocol_var.get()
-        claude_source = CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES.get(
-            self.proxy_claude_upstream_source_var.get(),
-            self.proxy_claude_upstream_source_var.get(),
-        )
         claude_group_choices = getattr(self, "proxy_claude_account_pool_group_choices", {})
         claude_group_var = getattr(self, "proxy_claude_account_pool_group_var", None)
-        claude_group_label = claude_group_var.get() if claude_group_var is not None else ""
-        claude_account_pool_group_id = claude_group_choices.get(claude_group_label, "")
-        compact_model = self.proxy_codex_compact_model_var.get().strip()
+        form = resolve_route_proxy_project_rule_form(
+            self.account_pool_settings,
+            codex_protocol=self.proxy_codex_protocol_var.get(),
+            codex_source_label=self.proxy_codex_upstream_source_var.get(),
+            codex_source_values=CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
+            codex_group_label=proxy_group_var.get() if proxy_group_var is not None else "",
+            codex_group_choices=proxy_group_choices,
+            claude_protocol=self.proxy_claude_protocol_var.get(),
+            claude_source_label=self.proxy_claude_upstream_source_var.get(),
+            claude_source_values=CODEX_ROUTE_PROXY_UPSTREAM_SOURCE_VALUES,
+            claude_group_label=claude_group_var.get() if claude_group_var is not None else "",
+            claude_group_choices=claude_group_choices,
+            compact_model=self.proxy_codex_compact_model_var.get().strip(),
+        )
         codex_profile = self._profile_by_id(project_codex_profile_id(project))
         claude_profile = self._profile_by_id(project_claude_profile_id(project))
-        codex_pool_group = (
-            self.account_pool_settings.group_by_id(account_pool_group_id)
-            if codex_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
-            else None
-        )
-        codex_pool_model = (
-            (codex_pool_group.default_model or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
-            if codex_pool_group is not None
-            else None
-        )
-        claude_pool_group = (
-            self.account_pool_settings.group_by_id(claude_account_pool_group_id)
-            if claude_source == ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL
-            else None
-        )
-        claude_pool_model = (
-            (claude_pool_group.claude_model or DEFAULT_CLAUDE_MODEL).strip() or DEFAULT_CLAUDE_MODEL
-            if claude_pool_group is not None
-            else None
-        )
         apply_route_proxy_project_rules(
             self.route_proxy_settings,
             project,
-            codex_protocol=codex_protocol,
-            codex_source=codex_source,
-            codex_account_pool_group_id=account_pool_group_id,
-            claude_protocol=claude_protocol,
-            claude_source=claude_source,
-            claude_account_pool_group_id=claude_account_pool_group_id,
-            compact_model=compact_model,
+            codex_protocol=form.codex_protocol,
+            codex_source=form.codex_source,
+            codex_account_pool_group_id=form.codex_account_pool_group_id,
+            claude_protocol=form.claude_protocol,
+            claude_source=form.claude_source,
+            claude_account_pool_group_id=form.claude_account_pool_group_id,
+            compact_model=form.compact_model,
             codex_profile=codex_profile,
             claude_profile=claude_profile,
-            codex_pool_model=codex_pool_model,
-            claude_pool_model=claude_pool_model,
+            codex_pool_model=form.codex_pool_model,
+            claude_pool_model=form.claude_pool_model,
         )
 
     def start_route_proxy(self, show_errors: bool = True) -> None:

@@ -182,6 +182,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_base_url_for_project,
     route_proxy_codex_protocol_for_profile,
     route_proxy_detail_display,
+    resolve_route_proxy_project_rule_form,
     route_proxy_rules_for_project,
     route_proxy_rules_for_project_profiles,
 )
@@ -1770,6 +1771,33 @@ command = "node"
         self.assertIn(claude_group.id, choices.claude_choices.values())
         self.assertEqual(choices.selected_codex_label, choices.codex_labels[0])
         self.assertEqual(choices.selected_claude_label, choices.claude_labels[0])
+
+    def test_resolve_route_proxy_project_rule_form_uses_selected_groups_and_defaults(self) -> None:
+        settings = AccountPoolSettings()
+        default_group = settings.ensure_default_group()
+        default_group.default_model = "pool-codex"
+        claude_group = settings.add_group("claude-pool", pool_type=ACCOUNT_POOL_GROUP_TYPE_CLAUDE, claude_model="pool-sonnet")
+
+        form = resolve_route_proxy_project_rule_form(
+            settings,
+            codex_protocol=ROUTE_PROXY_PROTOCOL_OPENAI_RESPONSES_TO_CHAT,
+            codex_source_label=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+            codex_source_values={"号池": ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL},
+            codex_group_label="",
+            codex_group_choices={},
+            claude_protocol=ROUTE_PROXY_PROTOCOL_ANTHROPIC_TO_OPENAI,
+            claude_source_label=ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL,
+            claude_source_values={"号池": ROUTE_PROXY_UPSTREAM_SOURCE_ACCOUNT_POOL},
+            claude_group_label="claude",
+            claude_group_choices={"claude": claude_group.id},
+            compact_model="gpt-4.1-compact",
+        )
+
+        self.assertEqual(form.codex_account_pool_group_id, default_group.id)
+        self.assertEqual(form.codex_pool_model, "pool-codex")
+        self.assertEqual(form.claude_account_pool_group_id, claude_group.id)
+        self.assertEqual(form.claude_pool_model, "pool-sonnet")
+        self.assertEqual(form.compact_model, "gpt-4.1-compact")
 
     def test_route_proxy_detail_display_uses_account_pool_labels_and_group_names(self) -> None:
         project = ProjectRecord.create(
