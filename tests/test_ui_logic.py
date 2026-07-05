@@ -205,6 +205,7 @@ from codex_switch.ui.skills_logic import (
     sync_projects_from_skill_groups,
 )
 from codex_switch.ui.project_logic import (
+    build_project_detail_display_for_project,
     build_project_edit_application,
     build_project_binding_sync_plan,
     execute_project_binding_sync,
@@ -1788,6 +1789,41 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(filled.script_text, "start.ps1")
         self.assertEqual(filled.selected_codex_model_text, "gpt-5")
         self.assertEqual(filled.selected_claude_model_text, "sonnet")
+
+    def test_build_project_detail_display_for_project_uses_profiles_and_template_status(self) -> None:
+        codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            codex.id,
+            name="Demo",
+            codex_profile_id=codex.id,
+            claude_profile_id=claude.id,
+            run_command="npm run dev",
+        )
+
+        display = build_project_detail_display_for_project(
+            project,
+            profile_by_id=lambda profile_id: {codex.id: codex, claude.id: claude}.get(profile_id),
+            key_summary=lambda profile: f"key:{profile.name}",
+            github_text=lambda _project: "repo@HEAD",
+            github_update_text=lambda _project: "auto / abc",
+            script_text=lambda _project: "start.cmd",
+            mcp_text=lambda _project: "mcp summary",
+            skills_text=lambda _project: "skills summary",
+            inspect_template_status=lambda _path: None,
+        )
+
+        self.assertEqual(display.selected_name_text, "Demo")
+        self.assertEqual(display.selected_codex_profile_text, f"{codex.name} / {codex.vendor_label}")
+        self.assertEqual(display.selected_claude_profile_text, f"{claude.name} / {claude.vendor_label}")
+        self.assertEqual(display.script_text, "start.cmd")
+        self.assertEqual(display.run_text, "npm run dev")
+        self.assertEqual(display.github_text, "repo@HEAD")
+        self.assertEqual(display.github_update_text, "auto / abc")
+        self.assertEqual(display.mcp_text, "mcp summary")
+        self.assertEqual(display.skills_text, "skills summary")
+        self.assertEqual(display.badge_text, "未生成")
 
     def test_project_launch_helpers_build_paths_and_commands(self) -> None:
         with workspace_tempdir() as temp_dir:

@@ -848,6 +848,50 @@ def project_detail_display(
     )
 
 
+def build_project_detail_display_for_project(
+    project: ProjectRecord | None,
+    *,
+    profile_by_id: Callable[[str], Profile | None],
+    key_summary: Callable[[Profile], str],
+    github_text: Callable[[ProjectRecord], str],
+    github_update_text: Callable[[ProjectRecord], str],
+    script_text: Callable[[ProjectRecord], str],
+    mcp_text: Callable[[ProjectRecord], str],
+    skills_text: Callable[[ProjectRecord], str],
+    inspect_template_status: Callable[[Path], ProjectTemplateStatus | None],
+) -> ProjectDetailDisplay:
+    if project is None:
+        return project_detail_display(None)
+
+    codex_profile = profile_by_id(project_codex_profile_id(project))
+    claude_profile = profile_by_id(project_claude_profile_id(project))
+    codex_profile_texts = project_codex_profile_texts(
+        codex_profile,
+        key_summary=key_summary,
+    )
+    claude_profile_texts = project_claude_profile_texts(
+        claude_profile,
+        key_summary=key_summary,
+    )
+    project_root = project_root_path(project)
+    template = project_template_display(
+        project_root_exists=project_root.exists(),
+        status=inspect_template_status(project_root) if project_root.exists() else None,
+    )
+    return project_detail_display(
+        project,
+        github_text=github_text(project),
+        github_update_text=github_update_text(project),
+        script_text=script_text(project),
+        run_text=project.run_command or "未配置",
+        mcp_text=mcp_text(project),
+        skills_text=skills_text(project),
+        codex_profile_texts=codex_profile_texts,
+        claude_profile_texts=claude_profile_texts,
+        template_display=template,
+    )
+
+
 def build_codex_template_execution_plan(
     project: ProjectRecord,
     codex_profile: Profile,
