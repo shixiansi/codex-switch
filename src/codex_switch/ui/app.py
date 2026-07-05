@@ -258,6 +258,9 @@ from codex_switch.ui.project_logic import (
     project_mcp_selection_summary,
     project_from_dialog_result,
     project_detail_display,
+    PROJECT_METADATA_RELATIVE_PATHS,
+    project_metadata_group_ids,
+    project_metadata_profile_ids,
     project_root_path,
     project_skill_selection_summary,
     project_tab_display,
@@ -301,7 +304,6 @@ from codex_switch.ui.repo_sync_logic import (
 )
 from codex_switch.ui.skills_logic import (
     MODEL_METADATA_RELATIVE_PATHS,
-    PROJECT_METADATA_RELATIVE_PATHS,
     SkillMarketEntry,
     apply_profile_metadata,
     build_skills_tab_display,
@@ -309,8 +311,6 @@ from codex_switch.ui.skills_logic import (
     import_skill_sources_to_group,
     load_skill_market_entries,
     profile_metadata_entries,
-    project_metadata_group_ids,
-    project_metadata_profile_ids,
     skill_repo_checksum_required_paths,
 )
 from codex_switch.ui.single_instance import _acquire_single_instance, _release_single_instance, _show_single_instance_message

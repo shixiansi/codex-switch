@@ -9,6 +9,12 @@ from codex_switch.project_template import ProjectTemplateResult, ProjectTemplate
 from codex_switch.skills import SkillSource, resolve_selected_skill_sources, skill_selection_summary
 from codex_switch.ui.utils import compact_text, project_start_script_paths
 
+PROJECT_METADATA_RELATIVE_PATHS = (
+    Path("codex-switch-project.json"),
+    Path("project-skills.json"),
+    Path(".codex-switch") / "project.json",
+)
+
 
 @dataclass(frozen=True)
 class CodexProjectTemplateOptions:
@@ -362,6 +368,67 @@ def project_collection_after_delete(
     return ProjectCollectionUpdate(
         projects=remaining_projects,
         selected_project_id=resolved_selected_id,
+    )
+
+
+def project_metadata_group_ids(payload: dict, known_group_ids: set[str]) -> list[str] | None:
+    raw_group_ids = payload.get("skill_group_ids")
+    if raw_group_ids is None:
+        raw_group_ids = payload.get("skill_groups")
+    if not isinstance(raw_group_ids, list):
+        return None
+    requested = [str(item).strip() for item in raw_group_ids if str(item).strip()]
+    if any(group_id not in known_group_ids for group_id in requested):
+        return None
+    group_ids: list[str] = []
+    for group_id in requested:
+        if group_id not in group_ids:
+            group_ids.append(group_id)
+    return group_ids
+
+
+def project_metadata_profile_id(
+    payload: dict,
+    key: str,
+    current_id: str,
+    profile_by_id: Callable[[str], Profile | None],
+    supports_profile: Callable[[Profile], bool],
+) -> str:
+    raw_profile_id = payload.get(key)
+    if raw_profile_id is None:
+        raw_profile_id = payload.get("profile_id")
+    candidate_id = str(raw_profile_id or "").strip()
+    if not candidate_id:
+        return current_id
+    profile = profile_by_id(candidate_id)
+    if profile is None or not supports_profile(profile):
+        return current_id
+    return profile.id
+
+
+def project_metadata_profile_ids(
+    payload: dict,
+    project: ProjectRecord,
+    *,
+    profile_by_id: Callable[[str], Profile | None],
+    supports_codex: Callable[[Profile], bool],
+    supports_claude: Callable[[Profile], bool],
+) -> tuple[str, str]:
+    return (
+        project_metadata_profile_id(
+            payload,
+            "codex_profile_id",
+            project_codex_profile_id(project),
+            profile_by_id,
+            supports_codex,
+        ),
+        project_metadata_profile_id(
+            payload,
+            "claude_profile_id",
+            project_claude_profile_id(project),
+            profile_by_id,
+            supports_claude,
+        ),
     )
 
 

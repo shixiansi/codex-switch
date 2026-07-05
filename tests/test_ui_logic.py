@@ -192,6 +192,9 @@ from codex_switch.ui.project_logic import (
     project_duplicate_dir_error,
     project_from_dialog_result,
     project_detail_display,
+    PROJECT_METADATA_RELATIVE_PATHS,
+    project_metadata_group_ids,
+    project_metadata_profile_ids,
     project_tab_display,
     project_template_display,
     project_root_path,
@@ -1253,6 +1256,40 @@ class UiFilterTests(unittest.TestCase):
         self.assertIsNotNone(updated)
         self.assertEqual(updated.skill_group_ids, ["group-2"])
         self.assertEqual(updated.profile_id, "new-codex")
+
+    def test_project_metadata_helpers_parse_groups_and_profiles(self) -> None:
+        codex = Profile.create("codex", "https://codex.example.com", "sk-codex", vendor=VENDOR_CODEX)
+        codex.id = "codex-profile"
+        claude = Profile.create("claude", "https://claude.example.com", "sk-claude", vendor=VENDOR_CLAUDE)
+        claude.id = "claude-profile"
+        project = ProjectRecord.create(
+            str(Path.cwd()),
+            codex.id,
+            codex_profile_id=codex.id,
+            claude_profile_id=claude.id,
+            skill_group_ids=["group-1"],
+        )
+        payload = {
+            "skill_group_ids": ["group-1", "group-2"],
+            "codex_profile_id": codex.id,
+            "claude_profile_id": claude.id,
+        }
+
+        group_ids = project_metadata_group_ids(payload, {"group-1", "group-2"})
+        profile_ids = project_metadata_profile_ids(
+            payload,
+            project,
+            profile_by_id=lambda profile_id: {
+                codex.id: codex,
+                claude.id: claude,
+            }.get(profile_id),
+            supports_codex=profile_supports_codex,
+            supports_claude=profile_supports_claude,
+        )
+
+        self.assertEqual(group_ids, ["group-1", "group-2"])
+        self.assertEqual(profile_ids, (codex.id, claude.id))
+        self.assertTrue(any(path.name == "project.json" for path in PROJECT_METADATA_RELATIVE_PATHS))
 
     def test_project_detail_display_covers_empty_and_filled_states(self) -> None:
         empty = project_detail_display(None)
