@@ -337,6 +337,8 @@ from codex_switch.ui.skills_logic import (
     remove_skill_group,
     replace_skill_group,
     skill_market_card_displays,
+    skill_group_choice_labels,
+    skill_repo_choice_labels,
     skill_repo_preview_display,
     skill_repo_checksum_required_paths,
     skill_group_with_added_skill,
@@ -367,6 +369,7 @@ from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
 from codex_switch.ui.skills_logic import build_skill_group_dialog_layout, skill_group_dialog_card_displays, skill_group_detail_text
+from codex_switch.ui.dialog_builders import build_choice_dialog_shell, build_skill_group_dialog_shell
 from codex_switch.ui.profile_logic import (
     profile_collection_after_add,
     profile_collection_after_delete,
@@ -2671,41 +2674,30 @@ class CodexSwitchApp:
         if not self.skill_groups:
             messagebox.showinfo("提示", "请先在本地 Skills 中创建一个组。", parent=self.root)
             return None
-        labels: list[str] = []
-        group_by_label: dict[str, SkillGroup] = {}
-        for group in self.skill_groups:
-            label = f"{group.name}（{len(group.skills)} 个 Skills）"
-            labels.append(label)
-            group_by_label[label] = group
-        dialog = tk.Toplevel(self.root)
-        install_windows_drag_redraw_guard(dialog)
-        dialog.title(title)
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.configure(bg=PALETTE["card_bg"])
-        dialog.resizable(False, False)
-        dialog.columnconfigure(0, weight=1)
-        tk.Label(dialog, text="选择目标组", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
-        selected_var = tk.StringVar(value=labels[0])
-        combo = ttk.Combobox(dialog, textvariable=selected_var, values=labels, state="readonly", width=44)
-        combo.grid(row=1, column=0, sticky="ew", padx=16)
+        labels = skill_group_choice_labels(self.skill_groups)
+        group_by_label = dict(zip(labels, self.skill_groups))
+        shell = build_choice_dialog_shell(
+            self,
+            title=title,
+            heading="选择目标组",
+            labels=labels,
+            width=44,
+        )
         result: dict[str, SkillGroup | None] = {"group": None}
 
         def confirm() -> None:
-            result["group"] = group_by_label.get(selected_var.get())
-            dialog.destroy()
+            result["group"] = group_by_label.get(shell.selected_var.get())
+            shell.dialog.destroy()
 
         def cancel() -> None:
-            dialog.destroy()
+            shell.dialog.destroy()
 
-        actions = tk.Frame(dialog, bg=PALETTE["card_bg"])
-        actions.grid(row=2, column=0, sticky="e", padx=16, pady=16)
-        make_button(actions, text="取消", variant="secondary", command=cancel).grid(row=0, column=0, padx=(0, 8))
-        make_button(actions, text="确定", variant="primary", command=confirm).grid(row=0, column=1)
-        dialog.bind("<Return>", lambda _event: confirm())
-        dialog.bind("<Escape>", lambda _event: cancel())
-        combo.focus_set()
-        self.root.wait_window(dialog)
+        make_button(shell.actions, text="取消", variant="secondary", command=cancel).grid(row=0, column=0, padx=(0, 8))
+        make_button(shell.actions, text="确定", variant="primary", command=confirm).grid(row=0, column=1)
+        shell.dialog.bind("<Return>", lambda _event: confirm())
+        shell.dialog.bind("<Escape>", lambda _event: cancel())
+        shell.combo.focus_set()
+        self.root.wait_window(shell.dialog)
         return result["group"]
 
     def _refresh_skill_repo_detail(self) -> None:
@@ -3201,54 +3193,10 @@ class CodexSwitchApp:
         self.open_skill_group_dialog(group)
 
     def open_skill_group_dialog(self, group: SkillGroup) -> None:
-        dialog = tk.Toplevel(self.root)
-        install_windows_drag_redraw_guard(dialog)
-        dialog.title(f"编辑 Skills 组 - {group.name}")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.configure(bg=PALETTE["card_bg"])
-        dialog.geometry("900x640")
-        dialog.minsize(760, 520)
-        dialog.columnconfigure(0, weight=1)
-        dialog.rowconfigure(2, weight=1)
-
-        name_var = tk.StringVar(value=group.name)
-        description_var = tk.StringVar(value=group.description)
-        form = tk.Frame(dialog, bg=PALETTE["card_bg"])
-        form.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
-        form.columnconfigure(1, weight=1)
-        tk.Label(form, text="组名", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(form, textvariable=name_var).grid(row=0, column=1, sticky="ew")
-        tk.Label(form, text="描述", bg=PALETTE["card_bg"], fg=PALETTE["muted"], font=self.small_font).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        ttk.Entry(form, textvariable=description_var).grid(row=1, column=1, sticky="ew", pady=(8, 0))
-
-        canvas_wrap = tk.Frame(dialog, bg=PALETTE["card_bg"])
-        canvas_wrap.grid(row=2, column=0, sticky="nsew", padx=16)
-        canvas_wrap.columnconfigure(0, weight=1)
-        canvas_wrap.rowconfigure(0, weight=1)
-        canvas = tk.Canvas(canvas_wrap, bg=PALETTE["card_bg"], highlightthickness=0)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(canvas_wrap, orient="vertical", command=canvas.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        canvas.configure(yscrollcommand=scroll.set)
-        cards_frame = tk.Frame(canvas, bg=PALETTE["card_bg"])
-        window_id = canvas.create_window((0, 0), window=cards_frame, anchor="nw")
-        cards_frame.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda event: self._layout_skill_group_dialog_cards(cards_frame, event.width, window_id, canvas))
-        self._render_skill_group_dialog_cards(group, cards_frame)
-
-        actions = tk.Frame(dialog, bg=PALETTE["card_bg"])
-        actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
-        for column in range(5):
-            actions.columnconfigure(column, weight=1)
-        make_button(actions, text="新增 Skill", variant="primary", command=lambda: (self.add_skill_to_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        make_button(actions, text="安装 GitHub Skills", variant="secondary", command=lambda: (self.install_skill_repo_to_specific_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        make_button(actions, text="导入本地文件", variant="secondary", command=lambda: (self.import_local_skill_file_to_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=2, sticky="ew", padx=(0, 8))
-        make_button(actions, text="导入扫描Skills", variant="secondary", command=lambda: (self.import_scanned_skills_to_group(group), self._render_skill_group_dialog_cards(group, cards_frame))).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        make_button(actions, text="刷新", variant="secondary", command=lambda: self._render_skill_group_dialog_cards(group, cards_frame)).grid(row=0, column=4, sticky="ew")
-
-        footer = tk.Frame(dialog, bg=PALETTE["card_bg"])
-        footer.grid(row=3, column=0, sticky="e", padx=16, pady=16)
+        shell = build_skill_group_dialog_shell(self, group)
+        dialog = shell.dialog
+        name_var = shell.name_var
+        description_var = shell.description_var
 
         def save_group() -> None:
             current = self._skill_group_by_id(group.id)
@@ -3269,8 +3217,8 @@ class CodexSwitchApp:
             self.status_var.set(f"已更新 Skills 组：{updated.name}")
             dialog.destroy()
 
-        make_button(footer, text="取消", variant="secondary", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
-        make_button(footer, text="保存", variant="primary", command=save_group).grid(row=0, column=1)
+        make_button(shell.footer, text="取消", variant="secondary", command=dialog.destroy).grid(row=0, column=0, padx=(0, 8))
+        make_button(shell.footer, text="保存", variant="primary", command=save_group).grid(row=0, column=1)
 
     def _layout_skill_group_dialog_cards(
         self,
@@ -3487,41 +3435,30 @@ class CodexSwitchApp:
         if not self.skill_market_repos:
             messagebox.showinfo("提示", "请先在设置页添加一个 Skills 仓库。", parent=self.root)
             return None
-        labels: list[str] = []
-        repo_by_label: dict[str, SkillMarketRepo] = {}
-        for repo in self.skill_market_repos:
-            label = f"{repo.url} @ {repo.branch}"
-            labels.append(label)
-            repo_by_label[label] = repo
-        dialog = tk.Toplevel(self.root)
-        install_windows_drag_redraw_guard(dialog)
-        dialog.title(title)
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.configure(bg=PALETTE["card_bg"])
-        dialog.resizable(False, False)
-        dialog.columnconfigure(0, weight=1)
-        tk.Label(dialog, text="选择 GitHub Skills 仓库", bg=PALETTE["card_bg"], fg=PALETTE["text"], font=self.section_font).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
-        selected_var = tk.StringVar(value=labels[0])
-        combo = ttk.Combobox(dialog, textvariable=selected_var, values=labels, state="readonly", width=64)
-        combo.grid(row=1, column=0, sticky="ew", padx=16)
+        labels = skill_repo_choice_labels(self.skill_market_repos)
+        repo_by_label = dict(zip(labels, self.skill_market_repos))
+        shell = build_choice_dialog_shell(
+            self,
+            title=title,
+            heading="选择 GitHub Skills 仓库",
+            labels=labels,
+            width=64,
+        )
         result: dict[str, SkillMarketRepo | None] = {"repo": None}
 
         def confirm() -> None:
-            result["repo"] = repo_by_label.get(selected_var.get())
-            dialog.destroy()
+            result["repo"] = repo_by_label.get(shell.selected_var.get())
+            shell.dialog.destroy()
 
         def cancel() -> None:
-            dialog.destroy()
+            shell.dialog.destroy()
 
-        actions = tk.Frame(dialog, bg=PALETTE["card_bg"])
-        actions.grid(row=2, column=0, sticky="e", padx=16, pady=16)
-        make_button(actions, text="取消", variant="secondary", command=cancel).grid(row=0, column=0, padx=(0, 8))
-        make_button(actions, text="确定", variant="primary", command=confirm).grid(row=0, column=1)
-        dialog.bind("<Return>", lambda _event: confirm())
-        dialog.bind("<Escape>", lambda _event: cancel())
-        combo.focus_set()
-        self.root.wait_window(dialog)
+        make_button(shell.actions, text="取消", variant="secondary", command=cancel).grid(row=0, column=0, padx=(0, 8))
+        make_button(shell.actions, text="确定", variant="primary", command=confirm).grid(row=0, column=1)
+        shell.dialog.bind("<Return>", lambda _event: confirm())
+        shell.dialog.bind("<Escape>", lambda _event: cancel())
+        shell.combo.focus_set()
+        self.root.wait_window(shell.dialog)
         return result["repo"]
 
     def install_skill_repo_to_specific_group(self, group: SkillGroup) -> None:

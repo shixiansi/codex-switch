@@ -187,7 +187,9 @@ from codex_switch.ui.skills_logic import (
     build_skills_tab_display,
     filter_skill_market_repos,
     filter_skill_repo_preview_sources,
+    skill_group_choice_labels,
     skill_market_card_displays,
+    skill_repo_choice_labels,
     skill_repo_preview_display,
 )
 from codex_switch.ui.skills_logic import (
@@ -1790,6 +1792,16 @@ args = ["-m", "alpha"]
         self.assertIn("1 个仓库读取失败", display.preview_status_text)
         self.assertEqual(display.selected_repo_id, repo_b.id)
         self.assertEqual(display.selected_group_id, group.id)
+
+    def test_skill_choice_label_helpers_build_expected_labels(self) -> None:
+        group = SkillGroup.create("frontend", skills=[SkillDefinition.create("skill-a", content="a")])
+        repo = SkillMarketRepo.create("https://github.com/example/skills", branch="release/v1")
+
+        group_labels = skill_group_choice_labels([group])
+        repo_labels = skill_repo_choice_labels([repo])
+
+        self.assertEqual(group_labels, ["frontend（1 个 Skills）"])
+        self.assertEqual(repo_labels, ["https://github.com/example/skills @ release/v1"])
 
     def test_hot_update_logic_helpers_append_render_and_summarize(self) -> None:
         events = append_hot_update_event(

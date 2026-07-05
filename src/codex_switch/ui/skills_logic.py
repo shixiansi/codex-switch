@@ -136,6 +136,14 @@ def filter_skill_market_entries(entries: list[SkillMarketEntry], query: str) -> 
     return [entry for entry in entries if normalized_query in skill_market_entry_text(entry)]
 
 
+def skill_group_choice_labels(groups: list[SkillGroup]) -> list[str]:
+    return [f"{group.name}（{len(group.skills)} 个 Skills）" for group in groups]
+
+
+def skill_repo_choice_labels(repos: list[SkillMarketRepo]) -> list[str]:
+    return [f"{repo.url} @ {repo.branch}" for repo in repos]
+
+
 def load_skill_market_entries(
     repos: list[SkillMarketRepo],
     *,
