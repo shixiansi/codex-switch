@@ -238,7 +238,7 @@ from codex_switch.ui.route_proxy_logic import (
     route_proxy_rules_for_project_profiles,
 )
 from codex_switch.ui import windowing
-from codex_switch.ui.utils import is_github_repo_url, resolve_mcp_editor_text
+from codex_switch.ui.utils import is_github_repo_url, replace_treeview_rows, resolve_mcp_editor_text
 from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
@@ -256,6 +256,9 @@ class _ValueVar:
 class _FakeTree:
     def __init__(self) -> None:
         self.rows: list[tuple[str, tuple[str, ...]]] = []
+        self.selected: list[str] = []
+        self.focused: str | None = None
+        self.seen: list[str] = []
 
     def delete(self, *items: object) -> None:
         self.rows = []
@@ -265,6 +268,17 @@ class _FakeTree:
 
     def insert(self, _parent: str, _index: str, iid: str | None = None, values: tuple[str, ...] = ()) -> None:
         self.rows.append((iid or str(len(self.rows)), values))
+
+    def selection_set(self, item_id: str) -> None:
+        self.selected = [item_id]
+
+    def focus(self, item_id: str | None = None):
+        if item_id is None:
+            return self.focused or ""
+        self.focused = item_id
+
+    def see(self, item_id: str) -> None:
+        self.seen.append(item_id)
 
 
 class _DelayedRoot:
@@ -353,6 +367,22 @@ class WindowingTests(unittest.TestCase):
             windowing._REDRAW_FLAGS,
             windowing._RDW_INVALIDATE | windowing._RDW_ALLCHILDREN,
         )
+
+    def test_replace_treeview_rows_restores_selection_and_visibility(self) -> None:
+        tree = _FakeTree()
+
+        selected = replace_treeview_rows(
+            tree,
+            [("a", ("A",)), ("b", ("B",))],
+            selected_id="b",
+            ensure_visible=True,
+        )
+
+        self.assertEqual(selected, "b")
+        self.assertEqual(tree.rows, [("a", ("A",)), ("b", ("B",))])
+        self.assertEqual(tree.selected, ["b"])
+        self.assertEqual(tree.focused, "b")
+        self.assertEqual(tree.seen, ["b"])
 
 
 class SoftwareUpdateTests(unittest.TestCase):

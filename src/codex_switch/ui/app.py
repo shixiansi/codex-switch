@@ -350,7 +350,7 @@ from codex_switch.ui.update_logic import (
     software_update_error_detail,
     verify_hot_update_checksums,
 )
-from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_url, is_http_url
+from codex_switch.ui.utils import compact_text, hidden_secret, is_github_repo_url, is_http_url, replace_treeview_rows
 from codex_switch.ui.windowing import install_windows_drag_redraw_guard
 
 
@@ -3243,15 +3243,10 @@ class CodexSwitchApp:
 
         self.suppress_selection_events = True
         try:
-            for item in self.project_tree.get_children():
-                self.project_tree.delete(item)
-            for row in display.rows:
-                self.project_tree.insert(
-                    "",
-                    "end",
-                    iid=row.project_id,
-                    values=row.values,
-                )
+            replace_treeview_rows(
+                self.project_tree,
+                [(row.project_id, row.values) for row in display.rows],
+            )
         finally:
             self.suppress_selection_events = False
 
@@ -3281,15 +3276,10 @@ class CodexSwitchApp:
         self.proxy_status_var.set(display.status_text)
         self.suppress_selection_events = True
         try:
-            for item in self.proxy_project_tree.get_children():
-                self.proxy_project_tree.delete(item)
-            for row in display.rows:
-                self.proxy_project_tree.insert(
-                    "",
-                    "end",
-                    iid=row.project_id,
-                    values=row.values,
-                )
+            replace_treeview_rows(
+                self.proxy_project_tree,
+                [(row.project_id, row.values) for row in display.rows],
+            )
         finally:
             self.suppress_selection_events = False
         self._sync_proxy_project_selection()
@@ -3427,15 +3417,10 @@ class CodexSwitchApp:
         )
         self.suppress_selection_events = True
         try:
-            for item in self.account_pool_tree.get_children():
-                self.account_pool_tree.delete(item)
-            for row in rows:
-                self.account_pool_tree.insert(
-                    "",
-                    "end",
-                    iid=row.channel_id,
-                    values=row.values,
-                )
+            replace_treeview_rows(
+                self.account_pool_tree,
+                [(row.channel_id, row.values) for row in rows],
+            )
         finally:
             self.suppress_selection_events = False
         if selected_id and self.account_pool_tree.exists(selected_id):
@@ -3530,19 +3515,12 @@ class CodexSwitchApp:
         )
         self.suppress_selection_events = True
         try:
-            for item in self.mcp_tree.get_children():
-                self.mcp_tree.delete(item)
-            for row in display.rows:
-                self.mcp_tree.insert(
-                    "",
-                    "end",
-                    iid=row.server_name,
-                    values=row.values,
-                )
-            if display.selected_name:
-                self.mcp_tree.selection_set(display.selected_name)
-                self.mcp_tree.focus(display.selected_name)
-                self.mcp_tree.see(display.selected_name)
+            replace_treeview_rows(
+                self.mcp_tree,
+                [(row.server_name, row.values) for row in display.rows],
+                selected_id=display.selected_name,
+                ensure_visible=True,
+            )
         finally:
             self.suppress_selection_events = False
 
@@ -3574,43 +3552,24 @@ class CodexSwitchApp:
             selected_group_id=selected_group_id,
         )
         if hasattr(self, "skill_repo_tree"):
-            for item in self.skill_repo_tree.get_children():
-                self.skill_repo_tree.delete(item)
-            for row in display.repo_rows:
-                self.skill_repo_tree.insert(
-                    "",
-                    "end",
-                    iid=row.repo_id,
-                    values=row.values,
-                )
-            if display.selected_repo_id:
-                self.skill_repo_tree.selection_set(display.selected_repo_id)
-                self.skill_repo_tree.focus(display.selected_repo_id)
+            replace_treeview_rows(
+                self.skill_repo_tree,
+                [(row.repo_id, row.values) for row in display.repo_rows],
+                selected_id=display.selected_repo_id,
+            )
 
         if hasattr(self, "skill_group_tree"):
-            for item in self.skill_group_tree.get_children():
-                self.skill_group_tree.delete(item)
-            for row in display.group_rows:
-                self.skill_group_tree.insert(
-                    "",
-                    "end",
-                    iid=row.group_id,
-                    values=row.values,
-                )
-            if display.selected_group_id:
-                self.skill_group_tree.selection_set(display.selected_group_id)
-                self.skill_group_tree.focus(display.selected_group_id)
+            replace_treeview_rows(
+                self.skill_group_tree,
+                [(row.group_id, row.values) for row in display.group_rows],
+                selected_id=display.selected_group_id,
+            )
 
         if hasattr(self, "skill_project_tree"):
-            for item in self.skill_project_tree.get_children():
-                self.skill_project_tree.delete(item)
-            for row in display.project_rows:
-                self.skill_project_tree.insert(
-                    "",
-                    "end",
-                    iid=row.project_id,
-                    values=row.values,
-                )
+            replace_treeview_rows(
+                self.skill_project_tree,
+                [(row.project_id, row.values) for row in display.project_rows],
+            )
         self.skills_hint_var.set(display.hint_text)
         if hasattr(self, "skill_market_frame"):
             self.skill_repo_preview_var.set(display.preview_status_text)

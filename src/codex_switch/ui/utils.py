@@ -41,3 +41,27 @@ def resolve_mcp_editor_text(*candidates: str) -> str:
         if candidate and candidate.strip():
             return candidate
     return ""
+
+
+def replace_treeview_rows(
+    tree,
+    rows: list[tuple[str, tuple]],
+    *,
+    selected_id: str | None = None,
+    ensure_visible: bool = False,
+) -> str | None:
+    for item in tree.get_children():
+        tree.delete(item)
+    available_ids: list[str] = []
+    for item_id, values in rows:
+        tree.insert("", "end", iid=item_id, values=values)
+        available_ids.append(item_id)
+    if selected_id and selected_id in available_ids:
+        if hasattr(tree, "selection_set"):
+            tree.selection_set(selected_id)
+        if hasattr(tree, "focus"):
+            tree.focus(selected_id)
+        if ensure_visible and hasattr(tree, "see"):
+            tree.see(selected_id)
+        return selected_id
+    return None
