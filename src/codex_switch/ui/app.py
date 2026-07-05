@@ -219,6 +219,7 @@ from codex_switch.ui.styles import (
 from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
+    project_binding_sync_tasks,
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
     claude_template_success_message,
@@ -5785,41 +5786,33 @@ class CodexSwitchApp:
             sync_claude=sync_claude,
         )
         updated_paths: list[Path] = []
-        if plan.sync_codex:
-            if plan.codex_profile is None:
-                messagebox.showerror("无法同步", "当前项目绑定的 Codex 配置已经不存在。", parent=self.root)
+        for task in project_binding_sync_tasks(plan):
+            if task.profile is None:
+                messagebox.showerror("无法同步", task.missing_message, parent=self.root)
                 return False
             try:
-                updated_paths.extend(
-                    self.project_template_service.sync_api_binding(
-                        plan.project_root,
-                        plan.codex_profile,
-                        route_proxy_base_url=plan.route_proxy_base_url,
-                        model_override=plan.codex_model_override,
+                if task.target == "codex":
+                    updated_paths.extend(
+                        self.project_template_service.sync_api_binding(
+                            plan.project_root,
+                            task.profile,
+                            route_proxy_base_url=plan.route_proxy_base_url,
+                            model_override=task.model_override,
+                        )
                     )
-                )
-            except Exception as exc:
-                messagebox.showerror("同步失败", f"项目记录已保存，但同步 Codex API 配置失败：\n{exc}", parent=self.root)
-                self.status_var.set("Codex API 配置同步失败")
-                return False
-
-        if plan.sync_claude:
-            if plan.claude_profile is None:
-                messagebox.showerror("无法同步", "当前项目绑定的 Claude 配置已经不存在。", parent=self.root)
-                return False
-            try:
-                updated_paths.extend(
-                    self.project_template_service.sync_claude_binding(
-                        plan.project_root,
-                        plan.claude_profile,
-                        route_proxy_base_url=plan.route_proxy_base_url,
-                        model_override=plan.claude_model_override,
-                        fallback_model_override=plan.claude_fallback_model_override,
+                else:
+                    updated_paths.extend(
+                        self.project_template_service.sync_claude_binding(
+                            plan.project_root,
+                            task.profile,
+                            route_proxy_base_url=plan.route_proxy_base_url,
+                            model_override=task.model_override,
+                            fallback_model_override=task.fallback_model_override,
+                        )
                     )
-                )
             except Exception as exc:
-                messagebox.showerror("同步失败", f"项目记录已保存，但同步 Claude settings.local.json 失败：\n{exc}", parent=self.root)
-                self.status_var.set("Claude settings.local.json 同步失败")
+                messagebox.showerror("同步失败", f"项目记录已保存，但同步 {task.failure_label} 失败：\n{exc}", parent=self.root)
+                self.status_var.set(task.failure_status)
                 return False
 
         self.status_var.set(project_binding_sync_status(project.name, updated_paths))

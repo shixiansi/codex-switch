@@ -129,6 +129,17 @@ class ProjectBindingSyncPlan:
     sync_claude: bool
 
 
+@dataclass(frozen=True)
+class ProjectBindingSyncTask:
+    target: str
+    profile: Profile | None
+    model_override: str | None
+    fallback_model_override: str | None
+    missing_message: str
+    failure_label: str
+    failure_status: str
+
+
 
 
 def project_codex_profile_id(project: ProjectRecord) -> str:
@@ -389,6 +400,35 @@ def build_project_binding_sync_plan(
         sync_codex=sync_codex,
         sync_claude=sync_claude,
     )
+
+
+def project_binding_sync_tasks(plan: ProjectBindingSyncPlan) -> list[ProjectBindingSyncTask]:
+    tasks: list[ProjectBindingSyncTask] = []
+    if plan.sync_codex:
+        tasks.append(
+            ProjectBindingSyncTask(
+                target="codex",
+                profile=plan.codex_profile,
+                model_override=plan.codex_model_override,
+                fallback_model_override=None,
+                missing_message="当前项目绑定的 Codex 配置已经不存在。",
+                failure_label="Codex API 配置",
+                failure_status="Codex API 配置同步失败",
+            )
+        )
+    if plan.sync_claude:
+        tasks.append(
+            ProjectBindingSyncTask(
+                target="claude",
+                profile=plan.claude_profile,
+                model_override=plan.claude_model_override,
+                fallback_model_override=plan.claude_fallback_model_override,
+                missing_message="当前项目绑定的 Claude 配置已经不存在。",
+                failure_label="Claude settings.local.json",
+                failure_status="Claude settings.local.json 同步失败",
+            )
+        )
+    return tasks
 
 
 def project_binding_sync_status(project_name: str, updated_paths: list[Path]) -> str:

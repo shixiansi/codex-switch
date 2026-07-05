@@ -154,6 +154,7 @@ from codex_switch.ui.skills_logic import build_skills_tab_display
 from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
+    project_binding_sync_tasks,
     build_claude_template_execution_plan,
     build_codex_template_execution_plan,
     claude_template_success_message,
@@ -1090,6 +1091,9 @@ class UiFilterTests(unittest.TestCase):
         self.assertEqual(plan.codex_model_override, "gpt-5")
         self.assertEqual(plan.claude_profile, claude_profile)
         self.assertFalse(plan.sync_claude)
+        tasks = project_binding_sync_tasks(plan)
+        self.assertEqual([task.target for task in tasks], ["codex"])
+        self.assertEqual(tasks[0].failure_status, "Codex API 配置同步失败")
         self.assertEqual(project_binding_sync_status("Demo", [Path("a.txt")]), "已同步项目配置：Demo")
 
     def test_project_add_prerequisite_error_requires_profiles_and_both_clients(self) -> None:
