@@ -322,7 +322,13 @@ from codex_switch.ui.skills_logic import (
     import_skill_sources_to_group,
     load_skill_market_entries,
     profile_metadata_entries,
+    projects_after_skill_group_delete,
+    remove_skill_group,
+    replace_skill_group,
     skill_repo_checksum_required_paths,
+    skill_group_with_added_skill,
+    skill_group_with_deleted_skill,
+    skill_group_with_replaced_skill,
     sync_projects_from_skill_groups,
 )
 from codex_switch.ui.single_instance import _acquire_single_instance, _release_single_instance, _show_single_instance_message
@@ -4554,11 +4560,8 @@ class CodexSwitchApp:
             return
         if not messagebox.askyesno("确认删除", f"删除 Skills 组：{group.name}？", parent=self.root):
             return
-        self.skill_groups = [item for item in self.skill_groups if item.id != group.id]
-        for index, project in enumerate(self.projects):
-            if project.skill_group_ids and group.id in project.skill_group_ids:
-                remaining = [group_id for group_id in project.skill_group_ids if group_id != group.id]
-                self.projects[index] = replace(project, skill_group_ids=remaining, skills=[], skill_names=[])
+        self.skill_groups = remove_skill_group(self.skill_groups, group.id)
+        self.projects = projects_after_skill_group_delete(self.projects, group.id)
         self.persist_state()
         self.refresh_project_tab()
         self.refresh_skills_tab()
@@ -4578,8 +4581,8 @@ class CodexSwitchApp:
         version = simpledialog.askstring("Skill", "版本：", initialvalue="1.0.0", parent=self.root) or "1.0.0"
         content = simpledialog.askstring("Skill", "内容：", parent=self.root) or ""
         skill = SkillDefinition.create(name, type=skill_type, version=version, content=content)
-        updated = replace(group, skills=[*group.skills, skill])
-        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        updated = skill_group_with_added_skill(group, skill)
+        self.skill_groups = replace_skill_group(self.skill_groups, updated)
         self.persist_state()
         self.refresh_skills_tab()
         self.status_var.set(f"已新增 Skill：{skill.name}")
@@ -4614,8 +4617,8 @@ class CodexSwitchApp:
             version=version.strip() or "1.0.0",
             content=content,
         )
-        updated = replace(group, skills=[updated_skill if skill.id == existing.id else skill for skill in group.skills])
-        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        updated = skill_group_with_replaced_skill(group, existing.id, updated_skill)
+        self.skill_groups = replace_skill_group(self.skill_groups, updated)
         self.persist_state()
         self.refresh_skills_tab()
         self.status_var.set(f"已更新 Skill：{updated_skill.name}")
@@ -4637,8 +4640,8 @@ class CodexSwitchApp:
             return
         if not messagebox.askyesno("确认删除", f"删除 Skill：{skill.name}？", parent=self.root):
             return
-        updated = replace(group, skills=[item for item in group.skills if item.id != skill.id])
-        self.skill_groups = [updated if item.id == updated.id else item for item in self.skill_groups]
+        updated = skill_group_with_deleted_skill(group, skill.id)
+        self.skill_groups = replace_skill_group(self.skill_groups, updated)
         self._sync_projects_from_skill_groups()
         self.persist_state()
         self.refresh_project_tab()

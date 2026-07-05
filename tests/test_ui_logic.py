@@ -161,7 +161,16 @@ from codex_switch.ui.mcp_logic import (
     safe_mcp_server_names,
 )
 from codex_switch.ui.skills_logic import build_skills_tab_display
-from codex_switch.ui.skills_logic import expanded_skills_for_group_ids, sync_projects_from_skill_groups
+from codex_switch.ui.skills_logic import (
+    expanded_skills_for_group_ids,
+    projects_after_skill_group_delete,
+    remove_skill_group,
+    replace_skill_group,
+    skill_group_with_added_skill,
+    skill_group_with_deleted_skill,
+    skill_group_with_replaced_skill,
+    sync_projects_from_skill_groups,
+)
 from codex_switch.ui.project_logic import (
     build_project_edit_application,
     build_project_binding_sync_plan,
@@ -2426,6 +2435,24 @@ command = "node"
         self.assertEqual(names, ["python-helper"])
         self.assertTrue(changed)
         self.assertEqual([skill.name for skill in synced_projects[0].skills], ["python-helper"])
+
+        added_group = skill_group_with_added_skill(group, SkillDefinition.create("review-helper", content="review"))
+        replaced_group = skill_group_with_replaced_skill(
+            added_group,
+            added_group.skills[0].id,
+            replace(added_group.skills[0], content="new"),
+        )
+        deleted_group = skill_group_with_deleted_skill(replaced_group, replaced_group.skills[1].id)
+        groups_after_replace = replace_skill_group([group], deleted_group)
+        groups_after_delete = remove_skill_group(groups_after_replace, deleted_group.id)
+        projects_after_delete = projects_after_skill_group_delete([project], group.id)
+
+        self.assertEqual([skill.name for skill in added_group.skills], ["python-helper", "review-helper"])
+        self.assertEqual(replaced_group.skills[0].content, "new")
+        self.assertEqual([skill.name for skill in deleted_group.skills], ["python-helper"])
+        self.assertEqual(groups_after_replace[0].skills[0].name, "python-helper")
+        self.assertEqual(groups_after_delete, [])
+        self.assertEqual(projects_after_delete[0].skill_group_ids, [])
 
         updated_skill = SkillDefinition.create("python-helper", content="new")
         extra_skill = SkillDefinition.create("review-helper", content="review")

@@ -433,3 +433,41 @@ def import_skill_sources_to_group(
         )
         existing_names.add(source.name)
     return replace(group, skills=[*existing_skills, *imported]), len(imported)
+
+
+def replace_skill_group(groups: list[SkillGroup], updated_group: SkillGroup) -> list[SkillGroup]:
+    return [updated_group if group.id == updated_group.id else group for group in groups]
+
+
+def remove_skill_group(groups: list[SkillGroup], group_id: str) -> list[SkillGroup]:
+    return [group for group in groups if group.id != group_id]
+
+
+def skill_group_with_added_skill(group: SkillGroup, skill: SkillDefinition) -> SkillGroup:
+    return replace(group, skills=[*group.skills, skill])
+
+
+def skill_group_with_replaced_skill(
+    group: SkillGroup,
+    existing_skill_id: str,
+    updated_skill: SkillDefinition,
+) -> SkillGroup:
+    return replace(
+        group,
+        skills=[updated_skill if skill.id == existing_skill_id else skill for skill in group.skills],
+    )
+
+
+def skill_group_with_deleted_skill(group: SkillGroup, skill_id: str) -> SkillGroup:
+    return replace(group, skills=[skill for skill in group.skills if skill.id != skill_id])
+
+
+def projects_after_skill_group_delete(projects: list[ProjectRecord], group_id: str) -> list[ProjectRecord]:
+    updated_projects: list[ProjectRecord] = []
+    for project in projects:
+        if project.skill_group_ids and group_id in project.skill_group_ids:
+            remaining = [item for item in project.skill_group_ids if item != group_id]
+            updated_projects.append(replace(project, skill_group_ids=remaining, skills=[], skill_names=[]))
+        else:
+            updated_projects.append(project)
+    return updated_projects
