@@ -426,6 +426,8 @@ from codex_switch.ui.page_builders import (
     build_project_tab_page,
 )
 from codex_switch.ui.hot_update_logic import process_hot_update_targets
+from codex_switch.ui.project_logic import execute_project_repo_update
+from codex_switch.ui.skills_logic import execute_skill_repo_update
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 LIBRARY_VIEW_ALL = "all"
 LIBRARY_PROFILE_VIEW_TABS = (
@@ -2941,39 +2943,33 @@ class CodexSwitchApp:
         return project, False
 
     def _apply_skill_repo_update(self, repo: SkillMarketRepo, *, automatic: bool, expected_commit: str | None = None) -> bool:
-        if not repo.installed_group_id:
-            if not automatic:
-                messagebox.showinfo("提示", "该仓库尚未绑定本地 Skills 组，请先使用“安装到组”。", parent=self.root)
-            return False
-        group = self._skill_group_by_id(repo.installed_group_id)
-        if group is None:
-            if not automatic:
-                messagebox.showinfo("提示", "仓库绑定的本地 Skills 组已不存在。", parent=self.root)
-            return False
-        try:
-            cache_dir = self._sync_skill_repo_cache(repo, expected_commit)
-            sources = discover_skill_sources([cache_dir])
-            self._verify_skill_repo_checksums(cache_dir, sources)
-        except RuntimeError as exc:
-            if not automatic:
-                messagebox.showerror("更新失败", str(exc), parent=self.root)
-            return False
-        metadata_updated = self._load_model_metadata_from_repo(cache_dir)
-        updated_group, imported_count = import_skill_sources_to_group(
-            group,
-            sources,
-            replace_existing_from_root=cache_dir,
+        result = execute_skill_repo_update(
+            repo,
+            group_by_id=self._skill_group_by_id,
+            sync_repo_cache=self._sync_skill_repo_cache,
+            verify_repo_checksums=self._verify_skill_repo_checksums,
+            load_model_metadata=self._load_model_metadata_from_repo,
+            expected_commit=expected_commit,
         )
-        self.skill_groups = [updated_group if item.id == updated_group.id else item for item in self.skill_groups]
+        if result.info_message is not None:
+            if not automatic:
+                messagebox.showinfo("提示", result.info_message, parent=self.root)
+            return False
+        if result.failure_detail is not None:
+            if not automatic:
+                messagebox.showerror("更新失败", result.failure_detail, parent=self.root)
+            return False
+        if result.updated_group is None:
+            return False
+        self.skill_groups = replace_skill_group(self.skill_groups, result.updated_group)
         self._sync_projects_from_skill_groups()
         self.persist_state()
-        if metadata_updated:
+        if result.metadata_updated:
             self.refresh_library_tab()
         self.refresh_project_tab()
         self.refresh_skills_tab()
-        if not automatic:
-            metadata_text = "，模型元数据已更新" if metadata_updated else ""
-            self.status_var.set(f"已重载 Skills 仓库：{repo.url}，导入 {imported_count} 个 Skills{metadata_text}。")
+        if not automatic and result.status_text is not None:
+            self.status_var.set(result.status_text)
         return True
 
     def install_selected_skill_repo_to_group(self) -> None:
@@ -3009,51 +3005,44 @@ class CodexSwitchApp:
         return updated
 
     def _apply_project_update(self, project: ProjectRecord, latest_commit: str, *, automatic: bool) -> bool:
-        project_root = project_root_path(project)
-        if not (project_root / ".git").exists():
-            if not automatic:
-                messagebox.showinfo("提示", "项目目录不是 Git 仓库，无法自动拉取。", parent=self.root)
-            return False
         github_ref = normalize_git_ref(project.github_ref, default=DEFAULT_PROJECT_GITHUB_REF)
-        try:
-            synced_commit = repo_sync_project_checkout(
+        result = execute_project_repo_update(
+            project,
+            sync_checkout=lambda project_root: repo_sync_project_checkout(
                 project_root,
                 remote_url=project.github_repo,
                 ref=github_ref,
                 latest_commit=latest_commit,
                 default_ref=DEFAULT_PROJECT_GITHUB_REF,
                 run_command=subprocess.run,
-            )
-        except RuntimeError as exc:
+            ),
+            verify_project_checksums=self._verify_project_repo_checksums,
+            load_project_metadata=self._load_project_metadata_from_repo,
+        )
+        if result.info_message is not None:
             if not automatic:
-                messagebox.showerror("更新失败", str(exc), parent=self.root)
+                messagebox.showinfo("提示", result.info_message, parent=self.root)
             return False
-        try:
-            self._verify_project_repo_checksums(project_root)
-        except RuntimeError as exc:
+        if result.failure_detail is not None:
             if not automatic:
-                messagebox.showerror("更新失败", str(exc), parent=self.root)
+                messagebox.showerror("更新失败", result.failure_detail, parent=self.root)
             return False
-        previous_codex_profile_id = project_codex_profile_id(project)
-        previous_claude_profile_id = project_claude_profile_id(project)
-        updated_project, project_metadata_updated = self._load_project_metadata_from_repo(project, project_root)
-        sync_codex = project_codex_profile_id(updated_project) != previous_codex_profile_id
-        sync_claude = project_claude_profile_id(updated_project) != previous_claude_profile_id
-        if sync_codex or sync_claude:
+        if result.updated_project is None or result.synced_commit is None:
+            return False
+        if result.sync_codex or result.sync_claude:
             if not self._sync_project_api_binding(
-                updated_project,
-                sync_codex=sync_codex,
-                sync_claude=sync_claude,
+                result.updated_project,
+                sync_codex=result.sync_codex,
+                sync_claude=result.sync_claude,
             ):
-                self.projects = [project if item.id == updated_project.id else item for item in self.projects]
+                self.projects = project_collection_after_replace(self.projects, project).projects
                 return False
-        self._set_project_commit(updated_project, synced_commit)
+        self._set_project_commit(result.updated_project, result.synced_commit)
         self.persist_state()
         self.refresh_project_tab()
         self.refresh_skills_tab()
-        if not automatic:
-            metadata_text = "，项目元数据已同步" if project_metadata_updated else ""
-            self.status_var.set(f"已更新项目源码：{project.name} @ {synced_commit[:12]}{metadata_text}")
+        if not automatic and result.status_text is not None:
+            self.status_var.set(result.status_text)
         return True
 
     def check_selected_project_update(self) -> None:

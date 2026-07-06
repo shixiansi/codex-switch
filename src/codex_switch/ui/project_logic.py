@@ -264,6 +264,17 @@ class ProjectBindingSyncExecutionResult:
     failure: ProjectBindingSyncFailure | None = None
 
 
+@dataclass(frozen=True)
+class ProjectRepoUpdateExecutionResult:
+    updated_project: ProjectRecord | None = None
+    synced_commit: str | None = None
+    metadata_updated: bool = False
+    sync_codex: bool = False
+    sync_claude: bool = False
+    info_message: str | None = None
+    failure_detail: str | None = None
+    status_text: str | None = None
+
 def project_codex_profile_id(project: ProjectRecord) -> str:
     return project.codex_profile_id or project.profile_id
 
@@ -856,6 +867,52 @@ def execute_project_binding_sync(
             )
     return ProjectBindingSyncExecutionResult(updated_paths=updated_paths)
 
+
+def build_project_repo_update_status_text(
+    project_name: str,
+    synced_commit: str,
+    *,
+    metadata_updated: bool,
+) -> str:
+    metadata_text = "，项目元数据已同步" if metadata_updated else ""
+    return f"已更新项目源码：{project_name} @ {synced_commit[:12]}{metadata_text}"
+
+
+def execute_project_repo_update(
+    project: ProjectRecord,
+    *,
+    sync_checkout: Callable[[Path], str],
+    verify_project_checksums: Callable[[Path], None],
+    load_project_metadata: Callable[[ProjectRecord, Path], tuple[ProjectRecord, bool]],
+) -> ProjectRepoUpdateExecutionResult:
+    project_root = project_root_path(project)
+    if not (project_root / ".git").exists():
+        return ProjectRepoUpdateExecutionResult(
+            info_message="项目目录不是 Git 仓库，无法自动拉取。"
+        )
+    try:
+        synced_commit = sync_checkout(project_root)
+    except RuntimeError as exc:
+        return ProjectRepoUpdateExecutionResult(failure_detail=str(exc))
+    try:
+        verify_project_checksums(project_root)
+    except RuntimeError as exc:
+        return ProjectRepoUpdateExecutionResult(failure_detail=str(exc))
+    updated_project, metadata_updated = load_project_metadata(project, project_root)
+    sync_codex = project_codex_profile_id(updated_project) != project_codex_profile_id(project)
+    sync_claude = project_claude_profile_id(updated_project) != project_claude_profile_id(project)
+    return ProjectRepoUpdateExecutionResult(
+        updated_project=updated_project,
+        synced_commit=synced_commit,
+        metadata_updated=metadata_updated,
+        sync_codex=sync_codex,
+        sync_claude=sync_claude,
+        status_text=build_project_repo_update_status_text(
+            project.name,
+            synced_commit,
+            metadata_updated=metadata_updated,
+        ),
+    )
 
 def project_binding_sync_status(project_name: str, updated_paths: list[Path]) -> str:
     if updated_paths:

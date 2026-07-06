@@ -75,6 +75,15 @@ class SkillsTabRefreshState:
 
 
 @dataclass(frozen=True)
+class SkillRepoUpdateExecutionResult:
+    updated_group: SkillGroup | None = None
+    imported_count: int = 0
+    metadata_updated: bool = False
+    info_message: str | None = None
+    failure_detail: str | None = None
+    status_text: str | None = None
+
+@dataclass(frozen=True)
 class SkillRepoPreviewRow:
     source_path: str
     values: tuple[str, str]
@@ -675,6 +684,57 @@ def import_skill_sources_to_group(
         existing_names.add(source.name)
     return replace(group, skills=[*existing_skills, *imported]), len(imported)
 
+
+def build_skill_repo_update_status_text(
+    repo_url: str,
+    imported_count: int,
+    *,
+    metadata_updated: bool,
+) -> str:
+    metadata_text = "，模型元数据已更新" if metadata_updated else ""
+    return f"已重载 Skills 仓库：{repo_url}，导入 {imported_count} 个 Skills{metadata_text}。"
+
+
+def execute_skill_repo_update(
+    repo: SkillMarketRepo,
+    *,
+    group_by_id: Callable[[str], SkillGroup | None],
+    sync_repo_cache: Callable[[SkillMarketRepo, str | None], Path],
+    verify_repo_checksums: Callable[[Path, list[SkillSource]], None],
+    load_model_metadata: Callable[[Path], bool],
+    expected_commit: str | None = None,
+) -> SkillRepoUpdateExecutionResult:
+    if not repo.installed_group_id:
+        return SkillRepoUpdateExecutionResult(
+            info_message="该仓库尚未绑定本地 Skills 组，请先使用“安装到组”。"
+        )
+    group = group_by_id(repo.installed_group_id)
+    if group is None:
+        return SkillRepoUpdateExecutionResult(
+            info_message="仓库绑定的本地 Skills 组已不存在。"
+        )
+    try:
+        cache_dir = sync_repo_cache(repo, expected_commit)
+        sources = discover_skill_sources([cache_dir])
+        verify_repo_checksums(cache_dir, sources)
+    except RuntimeError as exc:
+        return SkillRepoUpdateExecutionResult(failure_detail=str(exc))
+    metadata_updated = load_model_metadata(cache_dir)
+    updated_group, imported_count = import_skill_sources_to_group(
+        group,
+        sources,
+        replace_existing_from_root=cache_dir,
+    )
+    return SkillRepoUpdateExecutionResult(
+        updated_group=updated_group,
+        imported_count=imported_count,
+        metadata_updated=metadata_updated,
+        status_text=build_skill_repo_update_status_text(
+            repo.url,
+            imported_count,
+            metadata_updated=metadata_updated,
+        ),
+    )
 
 def replace_skill_group(groups: list[SkillGroup], updated_group: SkillGroup) -> list[SkillGroup]:
     return [updated_group if group.id == updated_group.id else group for group in groups]

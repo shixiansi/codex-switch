@@ -191,6 +191,7 @@ from codex_switch.ui.skills_logic import (
     build_skill_market_layout,
     build_skills_tab_display,
     build_skills_tab_refresh_state,
+    execute_skill_repo_update,
     filter_skill_market_repos,
     filter_skill_repo_preview_sources,
     skill_group_choice_labels,
@@ -226,6 +227,7 @@ from codex_switch.ui.project_logic import (
     save_project_text_file_content,
     validate_project_claude_settings_json,
     execute_project_binding_sync,
+    execute_project_repo_update,
     project_binding_sync_tasks,
     build_claude_template_run_spec,
     build_claude_template_execution_plan,
@@ -2322,6 +2324,44 @@ args = ["-m", "alpha"]
         self.assertIn('市场显示 1 个 Skills', refresh_state.display.preview_status_text)
         self.assertIn('1 个仓库读取失败', refresh_state.display.preview_status_text)
 
+    def test_execute_skill_repo_update_returns_group_and_status(self) -> None:
+        skill_source = SkillSource(
+            name="python-helper",
+            display_name="Python Helper",
+            source_path=Path("skills/python-helper"),
+        )
+        group = SkillGroup.create("frontend")
+        repo = SkillMarketRepo.create(
+            "https://github.com/example/skills",
+            installed_group_id=group.id,
+        )
+        sync_calls: list[object] = []
+
+        def fake_sync_repo_cache(repo_arg: SkillMarketRepo, expected_commit: str | None) -> Path:
+            sync_calls.append((repo_arg.id, expected_commit))
+            return Path("cache")
+
+        def fake_verify_repo_checksums(cache_dir: Path, sources: list[SkillSource]) -> None:
+            sync_calls.append((cache_dir, [source.name for source in sources]))
+
+        with patch("codex_switch.ui.skills_logic.discover_skill_sources", return_value=[skill_source]):
+            result = execute_skill_repo_update(
+                repo,
+                group_by_id=lambda _group_id: group,
+                sync_repo_cache=fake_sync_repo_cache,
+                verify_repo_checksums=fake_verify_repo_checksums,
+                load_model_metadata=lambda _cache_dir: True,
+                expected_commit="abc123",
+            )
+
+        self.assertIsNotNone(result.updated_group)
+        self.assertEqual([skill.name for skill in result.updated_group.skills], ["python-helper"])
+        self.assertEqual(result.imported_count, 1)
+        self.assertTrue(result.metadata_updated)
+        self.assertIn("模型元数据已更新", result.status_text or "")
+        self.assertEqual(sync_calls[0], (repo.id, "abc123"))
+        self.assertEqual(sync_calls[1], (Path("cache"), ["python-helper"]))
+
     def test_skill_choice_label_helpers_build_expected_labels(self) -> None:
         group = SkillGroup.create("frontend", skills=[SkillDefinition.create("skill-a", content="a")])
         repo = SkillMarketRepo.create("https://github.com/example/skills", branch="release/v1")
@@ -4257,6 +4297,60 @@ args = ["-m", "alpha"]
             self.assertFalse(changed)
             self.assertEqual(updated.skill_group_ids, [group.id])
             self.assertEqual(app.projects[0].skill_group_ids, [group.id])
+
+    def test_execute_project_repo_update_detects_binding_sync_and_status(self) -> None:
+        with workspace_tempdir() as temp_dir:
+            (temp_dir / ".git").mkdir()
+            old_codex = Profile.create(
+                "old-codex",
+                "https://old-codex.example.com",
+                "sk-old-codex",
+                vendor=VENDOR_CODEX,
+            )
+            old_claude = Profile.create(
+                "old-claude",
+                "https://old-claude.example.com",
+                "sk-old-claude",
+                vendor=VENDOR_CLAUDE,
+            )
+            new_codex = Profile.create(
+                "new-codex",
+                "https://new-codex.example.com",
+                "sk-new-codex",
+                vendor=VENDOR_CODEX,
+            )
+            project = ProjectRecord.create(
+                str(temp_dir),
+                old_codex.id,
+                codex_profile_id=old_codex.id,
+                claude_profile_id=old_claude.id,
+                github_repo="https://github.com/example/project",
+            )
+            updated_project = replace(project, codex_profile_id=new_codex.id)
+            calls: list[object] = []
+
+            def fake_sync_checkout(project_root: Path) -> str:
+                calls.append(project_root)
+                return "newcommit"
+
+            def fake_verify_project_checksums(project_root: Path) -> None:
+                calls.append(("verify", project_root))
+
+            result = execute_project_repo_update(
+                project,
+                sync_checkout=fake_sync_checkout,
+                verify_project_checksums=fake_verify_project_checksums,
+                load_project_metadata=lambda project_arg, project_root: (updated_project, True),
+            )
+
+        self.assertEqual(result.updated_project, updated_project)
+        self.assertEqual(result.synced_commit, "newcommit")
+        self.assertTrue(result.metadata_updated)
+        self.assertTrue(result.sync_codex)
+        self.assertFalse(result.sync_claude)
+        self.assertIn("newcommit", result.status_text or "")
+        self.assertEqual(calls[0], temp_dir)
+        self.assertEqual(calls[1], ("verify", temp_dir))
 
     def test_project_update_applies_project_metadata_after_git_pull(self) -> None:
         class FakeCompleted:
