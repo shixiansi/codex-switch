@@ -574,6 +574,46 @@ Window {
             f"hover area spans multiple rows: largest is {max(heights):.0f}px",
         )
 
+    def test_global_write_card_lives_on_dashboard(self) -> None:
+        """全局配置写入 must be on the home page, not in the profiles page."""
+        from PySide6.QtQuick import QQuickItem
+
+        root = self._load()
+
+        def short(obj) -> str:
+            return obj.metaObject().className().split("_QMLTYPE")[0].split("_")[0]
+
+        def card_titles(page) -> list[str]:
+            return [
+                t for t in (
+                    o.property("title") for o in page.findChildren(QQuickItem) if short(o) == "AppCard"
+                ) if t
+            ]
+
+        dashboards = [o for o in root.findChildren(QQuickItem) if short(o) == "DashboardPage"]
+        profiles = [o for o in root.findChildren(QQuickItem) if short(o) == "ProfilesPage"]
+        self.assertTrue(dashboards, "DashboardPage not found")
+        self.assertTrue(profiles, "ProfilesPage not found")
+
+        self.assertIn("全局配置写入", card_titles(dashboards[0]))
+        self.assertIn("最近操作", card_titles(dashboards[0]))
+        self.assertNotIn(
+            "全局配置写入",
+            card_titles(profiles[0]),
+            "the global-write card should have moved off the profiles page",
+        )
+
+    def test_manual_status_and_hide_filter_are_exposed(self) -> None:
+        """The profiles model must surface the manual status and hide filter."""
+        self._load()
+        self._pump()
+        choices = [c["value"] for c in self.controller.profiles.manualStatusChoices]
+        self.assertIn("", choices, "an empty choice clears the override")
+        self.assertIn("healthy", choices)
+        self.assertIn("error", choices)
+        self.assertIsInstance(self.controller.profiles.hideErrorProfiles, bool)
+        self.assertIsInstance(self.controller.profiles.errorCount, int)
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem

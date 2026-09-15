@@ -1329,6 +1329,96 @@ class SnapshotHelperTests(unittest.TestCase):
         self.assertEqual(summary["projectCount"], 2)
 
 
+class ManualHealthAndFilterTests(WorkspaceTestCase):
+    """手动健康状态与隐藏异常配置。"""
+
+    def _add(self, name: str, status: str) -> Profile:
+        profile = self.add_profile(name=name)
+        profile.health = HealthResult(status=status, detail=status)
+        self.workspace.persist()
+        return profile
+
+    def test_manual_status_overrides_automatic_result(self) -> None:
+        profile = self._add("正常站", "healthy")
+        self.assertEqual(profile.effective_health_status, "healthy")
+
+        result = self.workspace.set_manual_health_status(profile.id, "error")
+        self.assertIn("标记", result.message)
+        self.assertEqual(profile.effective_health_status, "error")
+        self.assertTrue(profile.has_manual_health_override)
+
+    def test_clearing_manual_status_restores_automatic(self) -> None:
+        profile = self._add("正常站", "healthy")
+        self.workspace.set_manual_health_status(profile.id, "error")
+        result = self.workspace.set_manual_health_status(profile.id, "")
+        self.assertIn("自动", result.message)
+        self.assertEqual(profile.effective_health_status, "healthy")
+        self.assertFalse(profile.has_manual_health_override)
+
+    def test_manual_status_survives_reload(self) -> None:
+        profile = self._add("正常站", "healthy")
+        self.workspace.set_manual_health_status(profile.id, "degraded")
+        reloaded = Workspace(store=self.store, project_root=self.root)
+        stored = reloaded.session.profile_by_id(profile.id)
+        self.assertEqual(stored.effective_health_status, "degraded")
+        self.assertTrue(stored.has_manual_health_override)
+
+    def test_manual_status_rejects_unknown_value(self) -> None:
+        profile = self._add("正常站", "healthy")
+        with self.assertRaises(WorkspaceError):
+            self.workspace.set_manual_health_status(profile.id, "banana")
+
+    def test_manual_status_requires_existing_profile(self) -> None:
+        with self.assertRaises(WorkspaceError):
+            self.workspace.set_manual_health_status("missing", "healthy")
+
+    def test_manual_status_marks_label_in_snapshot(self) -> None:
+        profile = self._add("正常站", "healthy")
+        self.workspace.set_manual_health_status(profile.id, "error")
+        row = next(
+            item for item in self.workspace.snapshot()["profiles"] if item["id"] == profile.id
+        )
+        self.assertEqual(row["healthLabel"], "异常（手动）")
+        self.assertEqual(row["healthTone"], "danger")
+
+    def test_hide_error_profiles_filters_listing_only(self) -> None:
+        ok = self._add("正常站", "healthy")
+        self._add("坏站A", "error")
+        self._add("坏站B", "error")
+
+        result = self.workspace.set_hide_error_profiles(True)
+        self.assertIn("隐藏", result.message)
+        state = self.workspace.snapshot()
+        names = [row["name"] for row in state["profiles"]]
+        self.assertEqual(names, ["正常站"])
+        # Counts still reflect every profile, so nothing is silently lost.
+        self.assertEqual(state["health"]["error"], 2)
+        self.assertTrue(state["hide_error_profiles"])
+        # A hidden profile is still addressable.
+        self.assertIsNotNone(self.workspace.session.profile_by_id(ok.id))
+
+    def test_hide_error_profiles_persists(self) -> None:
+        self._add("坏站", "error")
+        self.workspace.set_hide_error_profiles(True)
+        reloaded = Workspace(store=self.store, project_root=self.root)
+        self.assertTrue(reloaded.session.hide_error_profiles)
+
+    def test_unhiding_restores_every_profile(self) -> None:
+        self._add("坏站", "error")
+        self.workspace.set_hide_error_profiles(True)
+        result = self.workspace.set_hide_error_profiles(False)
+        self.assertIn("显示全部", result.message)
+        self.assertEqual(len(self.workspace.snapshot()["profiles"]), 1)
+
+    def test_manual_healthy_hides_nothing_when_filter_on(self) -> None:
+        """A profile manually marked healthy stays visible under the filter."""
+        profile = self._add("被误判的站", "error")
+        self.workspace.set_manual_health_status(profile.id, "healthy")
+        self.workspace.set_hide_error_profiles(True)
+        names = [row["name"] for row in self.workspace.snapshot()["profiles"]]
+        self.assertEqual(names, ["被误判的站"])
+
+
 class ViewModelContractTests(WorkspaceTestCase):
     """View models must find every key they read in the snapshot."""
 

@@ -15,6 +15,7 @@ class ProfilesViewModel(SnapshotViewModel):
     formChanged = Signal()
     globalTargetsChanged = Signal()
     signInChanged = Signal()
+    hideErrorChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
@@ -28,6 +29,8 @@ class ProfilesViewModel(SnapshotViewModel):
         self._global_codex_id = ""
         self._global_claude_id = ""
         self._sign_in: dict[str, Any] = {}
+        self._hide_error = False
+        self._error_count = 0
         super().__init__(self._build_items, parent)
 
     # -- properties ------------------------------------------------------
@@ -87,6 +90,26 @@ class ProfilesViewModel(SnapshotViewModel):
     def hasPendingSignIn(self) -> bool:
         return int(self._sign_in.get("pending") or 0) > 0
 
+    @Property(bool, notify=hideErrorChanged)
+    def hideErrorProfiles(self) -> bool:
+        return self._hide_error
+
+    @Property(int, notify=hideErrorChanged)
+    def errorCount(self) -> int:
+        """Number of profiles the hide filter is currently excluding."""
+        return self._error_count
+
+    @Property("QVariantList", constant=True)
+    def manualStatusChoices(self) -> list[dict[str, Any]]:
+        """Options for the manual-status picker; empty value clears the override."""
+        return [
+            {"value": "", "label": "自动（跟随检测）"},
+            {"value": "healthy", "label": "手动：健康"},
+            {"value": "degraded", "label": "手动：受限"},
+            {"value": "error", "label": "手动：异常"},
+            {"value": "unknown", "label": "手动：未检测"},
+        ]
+
     # -- building --------------------------------------------------------
     def _build_items(self) -> list[dict[str, Any]]:
         state = dict(self._controller.snapshot() or {})
@@ -135,6 +158,17 @@ class ProfilesViewModel(SnapshotViewModel):
         if sign_in != self._sign_in:
             self._sign_in = sign_in
             self.signInChanged.emit()
+
+        hide_error = bool(state.get("hide_error_profiles", False))
+        if hide_error != self._hide_error:
+            self._hide_error = hide_error
+            self.hideErrorChanged.emit()
+
+        # Count how many are currently filtered out, for the toggle's label.
+        error_count = int((state.get("health") or {}).get("error") or 0)
+        if error_count != self._error_count:
+            self._error_count = error_count
+            self.hideErrorChanged.emit()
 
         return rows
 
@@ -220,6 +254,19 @@ class ProfilesViewModel(SnapshotViewModel):
     def signInAll(self) -> None:
         """Open every pending sign-in page and mark those profiles as signed."""
         self._controller.signInAll()
+
+    @Slot(str)
+    def setManualHealthStatus(self, status: str) -> None:
+        """Pin the selected profile's status; empty restores the automatic one."""
+        self._controller.setManualHealthStatus(self._selected_id, str(status))
+
+    @Slot(bool)
+    def setHideErrorProfiles(self, value: bool) -> None:
+        self._controller.setHideErrorProfiles(bool(value))
+
+    @Slot()
+    def toggleHideErrorProfiles(self) -> None:
+        self._controller.setHideErrorProfiles(not self._hide_error)
 
 
 __all__ = ["ProfilesViewModel"]

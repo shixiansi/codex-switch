@@ -207,49 +207,126 @@ Flickable {
             }
         }
 
-        AppCard {
+        // Global target selection and the activity log sit side by side, so the
+        // write action is reachable straight from the home page.
+        RowLayout {
             Layout.fillWidth: true
-            title: "最近操作"
-            subtitle: "来自健康检测、配置切换、路由代理与仓库同步的事件。"
-            iconName: "log"
+            spacing: Theme.space3
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space2
+            // 全局配置写入
+            AppCard {
+                Layout.preferredWidth: Math.max(340, page.width * 0.34)
+                Layout.alignment: Qt.AlignTop
+                title: "全局配置写入"
+                subtitle: "选择写入 Codex / Claude 全局配置文件的目标。"
+                iconName: "download"
 
-                Item { Layout.fillWidth: true }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space2
+
+                    Text {
+                        text: "Codex"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontCaption
+                        Layout.preferredWidth: 64
+                    }
+
+                    AppComboBox {
+                        Layout.fillWidth: true
+                        options: profilesModel.codexChoices
+                        selectedValue: profilesModel.globalCodexId
+                        onSelectionChanged: function (value) {
+                            profilesModel.setGlobalChoice("codex", value)
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space2
+
+                    Text {
+                        text: "Claude"
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fontCaption
+                        Layout.preferredWidth: 64
+                    }
+
+                    AppComboBox {
+                        Layout.fillWidth: true
+                        options: profilesModel.claudeChoices
+                        selectedValue: profilesModel.globalClaudeId
+                        onSelectionChanged: function (value) {
+                            profilesModel.setGlobalChoice("claude", value)
+                        }
+                    }
+                }
+
+                DetailRow {
+                    label: "当前 Codex"
+                    value: dashboardModel.summary.codexProfileName || "未写入"
+                }
+                DetailRow {
+                    label: "当前 Claude"
+                    value: dashboardModel.summary.claudeProfileName || "未写入"
+                }
 
                 AppButton {
-                    text: "清空"
-                    variant: "ghost"
-                    visible: dashboardModel.activity.length > 0
-                    onClicked: dashboardModel.clearActivity()
+                    Layout.fillWidth: true
+                    text: "写入所选全局配置"
+                    iconName: "download"
+                    variant: "primary"
+                    enabled: !app.busy
+                    onClicked: profilesModel.applyGlobals()
                 }
             }
 
-            EmptyState {
+            AppCard {
                 Layout.fillWidth: true
-                visible: dashboardModel.activity.length === 0
+                Layout.alignment: Qt.AlignTop
+                title: "最近操作"
+                subtitle: "来自健康检测、配置切换、路由代理与仓库同步的事件。"
                 iconName: "log"
-                title: "暂无操作记录"
-                description: "执行健康检测、切换配置或启动代理后，这里会显示最近的操作。"
-            }
 
-            Repeater {
-                model: dashboardModel.activity
-
-                delegate: ListRow {
-                    required property var modelData
-
+                RowLayout {
                     Layout.fillWidth: true
-                    interactive: false
-                    iconName: modelData.source === "proxy" ? "route"
-                        : modelData.source === "update" ? "refresh" : "pulse"
-                    title: modelData.message !== "" ? modelData.message : modelData.source
-                    subtitle: modelData.detail
-                    badgeText: modelData.level
-                    badgeTone: modelData.tone
-                    meta: modelData.timestamp
+                    spacing: Theme.space2
+
+                    Item { Layout.fillWidth: true }
+
+                    AppButton {
+                        text: "清空"
+                        variant: "ghost"
+                        visible: dashboardModel.activity.length > 0
+                        onClicked: dashboardModel.clearActivity()
+                    }
+                }
+
+                EmptyState {
+                    Layout.fillWidth: true
+                    visible: dashboardModel.activity.length === 0
+                    iconName: "log"
+                    title: "暂无操作记录"
+                    description: "执行健康检测、切换配置或启动代理后，这里会显示最近的操作。"
+                }
+
+                Repeater {
+                    model: dashboardModel.activity
+
+                    delegate: ListRow {
+                        required property var modelData
+
+                        Layout.fillWidth: true
+                        interactive: false
+                        iconName: modelData.source === "proxy" ? "route"
+                            : modelData.source === "update" ? "refresh" : "pulse"
+                        title: modelData.message !== "" ? modelData.message : modelData.source
+                        subtitle: modelData.detail
+                        badgeText: modelData.level
+                        badgeTone: modelData.tone
+                        meta: modelData.timestamp
+                    }
                 }
             }
         }

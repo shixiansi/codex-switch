@@ -136,11 +136,33 @@ Item {
                             onTextEdited: profilesModel.setFilter(text)
                         }
 
-                        Text {
+                        RowLayout {
                             Layout.fillWidth: true
-                            text: profilesModel.count + " 套配置"
-                            color: Theme.textFaint
-                            font.pixelSize: Theme.fontCaption
+                            spacing: Theme.space2
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: profilesModel.count + " 套配置"
+                                    + (profilesModel.hideErrorProfiles
+                                        ? "（已隐藏 " + profilesModel.errorCount + " 个异常）" : "")
+                                color: Theme.textFaint
+                                font.pixelSize: Theme.fontCaption
+                                elide: Text.ElideRight
+                            }
+
+                            AppButton {
+                                text: profilesModel.hideErrorProfiles ? "显示异常" : "隐藏异常"
+                                iconName: profilesModel.hideErrorProfiles ? "restore" : "warning"
+                                variant: "ghost"
+                                enabled: profilesModel.errorCount > 0 || profilesModel.hideErrorProfiles
+                                onClicked: profilesModel.toggleHideErrorProfiles()
+
+                                ToolTip.visible: hovered
+                                ToolTip.delay: 400
+                                ToolTip.text: profilesModel.errorCount > 0
+                                    ? "当前有 " + profilesModel.errorCount + " 个异常配置"
+                                    : "当前没有异常配置"
+                            }
                         }
 
                         EmptyState {
@@ -280,6 +302,40 @@ Item {
                                 tone: profilesModel.selectedDetail.healthTone || "unknown"
                                 wrap: true
                             }
+
+                            // Manual status: health checks only measure
+                            // connectivity, so allow pinning a status by hand.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.space2
+
+                                Text {
+                                    text: "手动状态"
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fontCaption
+                                    Layout.preferredWidth: 104
+                                }
+
+                                AppComboBox {
+                                    Layout.fillWidth: true
+                                    options: profilesModel.manualStatusChoices
+                                    selectedValue: profilesModel.selectedDetail.manualHealthStatus || ""
+                                    onSelectionChanged: function (value) {
+                                        profilesModel.setManualHealthStatus(value)
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: profilesModel.selectedDetail.manualHealthStatus
+                                    ? "当前以手动状态为准，自动检测结果仅作参考。"
+                                    : "当前使用自动检测结果；异常时可在此手动修正。"
+                                color: Theme.textFaint
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.WordWrap
+                            }
+
                             DetailRow {
                                 label: "备注"
                                 value: profilesModel.selectedDetail.notes || "-"
@@ -327,63 +383,6 @@ Item {
                             }
                         }
 
-                        // 全局配置写入
-                        AppCard {
-                            Layout.fillWidth: true
-                            title: "全局配置写入"
-                            subtitle: "选择写入 Codex / Claude 全局配置文件的目标。"
-                            iconName: "download"
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.space2
-
-                                Text {
-                                    text: "Codex"
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontCaption
-                                    Layout.preferredWidth: 64
-                                }
-
-                                AppComboBox {
-                                    Layout.fillWidth: true
-                                    options: profilesModel.codexChoices
-                                    selectedValue: profilesModel.globalCodexId
-                                    onSelectionChanged: function (value) {
-                                        profilesModel.setGlobalChoice("codex", value)
-                                    }
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.space2
-
-                                Text {
-                                    text: "Claude"
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontCaption
-                                    Layout.preferredWidth: 64
-                                }
-
-                                AppComboBox {
-                                    Layout.fillWidth: true
-                                    options: profilesModel.claudeChoices
-                                    selectedValue: profilesModel.globalClaudeId
-                                    onSelectionChanged: function (value) {
-                                        profilesModel.setGlobalChoice("claude", value)
-                                    }
-                                }
-                            }
-
-                            AppButton {
-                                Layout.fillWidth: true
-                                text: "写入所选全局配置"
-                                variant: "primary"
-                                enabled: !app.busy
-                                onClicked: profilesModel.applyGlobals()
-                            }
-                        }
                     }
                 }
             }

@@ -584,6 +584,29 @@ class AppController(QObject):
         self._run_sync(self.workspace.open_all_sign_in_urls)
 
     # =====================================================================
+    # Manual health status / library filter
+    # =====================================================================
+    @Slot(str, str)
+    def setManualHealthStatus(self, profile_id: str, status: str) -> None:
+        """Pin a profile's status, or pass an empty status to clear it.
+
+        Health checks only measure connectivity, so this lets the user correct a
+        wrong verdict without hand-editing profiles.json.
+        """
+        target = str(profile_id or "")
+        value = str(status or "")
+        self._run_sync(lambda: self.workspace.set_manual_health_status(target, value))
+
+    @Slot(bool)
+    def setHideErrorProfiles(self, value: bool) -> None:
+        self._run_sync(lambda: self.workspace.set_hide_error_profiles(bool(value)))
+
+    @Slot()
+    def toggleHideErrorProfiles(self) -> None:
+        current = bool(self.workspace.session.hide_error_profiles)
+        self.setHideErrorProfiles(not current)
+
+    # =====================================================================
     # Health
     # =====================================================================
     @Slot(str)

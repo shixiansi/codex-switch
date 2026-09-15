@@ -70,7 +70,7 @@ from ..ui.account_pool_logic import (
 )
 from ..ui.global_logic import GlobalApplyResult, global_apply_detail, global_apply_targets, global_profile_apply_error
 from ..ui.hot_update_logic import append_hot_update_event
-from ..ui.library_logic import current_status_counts, profile_library_sort_key
+from ..ui.library_logic import current_status_counts, health_status_text, visible_profiles_for_filter, profile_library_sort_key
 from ..ui.model_batch_logic import ModelBatchCache, ModelBatchResult, model_batch_targets, run_model_batch_requests
 from ..ui.profile_logic import (
     profile_collection_after_add,
@@ -152,6 +152,15 @@ from . import snapshots
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 MODEL_BATCH_TASK_PREFIX = "model-batch"
 HEALTH_TASK_PREFIX = "health"
+
+# Manual health overrides, mirroring the legacy UI's choices.
+MANUAL_HEALTH_LABELS = {
+    "healthy": "健康",
+    "degraded": "受限",
+    "error": "异常",
+    "unknown": "未检测",
+}
+MANUAL_HEALTH_CHOICES = tuple(MANUAL_HEALTH_LABELS)
 
 
 @dataclass
@@ -260,12 +269,15 @@ class Workspace:
     # =====================================================================
     def snapshot(self, selected_mcp_name: str = "") -> dict[str, Any]:
         session = self.session
-        profiles = sorted(session.profiles, key=profile_library_sort_key)
+        all_profiles = sorted(session.profiles, key=profile_library_sort_key)
+        # The hide filter applies to the library listing only; counts and
+        # lookups still see every profile so nothing is silently lost.
+        profiles = visible_profiles_for_filter(all_profiles, session.hide_error_profiles)
         selected_profile = session.selected_profile()
         selected_project = session.selected_project()
 
         # current_status_counts returns (total, healthy, degraded, error).
-        _total, healthy_count, degraded_count, error_count = current_status_counts(profiles)
+        _total, healthy_count, degraded_count, error_count = current_status_counts(all_profiles)
         health_summary = {
             "healthy": healthy_count,
             "degraded": degraded_count,
@@ -575,6 +587,49 @@ class Workspace:
     def select_profile(self, profile_id: str) -> None:
         self.session.select_profile(profile_id)
         self.persist()
+
+    def set_hide_error_profiles(self, value: bool) -> ActionResult:
+        """Hide profiles whose effective status is 'error' from the library."""
+        session = self.session
+        session.hide_error_profiles = bool(value)
+        self.persist()
+        hidden = sum(
+            1 for profile in session.profiles if profile.effective_health_status == "error"
+        )
+        if session.hide_error_profiles:
+            return ActionResult(
+                message=f"已隐藏 {hidden} 个异常配置。",
+                level="info",
+            )
+        return ActionResult(message="已显示全部配置。", level="info")
+
+    def set_manual_health_status(self, profile_id: str, status: str) -> ActionResult:
+        """Override a profile's health status, or clear the override.
+
+        Health checks reflect connectivity only; this lets the user pin a
+        status manually without editing ``profiles.json`` by hand. An empty
+        value restores the automatic result.
+        """
+        profile = self.session.profile_by_id(profile_id)
+        if profile is None:
+            raise WorkspaceError("配置不存在或已被删除。")
+
+        value = str(status or "").strip().lower()
+        if value and value not in MANUAL_HEALTH_CHOICES:
+            raise WorkspaceError(f"不支持的手动状态：{status}")
+
+        if value:
+            profile.manual_health_status = value
+            self.persist()
+            return ActionResult(
+                message=f"已将 {profile.name} 标记为「{MANUAL_HEALTH_LABELS[value]}」。",
+            )
+        profile.manual_health_status = None
+        self.persist()
+        return ActionResult(
+            message=f"已恢复 {profile.name} 的自动健康状态。",
+            level="info",
+        )
 
     def set_global_profile_choice(self, target: str, profile_id: str) -> ActionResult:
         session = self.session
