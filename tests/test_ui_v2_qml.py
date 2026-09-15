@@ -328,6 +328,57 @@ class QmlSmokeTests(unittest.TestCase):
                 checked += 1
         self.assertGreater(checked, 0, "no AppButton instances found to check")
 
+    def test_empty_state_fills_width_and_is_centred(self) -> None:
+        """Empty-state blocks must fill their card and centre their content.
+
+        An EmptyState whose root was a Layout held its implicit width, so the
+        block hugged the left edge and its text appeared to stretch to the
+        right. Assert both the fill and the centring.
+        """
+        from PySide6.QtQuick import QQuickItem
+
+        root = self._load()
+        self.controller.navigateTo("dashboard")
+        self._pump(5)
+
+        checked = 0
+        for state in root.findChildren(QQuickItem):
+            if not state.metaObject().className().startswith("EmptyState"):
+                continue
+            if not state.isVisible() or state.width() <= 0:
+                continue
+            parent = state.parentItem()
+            if parent is not None and parent.width() > 0:
+                with self.subTest(empty="fills width"):
+                    self.assertAlmostEqual(
+                        state.width(),
+                        parent.width(),
+                        delta=2.0,
+                        msg="EmptyState does not fill its container",
+                    )
+            inner = state.childItems()[0] if state.childItems() else None
+            if inner is None:
+                continue
+            for child in inner.childItems():
+                if child.width() <= 0 or not child.isVisible():
+                    continue
+                left = child.x()
+                right = inner.width() - (child.x() + child.width())
+                label = child.property("text") or child.metaObject().className()
+                with self.subTest(empty=str(label)[:20]):
+                    self.assertLessEqual(
+                        abs(left - right),
+                        2.0,
+                        f"not centred: left={left:.1f} right={right:.1f} ({label})",
+                    )
+                    self.assertLessEqual(
+                        child.width(),
+                        inner.width() + 1.0,
+                        f"overflows its container ({label})",
+                    )
+                checked += 1
+        self.assertGreater(checked, 0, "no visible EmptyState children found")
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem
