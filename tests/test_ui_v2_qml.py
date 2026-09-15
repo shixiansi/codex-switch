@@ -482,6 +482,60 @@ Window {
             engine.deleteLater()
             self._flush_deferred_deletes()
 
+    def test_mcp_selection_drives_preview_panel(self) -> None:
+        """Clicking an MCP server must update the preview panel.
+
+        The workspace previously always rendered ``sorted(servers)[0]``, so the
+        panel showed ChromeDevTools no matter which row was clicked.
+        """
+        self._load()
+        self._pump()
+        servers = self.controller.tools.mcpServers
+        self.assertGreater(len(servers), 1, "need several MCP servers to test")
+
+        for server in servers:
+            name = server["name"]
+            with self.subTest(server=name):
+                self.controller.tools.selectMcpServer(name)
+                self._pump(3)
+                self.assertEqual(self.controller.tools.selectedMcpName, name)
+                self.assertEqual(self.controller.tools.mcpDetail["name"], name)
+                # The preview text must belong to the selected server.
+                self.assertIn(name, self.controller.tools.mcpDetail["preview"])
+
+    def test_mcp_preview_defaults_to_first_when_unselected(self) -> None:
+        self._load()
+        self._pump()
+        names = sorted(server["name"] for server in self.controller.tools.mcpServers)
+        # Nothing chosen yet: fall back to the first server rather than blank.
+        self.assertEqual(self.controller.tools.selectedMcpName, names[0])
+
+    def test_mcp_edit_and_delete_target_selected_server(self) -> None:
+        """编辑 / 删除 must act on the selection, not always on servers[0]."""
+        root = self._load()
+        self._pump()
+        names = sorted(server["name"] for server in self.controller.tools.mcpServers)
+        target = names[-1]
+        self.assertNotEqual(target, names[0], "pick a non-first server")
+
+        self.controller.tools.selectMcpServer(target)
+        self._pump(3)
+
+        # Edit opens a drawer populated from the selected server.
+        self.controller.tools.beginEditMcp(self.controller.tools.selectedMcpName)
+        self._pump(3)
+        fields = {f["key"]: f.get("value") for f in self.controller.tools.formFields}
+        self.assertEqual(fields.get("name"), target, "edit form is not the selected server")
+        self.controller.closeDrawer()
+        self._pump(2)
+
+        # Delete confirmation must name the selected server.
+        self.controller.requestDeleteMcpServer(self.controller.tools.selectedMcpName)
+        self._pump(3)
+        self.assertIn(target, self.controller.pendingConfirm["message"])
+        self.controller.cancelPending()
+        self._pump(2)
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem

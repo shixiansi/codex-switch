@@ -258,7 +258,7 @@ class Workspace:
     # =====================================================================
     # Snapshot for the view models
     # =====================================================================
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, selected_mcp_name: str = "") -> dict[str, Any]:
         session = self.session
         profiles = sorted(session.profiles, key=profile_library_sort_key)
         selected_profile = session.selected_profile()
@@ -341,7 +341,7 @@ class Workspace:
             "chat": self._chat_snapshot(chat_target, batch_cache, wire_api),
 
             "mcp_servers": self._mcp_rows(),
-            "mcp_detail": self._mcp_detail(),
+            "mcp_detail": self._mcp_detail(selected_mcp_name),
 
             "skill_groups": [snapshots.skill_group_row(item) for item in session.skill_groups],
             "skill_repos": [snapshots.skill_repo_row(item) for item in session.skill_market_repos],
@@ -489,7 +489,12 @@ class Workspace:
             return []
         return [snapshots.mcp_server_row(name, servers[name]) for name in sorted(servers)]
 
-    def _mcp_detail(self) -> dict[str, Any]:
+    def _mcp_detail(self, selected_name: str = "") -> dict[str, Any]:
+        """Detail for the selected MCP server, falling back to the first one.
+
+        The selected name comes from the UI; without it the panel would always
+        show the first server in alphabetical order regardless of the click.
+        """
         try:
             servers = parse_mcp_servers_toml(self._global_mcp_source_toml())
         except ValueError as exc:
@@ -497,7 +502,9 @@ class Workspace:
         names = sorted(servers)
         if not names:
             return {"name": "", "summary": "尚未配置 MCP 服务。", "preview": ""}
-        name = names[0]
+
+        requested = str(selected_name or "").strip()
+        name = requested if requested in servers else names[0]
         config = servers[name]
         args = config.get("args") if isinstance(config.get("args"), list) else []
         env = config.get("env") if isinstance(config.get("env"), dict) else {}

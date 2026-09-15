@@ -422,7 +422,9 @@ class AppController(QObject):
         return self.workspace.session
 
     def snapshot(self) -> dict[str, Any]:
-        return self.workspace.snapshot()
+        # The MCP selection lives here (it is pure UI state), so it must be
+        # forwarded for the detail panel to follow the clicked row.
+        return self.workspace.snapshot(selected_mcp_name=self._mcp_selected)
 
     def _refresh_models(self) -> None:
         for model in self._models:

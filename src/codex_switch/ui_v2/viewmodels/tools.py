@@ -60,6 +60,11 @@ class ToolsViewModel(SnapshotViewModel):
     def mcpDetail(self) -> dict[str, Any]:
         return dict(self._mcpDetail)
 
+    @Property(str, notify=mcpChanged)
+    def selectedMcpName(self) -> str:
+        """Name of the MCP server the preview panel is showing."""
+        return str(self._mcpDetail.get("name") or "")
+
     @Property("QVariantList", notify=skillsChanged)
     def skillGroups(self) -> list[dict[str, Any]]:
         return list(self._skillGroups)

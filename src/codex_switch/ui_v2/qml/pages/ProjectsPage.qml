@@ -366,6 +366,9 @@ Item {
                                 badgeText: modelData.type
                                 badgeTone: "info"
                                 meta: modelData.argsCount + " args"
+                                // Reflect the current selection, which also
+                                // drives the preview panel on the right.
+                                selected: toolsModel.selectedMcpName === modelData.name
                                 onClicked: toolsModel.selectMcpServer(modelData.name)
                             }
                         }
@@ -391,18 +394,18 @@ Item {
                         Layout.fillWidth: true
                         spacing: Theme.space2
 
+                        // Act on the SELECTED server; previously these always
+                        // targeted servers[0], so 删除 could remove the wrong one.
                         AppButton {
                             text: "编辑"
-                            enabled: toolsModel.mcpServers.length > 0
-                            onClicked: toolsModel.beginEditMcp(
-                                toolsModel.mcpServers.length > 0 ? toolsModel.mcpServers[0].name : "")
+                            enabled: toolsModel.selectedMcpName !== ""
+                            onClicked: toolsModel.beginEditMcp(toolsModel.selectedMcpName)
                         }
                         AppButton {
                             text: "删除"
                             variant: "danger"
-                            enabled: toolsModel.mcpServers.length > 0
-                            onClicked: app.requestDeleteMcpServer(
-                                toolsModel.mcpServers.length > 0 ? toolsModel.mcpServers[0].name : "")
+                            enabled: toolsModel.selectedMcpName !== ""
+                            onClicked: app.requestDeleteMcpServer(toolsModel.selectedMcpName)
                         }
                         Item { Layout.fillWidth: true }
                     }
