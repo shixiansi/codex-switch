@@ -322,7 +322,7 @@ Item {
                                 AppButton {
                                     text: "删除"
                                     variant: "danger"
-                                    onClicked: profilesModel.remove(profilesModel.selectedId)
+                                    onClicked: app.requestDeleteProfile(profilesModel.selectedId)
                                 }
                             }
                         }

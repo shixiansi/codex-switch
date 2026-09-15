@@ -669,6 +669,30 @@ ApplicationWindow {
         anchors.bottomMargin: Theme.statusBarHeight + Theme.space3
     }
 
+    // ================= destructive-action confirmation =================
+    // One instance serves every page; the pending action lives in Python.
+    ConfirmDialog {
+        id: confirmDialog
+        confirm: app.pendingConfirm
+        // Visibility is driven by the Connections block below, since the
+        // controller owns both the spec and the pending action.
+        onConfirmed: app.confirmPending()
+        onCancelled: app.cancelPending()
+    }
+
+    Connections {
+        target: app
+
+        function onConfirmChanged() {
+            if (app.confirmOpen) {
+                if (!confirmDialog.opened)
+                    confirmDialog.open()
+            } else if (confirmDialog.opened) {
+                confirmDialog.close()
+            }
+        }
+    }
+
     Connections {
         target: app
 

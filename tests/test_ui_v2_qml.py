@@ -310,6 +310,110 @@ class QmlSmokeTests(unittest.TestCase):
         # Pending count is surfaced in the label for this fixture.
         self.assertIn("一键签到 (2)", sign_in_labels)
 
+    # -- destructive-action confirmation --------------------------------
+    def _confirm_dialog(self, root):
+        from PySide6.QtCore import QObject
+
+        dialogs = [
+            obj
+            for obj in root.findChildren(QObject)
+            if obj.metaObject().className().startswith("ConfirmDialog")
+        ]
+        self.assertEqual(len(dialogs), 1, "exactly one shared ConfirmDialog is expected")
+        return dialogs[0]
+
+    def test_delete_requires_confirmation(self) -> None:
+        root = self._load()
+        self._pump()
+        dlg = self._confirm_dialog(root)
+        names_before = sorted(item["name"] for item in self.controller.profiles.items)
+        self.assertEqual(len(names_before), 2)
+
+        # Requesting a delete must open the dialog and NOT delete yet.
+        first_id = self.controller.profiles.items[0]["id"]
+        self.controller.requestDeleteProfile(first_id)
+        self._pump()
+        self.assertTrue(self.controller.confirmOpen)
+        self.assertEqual(
+            sorted(item["name"] for item in self.controller.profiles.items), names_before
+        )
+        self.assertEqual(self.controller.pendingConfirm["title"], "删除配置")
+
+        # Cancelling keeps everything.
+        self.controller.cancelPending()
+        self._pump()
+        self.assertFalse(self.controller.confirmOpen)
+        self.assertEqual(
+            sorted(item["name"] for item in self.controller.profiles.items), names_before
+        )
+
+        # Confirming performs the delete.
+        self.controller.requestDeleteProfile(first_id)
+        self._pump()
+        self.controller.confirmPending()
+        self._pump()
+        self.assertEqual(len(self.controller.profiles.items), 1)
+        self.assertFalse(self.controller.confirmOpen)
+        self.assertEqual(self.warnings, [], f"QML warnings: {self.warnings[:5]}")
+        self.assertNoRuntimeErrors()
+
+    def test_confirm_blocks_profile_bound_to_project(self) -> None:
+        root = self._load()
+        self._pump()
+        # The seeded project is already bound to the Codex profile, so that
+        # profile cannot be deleted. Find it by the project's own binding
+        # rather than by list position (rows are sorted).
+        project = self.controller.projects.items[0]
+        profile_id = project["codexProfileId"]
+        self.assertTrue(profile_id, "fixture project should have a Codex binding")
+        self.controller.requestDeleteProfile(profile_id)
+        self._pump()
+        spec = self.controller.pendingConfirm
+        self.assertIn("示例项目", spec["warning"])
+
+        # Even a forced confirm must not remove it.
+        count_before = len(self.controller.profiles.items)
+        self.controller.confirmPending()
+        self._pump()
+        self.assertEqual(len(self.controller.profiles.items), count_before)
+        self.assertEqual(self.warnings, [], f"QML warnings: {self.warnings[:5]}")
+        self.assertNoRuntimeErrors()
+
+    def test_other_delete_requests_are_guarded(self) -> None:
+        self._load()
+        self._pump()
+        project_id = self.controller.projects.items[0]["id"]
+        skill_group_id = self.controller.tools.skillGroups[0]["id"]
+        skill_id = self.controller.tools.skillGroups[0]["skills"][0]["id"]
+        repo_id = self.controller.tools.skillRepos[0]["id"]
+
+        for label, call, expected_title in (
+            ("project", lambda: self.controller.requestDeleteProject(project_id), "删除项目"),
+            ("skill-group", lambda: self.controller.requestDeleteSkillGroup(skill_group_id), "删除 Skills 组"),
+            ("skill", lambda: self.controller.requestDeleteSkill(skill_group_id, skill_id), "删除 Skill"),
+            ("skill-repo", lambda: self.controller.requestDeleteSkillRepo(repo_id), "删除 Skills 仓库"),
+        ):
+            with self.subTest(target=label):
+                call()
+                self._pump()
+                self.assertTrue(self.controller.confirmOpen, label)
+                self.assertEqual(self.controller.pendingConfirm["title"], expected_title)
+                self.controller.cancelPending()
+                self._pump()
+                self.assertFalse(self.controller.confirmOpen)
+        self.assertEqual(self.warnings, [], f"QML warnings: {self.warnings[:5]}")
+        self.assertNoRuntimeErrors()
+
+    def test_delete_missing_target_warns_instead_of_opening(self) -> None:
+        self._load()
+        self._pump()
+        self.controller.requestDeleteProfile("does-not-exist")
+        self._pump()
+        self.assertFalse(self.controller.confirmOpen)
+        self.controller.requestDeleteMcpServer("no-such-server")
+        self._pump()
+        self.assertFalse(self.controller.confirmOpen)
+
     def test_empty_state_renders_without_data(self) -> None:
         # A workspace with no profiles exercises every EmptyState branch.
         empty_root = self.root / "empty"

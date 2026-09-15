@@ -216,7 +216,7 @@ RowLayout {
                         text: "删除"
                         variant: "ghost"
                         visible: channelRow.modelData.sourceType !== "profile"
-                        onClicked: toolsModel.removePoolChannel(channelRow.modelData.id)
+                        onClicked: app.requestDeletePoolChannel(channelRow.modelData.id)
                     }
                 }
 

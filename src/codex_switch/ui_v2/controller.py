@@ -61,6 +61,7 @@ class AppController(QObject):
     toastRequested = Signal(str, str, str)
     errorRaised = Signal(str)
     drawerChanged = Signal()
+    confirmChanged = Signal()
     taskStateChanged = Signal()
     stateChanged = Signal()
     themeChanged = Signal()
@@ -82,6 +83,8 @@ class AppController(QObject):
         self._drawer_skill_id = ""
         self._drawer_skill_repo_id = ""
         self._mcp_selected = ""
+        self._confirm_spec: dict[str, Any] = {}
+        self._confirm_action: Callable[[], None] | None = None
         self._runner = TaskRunner(self)
         self._runner.taskStarted.connect(self._on_task_started)
         self._runner.taskProgress.connect(self._on_task_progress)
@@ -198,6 +201,166 @@ class AppController(QObject):
             {"key": "profile", "label": "当前配置", "value": state["selected_profile_detail"].get("name") or "未选择"},
             {"key": "project", "label": "当前项目", "value": state["selected_project_detail"].get("name") or "未选择"},
         ]
+
+    # =====================================================================
+    # Destructive-action confirmation
+    # =====================================================================
+    # The pending action is a Python callable, not a QML closure: callables
+    # passed through a JS object are not reliably invokable from QML. QML only
+    # renders `pendingConfirm` and reports confirmed/cancelled back here.
+    @Property("QVariantMap", notify=confirmChanged)
+    def pendingConfirm(self) -> dict[str, Any]:
+        return dict(self._confirm_spec)
+
+    @Property(bool, notify=confirmChanged)
+    def confirmOpen(self) -> bool:
+        return bool(self._confirm_spec)
+
+    def _request_confirm(
+        self,
+        *,
+        title: str,
+        message: str,
+        action: Callable[[], None],
+        detail: str = "",
+        warning: str = "",
+        confirm_text: str = "删除",
+        danger: bool = True,
+    ) -> None:
+        self._confirm_action = action
+        self._confirm_spec = {
+            "title": str(title),
+            "message": str(message),
+            "detail": str(detail),
+            "warning": str(warning),
+            "confirmText": str(confirm_text),
+            "danger": bool(danger),
+        }
+        self.confirmChanged.emit()
+
+    @Slot()
+    def confirmPending(self) -> None:
+        """Run the pending action (called when the user confirms)."""
+        action = self._confirm_action
+        self._clear_confirm()
+        if action is None:
+            return
+        self._run_sync(action)
+
+    @Slot()
+    def cancelPending(self) -> None:
+        """Discard the pending action (called on cancel / dismiss)."""
+        self._clear_confirm()
+
+    def _clear_confirm(self) -> None:
+        if not self._confirm_spec and self._confirm_action is None:
+            return
+        self._confirm_spec = {}
+        self._confirm_action = None
+        self.confirmChanged.emit()
+
+    @Slot(str)
+    def requestDeleteProfile(self, profile_id: str) -> None:
+        """Ask before deleting a profile, explaining a blocking project binding."""
+        profile_id = str(profile_id or "")
+        profile = self.workspace.session.profile_by_id(profile_id)
+        if profile is None:
+            self.showToast("请先选择一个配置。", "warning")
+            return
+        self._request_confirm(
+            title="删除配置",
+            message=f"确定要删除配置「{profile.name}」吗？此操作无法撤销。",
+            detail="删除后该配置的 API Key、模型与健康记录都会从本机移除。",
+            warning=self.workspace.delete_profile_blocker(profile_id),
+            action=lambda: self.workspace.delete_profile(profile_id),
+        )
+
+    @Slot(str)
+    def requestDeleteProject(self, project_id: str) -> None:
+        project_id = str(project_id or "")
+        project = self.workspace.session.project_by_id(project_id)
+        if project is None:
+            self.showToast("请先选择一个项目。", "warning")
+            return
+        self._request_confirm(
+            title="删除项目",
+            message=f"确定要删除项目「{project.name}」吗？",
+            detail="只会移除本工具中的项目记录，磁盘上的项目目录不会被删除。",
+            action=lambda: self.workspace.delete_project(project_id),
+        )
+
+    @Slot(str)
+    def requestDeletePoolChannel(self, channel_id: str) -> None:
+        channel_id = str(channel_id or "")
+        channel = next(
+            (item for item in self.workspace.session.account_pool.channels if item.id == channel_id),
+            None,
+        )
+        if channel is None:
+            self.showToast("号池渠道不存在。", "warning")
+            return
+        self._request_confirm(
+            title="删除号池渠道",
+            message=f"确定要删除渠道「{channel.name}」吗？",
+            detail=channel.base_url,
+            action=lambda: self.workspace.delete_pool_channel(channel_id),
+        )
+
+    @Slot(str)
+    def requestDeleteMcpServer(self, name: str) -> None:
+        name = str(name or "")
+        if name not in self.workspace.available_mcp_server_names():
+            self.showToast("MCP 服务不存在。", "warning")
+            return
+        self._request_confirm(
+            title="删除 MCP 服务",
+            message=f"确定要删除 MCP 服务「{name}」吗？",
+            detail="该项目模板中已写入的 MCP 配置需要重新生成模板才会更新。",
+            action=lambda: self.workspace.delete_mcp(name),
+        )
+
+    @Slot(str)
+    def requestDeleteSkillGroup(self, group_id: str) -> None:
+        group_id = str(group_id or "")
+        group = self.workspace.session.skill_group_by_id(group_id)
+        if group is None:
+            self.showToast("Skills 组不存在。", "warning")
+            return
+        self._request_confirm(
+            title="删除 Skills 组",
+            message=f"确定要删除 Skills 组「{group.name}」吗？",
+            detail=f"组内 {len(group.skills)} 个 Skill，以及各项目对该组的引用都会被一并移除。",
+            action=lambda: self.workspace.delete_skill_group(group_id),
+        )
+
+    @Slot(str, str)
+    def requestDeleteSkill(self, group_id: str, skill_id: str) -> None:
+        group_id = str(group_id or "")
+        skill_id = str(skill_id or "")
+        group = self.workspace.session.skill_group_by_id(group_id)
+        skill = next((item for item in group.skills if item.id == skill_id), None) if group else None
+        if group is None or skill is None:
+            self.showToast("Skill 不存在。", "warning")
+            return
+        self._request_confirm(
+            title="删除 Skill",
+            message=f"确定要从组「{group.name}」中删除 Skill「{skill.name}」吗？",
+            action=lambda: self.workspace.delete_skill(group_id, skill_id),
+        )
+
+    @Slot(str)
+    def requestDeleteSkillRepo(self, repo_id: str) -> None:
+        repo_id = str(repo_id or "")
+        repo = self.workspace.session.skill_repo_by_id(repo_id)
+        if repo is None:
+            self.showToast("Skills 仓库不存在。", "warning")
+            return
+        self._request_confirm(
+            title="删除 Skills 仓库",
+            message=f"确定要删除仓库「{repo.url}」吗？",
+            detail="仅移除本工具中的仓库记录，已安装到组里的 Skill 不会被删除。",
+            action=lambda: self.workspace.delete_skill_repo(repo_id),
+        )
 
     # =====================================================================
     # Navigation / drawer
@@ -371,6 +534,15 @@ class AppController(QObject):
             lambda context: self.workspace.delete_profile(str(profile_id)),
             label="删除配置",
         )
+
+    @Slot(str, result=str)
+    def profileDeleteBlocker(self, profile_id: str) -> str:
+        """Why a profile cannot be deleted ('' when it can).
+
+        Called by the confirmation dialog so a blocked delete is explained
+        before the user commits to it.
+        """
+        return self.workspace.delete_profile_blocker(str(profile_id))
 
     @Slot()
     def applySelectedProfile(self) -> None:

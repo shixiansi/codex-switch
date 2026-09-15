@@ -75,6 +75,7 @@ from ..ui.model_batch_logic import ModelBatchCache, ModelBatchResult, model_batc
 from ..ui.profile_logic import (
     profile_collection_after_add,
     profile_collection_after_replace,
+    profile_delete_error,
     profile_from_dialog_result,
     updated_profile_from_dialog,
 )
@@ -100,6 +101,7 @@ from ..ui.project_logic import (
     project_codex_cmd_launch_plan,
     project_codex_profile_id,
     project_claude_profile_id,
+    project_bound_profile_ids,
     project_duplicate_dir_error,
     project_vscode_launch_plan,
     resolve_selected_project_id,
@@ -535,11 +537,29 @@ class Workspace:
         self.persist()
         return ActionResult(message=message)
 
+    def delete_profile_blocker(self, profile_id: str) -> str:
+        """Return why a profile cannot be deleted yet, or '' when it can.
+
+        Used by the UI to warn inside the confirmation dialog instead of letting
+        the user confirm a delete that would then be refused.
+        """
+        if self.session.profile_by_id(profile_id) is None:
+            return "配置不存在或已被删除。"
+        return profile_delete_error(
+            profile_id,
+            self.session.projects,
+            project_bound_profile_ids=project_bound_profile_ids,
+        ) or ""
+
     def delete_profile(self, profile_id: str) -> ActionResult:
         session = self.session
         profile = session.profile_by_id(profile_id)
         if profile is None:
             raise WorkspaceError("配置不存在或已被删除。")
+        # Guard: refuse to orphan projects that still reference this profile.
+        blocker = self.delete_profile_blocker(profile_id)
+        if blocker:
+            raise WorkspaceError(f"{blocker}\n无法删除。")
         session.remove_profile(profile_id)
         session.normalize_global_profile_ids()
         self.persist()

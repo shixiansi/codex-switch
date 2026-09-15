@@ -168,6 +168,52 @@ class ProfileOperationTests(WorkspaceTestCase):
         self.assertIsNone(self.workspace.session.selected_profile_id)
         self.assertNotIn(profile.id, self.workspace.session.model_batch_cache_by_profile)
 
+    def test_delete_profile_blocked_while_project_bound(self) -> None:
+        profile = self.add_profile(name="被项目占用")
+        self.add_project(name="示例项目", profile=profile)
+
+        blocker = self.workspace.delete_profile_blocker(profile.id)
+        self.assertIn("示例项目", blocker)
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.delete_profile(profile.id)
+        self.assertIn("示例项目", str(ctx.exception))
+        # The profile must survive a refused delete.
+        self.assertEqual(len(self.workspace.session.profiles), 1)
+
+    def test_delete_profile_blocker_empty_when_deletable(self) -> None:
+        profile = self.add_profile()
+        self.assertEqual(self.workspace.delete_profile_blocker(profile.id), "")
+        self.assertIn("不存在", self.workspace.delete_profile_blocker("missing-id"))
+
+    def test_delete_profile_allowed_after_binding_removed(self) -> None:
+        profile = self.add_profile()
+        project = self.add_project(profile=profile)
+        self.assertTrue(self.workspace.delete_profile_blocker(profile.id))
+
+        self.workspace.delete_project(project.id)
+        self.assertEqual(self.workspace.delete_profile_blocker(profile.id), "")
+        self.workspace.delete_profile(profile.id)
+        self.assertEqual(self.workspace.session.profiles, [])
+
+    def test_delete_profile_blocked_by_claude_binding_only(self) -> None:
+        """A project bound only as the Claude target still blocks deletion."""
+        codex = self.add_profile(name="codex 侧", vendor=VENDOR_CODEX)
+        claude = self.add_profile(name="claude 侧", vendor=VENDOR_CLAUDE)
+        project_dir = self.root / "claude-bound"
+        project_dir.mkdir()
+        project = ProjectRecord.create(
+            project_dir=str(project_dir),
+            profile_id=codex.id,
+            name="仅 Claude 绑定",
+            codex_profile_id=codex.id,
+            claude_profile_id=claude.id,
+        )
+        self.workspace.session.projects.append(project)
+        self.workspace.persist()
+
+        self.assertIn("仅 Claude 绑定", self.workspace.delete_profile_blocker(claude.id))
+        self.assertIn("仅 Claude 绑定", self.workspace.delete_profile_blocker(codex.id))
+
     def test_invalid_payloads_are_rejected(self) -> None:
         cases = [
             ({"name": ""}, "请填写配置名称"),

@@ -245,7 +245,7 @@ Item {
                                 AppButton {
                                     text: "删除"
                                     variant: "danger"
-                                    onClicked: projectsModel.remove(projectsModel.selectedId)
+                                    onClicked: app.requestDeleteProject(projectsModel.selectedId)
                                 }
                             }
 
@@ -401,7 +401,7 @@ Item {
                             text: "删除"
                             variant: "danger"
                             enabled: toolsModel.mcpServers.length > 0
-                            onClicked: toolsModel.removeMcp(
+                            onClicked: app.requestDeleteMcpServer(
                                 toolsModel.mcpServers.length > 0 ? toolsModel.mcpServers[0].name : "")
                         }
                         Item { Layout.fillWidth: true }
@@ -509,7 +509,7 @@ Item {
                                     AppButton {
                                         text: "删除"
                                         variant: "ghost"
-                                        onClicked: toolsModel.removeSkillGroup(skillGroupRow.modelData.id)
+                                        onClicked: app.requestDeleteSkillGroup(skillGroupRow.modelData.id)
                                     }
                                 }
 
@@ -551,7 +551,7 @@ Item {
                                         AppButton {
                                             text: "删除"
                                             variant: "ghost"
-                                            onClicked: toolsModel.removeSkill(
+                                            onClicked: app.requestDeleteSkill(
                                                 skillGroupRow.modelData.id, modelData.id)
                                         }
                                     }
@@ -634,7 +634,7 @@ Item {
                                 AppButton {
                                     text: "删除"
                                     variant: "ghost"
-                                    onClicked: toolsModel.removeSkillRepo(modelData.id)
+                                    onClicked: app.requestDeleteSkillRepo(modelData.id)
                                 }
                             }
                         }

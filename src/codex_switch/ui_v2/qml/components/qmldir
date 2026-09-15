@@ -9,6 +9,7 @@ AppSwitch 1.0 AppSwitch.qml
 AppTextArea 1.0 AppTextArea.qml
 AppTextField 1.0 AppTextField.qml
 BusyBar 1.0 BusyBar.qml
+ConfirmDialog 1.0 ConfirmDialog.qml
 DetailRow 1.0 DetailRow.qml
 EmptyState 1.0 EmptyState.qml
 FormRenderer 1.0 FormRenderer.qml
