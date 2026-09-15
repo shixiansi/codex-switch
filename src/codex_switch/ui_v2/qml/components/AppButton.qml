@@ -49,26 +49,35 @@ Button {
         }
     }
 
-    contentItem: Row {
-        id: contentRow
-        spacing: Theme.space1 + 2
-        anchors.centerIn: parent
+    contentItem: Item {
+        // Qt Quick Controls stretches contentItem to fill the button, so a Row
+        // with anchors.centerIn would be overridden and the label would sit
+        // flush left. Centering the Row inside a wrapper keeps short labels
+        // ("编辑") visually centred instead of left-aligned.
+        implicitWidth: contentRow.implicitWidth
+        implicitHeight: contentRow.implicitHeight
 
-        AppIcon {
-            name: control.iconName
-            color: control._fg
-            size: control.iconSize
-            visible: control.iconName !== ""
-            anchors.verticalCenter: parent.verticalCenter
-        }
+        Row {
+            id: contentRow
+            spacing: control.iconName !== "" ? Theme.space1 + 2 : 0
+            anchors.centerIn: parent
 
-        Text {
-            text: control.text
-            color: control._fg
-            font.pixelSize: Theme.fontBody
-            font.weight: control.isPrimary ? Font.DemiBold : Font.Normal
-            anchors.verticalCenter: parent.verticalCenter
-            elide: Text.ElideRight
+            AppIcon {
+                name: control.iconName
+                color: control._fg
+                size: control.iconSize
+                visible: control.iconName !== ""
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+                text: control.text
+                color: control._fg
+                font.pixelSize: Theme.fontBody
+                font.weight: control.isPrimary ? Font.DemiBold : Font.Normal
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+            }
         }
     }
 

@@ -286,6 +286,48 @@ class QmlSmokeTests(unittest.TestCase):
         self.assertEqual(self.warnings, [], f"QML warnings: {self.warnings[:5]}")
         self.assertNoRuntimeErrors()
 
+    # -- layout regressions ---------------------------------------------
+    def test_button_labels_are_centred(self) -> None:
+        """Short button labels must be centred, not flush left.
+
+        Qt Quick Controls stretches a Button's contentItem to fill the control,
+        so the label Row previously started at the left edge. Guard against
+        reintroducing that by comparing the gaps either side of the label row.
+        """
+        from PySide6.QtQuick import QQuickItem
+
+        root = self._load()
+        self._pump()
+
+        checked = 0
+        for item in root.findChildren(QQuickItem):
+            if item.metaObject().className().startswith("AppButton"):
+                wrapper = item.property("contentItem")
+                if wrapper is None:
+                    continue
+                rows = wrapper.childItems()
+                if not rows:
+                    continue
+                row = rows[0]
+                wrap_width = wrapper.width()
+                if wrap_width <= 0:
+                    continue
+                left = row.x()
+                right = wrap_width - (row.x() + row.width())
+                with self.subTest(label=item.property("text")):
+                    self.assertLessEqual(
+                        abs(left - right),
+                        2.0,
+                        f"label not centred: left={left:.1f} right={right:.1f}",
+                    )
+                    self.assertLessEqual(
+                        row.width(),
+                        wrap_width + 1.0,
+                        "button content overflows its control",
+                    )
+                checked += 1
+        self.assertGreater(checked, 0, "no AppButton instances found to check")
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem
