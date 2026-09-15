@@ -536,6 +536,44 @@ Window {
         self.controller.cancelPending()
         self._pump(2)
 
+    def test_skills_hover_is_scoped_to_a_single_row(self) -> None:
+        """Hovering one skill must not highlight the whole group.
+
+        The group delegate's MouseArea previously filled the entire group cell,
+        so moving the mouse over any skill lit up the whole block (header plus
+        every skill row). Each hover region must now be row-sized.
+        """
+        from PySide6.QtQuick import QQuickItem
+
+        root = self._load()
+        self.controller.navigateTo("projects")
+        self._pump(5)
+        pages = [
+            o for o in root.findChildren(QQuickItem)
+            if o.metaObject().className().startswith("ProjectsPage")
+        ]
+        self.assertTrue(pages, "ProjectsPage not found")
+        pages[0].setProperty("currentTab", 2)  # Skills tab
+        self._pump(8)
+
+        heights: list[float] = []
+        for item in root.findChildren(QQuickItem):
+            if not item.metaObject().className().startswith("QQuickMouseArea"):
+                continue
+            if not item.property("hoverEnabled"):
+                continue
+            if item.width() <= 0 or item.height() <= 0:
+                continue
+            heights.append(item.height())
+
+        self.assertTrue(heights, "no hover-enabled areas found")
+        # A single row is ~30px; the old bug produced a ~700px group-sized area.
+        self.assertLess(
+            max(heights),
+            120,
+            f"hover area spans multiple rows: largest is {max(heights):.0f}px",
+        )
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem

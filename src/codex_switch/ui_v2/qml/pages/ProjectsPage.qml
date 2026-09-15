@@ -465,81 +465,139 @@ Item {
                         boundsBehavior: Flickable.StopAtBounds
                         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                        delegate: Rectangle {
+                        delegate: Column {
                             id: skillGroupRow
 
                             required property var modelData
 
                             width: skillGroupList.width
-                            implicitHeight: skillGroupColumn.implicitHeight + Theme.space2 * 2
-                            radius: Theme.radiusSm
-                            color: skillGroupHover.containsMouse ? Theme.surfaceHover : "transparent"
+                            spacing: Theme.space1
 
-                            ColumnLayout {
-                                id: skillGroupColumn
-                                anchors.fill: parent
-                                anchors.margins: Theme.space2
-                                spacing: Theme.space1
+                            // The group header owns the hover highlight. It must
+                            // NOT span the skill rows below it, otherwise moving
+                            // the mouse over any skill lights up the whole group.
+                            Rectangle {
+                                id: skillGroupHeader
 
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Theme.space2
+                                width: parent.width
+                                implicitHeight: headerColumn.implicitHeight + Theme.space2 * 2
+                                radius: Theme.radiusSm
+                                color: "transparent"
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: parent.radius
+                                    color: Theme.surfaceHover
+                                    opacity: headerHover.containsMouse ? 1 : 0
+
+                                    Behavior on opacity {
+                                        NumberAnimation {
+                                            duration: Theme.durationFast
+                                            easing.type: Easing.OutCubic
+                                        }
+                                    }
+                                }
+
+                                ColumnLayout {
+                                    id: headerColumn
+                                    anchors.fill: parent
+                                    anchors.margins: Theme.space2
+                                    spacing: Theme.space1
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Theme.space2
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: skillGroupRow.modelData.name
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontBody
+                                            font.weight: Font.Medium
+                                            elide: Text.ElideRight
+                                        }
+
+                                        StatusBadge {
+                                            text: skillGroupRow.modelData.skillCount + " 个"
+                                            tone: "info"
+                                        }
+
+                                        AppButton {
+                                            text: "加 Skill"
+                                            variant: "ghost"
+                                            onClicked: toolsModel.beginCreateSkill(skillGroupRow.modelData.id)
+                                        }
+                                        AppButton {
+                                            text: "编辑"
+                                            variant: "ghost"
+                                            onClicked: toolsModel.beginEditSkillGroup(skillGroupRow.modelData.id)
+                                        }
+                                        AppButton {
+                                            text: "删除"
+                                            variant: "ghost"
+                                            onClicked: app.requestDeleteSkillGroup(skillGroupRow.modelData.id)
+                                        }
+                                    }
 
                                     Text {
                                         Layout.fillWidth: true
-                                        text: skillGroupRow.modelData.name
-                                        color: Theme.text
-                                        font.pixelSize: Theme.fontBody
-                                        font.weight: Font.Medium
+                                        text: skillGroupRow.modelData.description
+                                        color: Theme.textMuted
+                                        font.pixelSize: Theme.fontCaption
                                         elide: Text.ElideRight
-                                    }
-
-                                    StatusBadge {
-                                        text: skillGroupRow.modelData.skillCount + " 个"
-                                        tone: "info"
-                                    }
-
-                                    AppButton {
-                                        text: "加 Skill"
-                                        variant: "ghost"
-                                        onClicked: toolsModel.beginCreateSkill(skillGroupRow.modelData.id)
-                                    }
-                                    AppButton {
-                                        text: "编辑"
-                                        variant: "ghost"
-                                        onClicked: toolsModel.beginEditSkillGroup(skillGroupRow.modelData.id)
-                                    }
-                                    AppButton {
-                                        text: "删除"
-                                        variant: "ghost"
-                                        onClicked: app.requestDeleteSkillGroup(skillGroupRow.modelData.id)
+                                        visible: skillGroupRow.modelData.description !== ""
                                     }
                                 }
 
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: skillGroupRow.modelData.description
-                                    color: Theme.textMuted
-                                    font.pixelSize: Theme.fontCaption
-                                    elide: Text.ElideRight
-                                    visible: skillGroupRow.modelData.description !== ""
+                                MouseArea {
+                                    id: headerHover
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    z: -1
                                 }
+                            }
 
-                                Repeater {
-                                    model: skillGroupRow.modelData.skills || []
+                            // Each skill row highlights on its own, so hovering one
+                            // skill no longer dims the entire group.
+                            Repeater {
+                                model: skillGroupRow.modelData.skills || []
 
-                                    delegate: RowLayout {
-                                        required property var modelData
+                                delegate: Rectangle {
+                                    id: skillRow
 
-                                        Layout.fillWidth: true
+                                    required property var modelData
+
+                                    width: skillGroupRow.width
+                                    implicitHeight: skillRowLayout.implicitHeight + Theme.space1 * 2
+                                    radius: Theme.radiusSm
+                                    color: "transparent"
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: parent.radius
+                                        color: Theme.surfaceHover
+                                        opacity: skillRowHover.containsMouse ? 1 : 0
+
+                                        Behavior on opacity {
+                                            NumberAnimation {
+                                                duration: Theme.durationFast
+                                                easing.type: Easing.OutCubic
+                                            }
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        id: skillRowLayout
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Theme.space2 + Theme.space2
+                                        anchors.rightMargin: Theme.space2
                                         spacing: Theme.space2
-                                        Layout.leftMargin: Theme.space2
 
                                         AppIcon { name: "file"; color: Theme.textFaint; size: 13 }
 
                                         Text {
                                             Layout.fillWidth: true
-                                            text: modelData.name + "  ·  " + modelData.type
+                                            text: skillRow.modelData.name + "  ·  " + skillRow.modelData.type
                                             color: Theme.textMuted
                                             font.pixelSize: Theme.fontCaption
                                             elide: Text.ElideRight
@@ -549,23 +607,23 @@ Item {
                                             text: "编辑"
                                             variant: "ghost"
                                             onClicked: toolsModel.beginEditSkill(
-                                                skillGroupRow.modelData.id, modelData.id)
+                                                skillGroupRow.modelData.id, skillRow.modelData.id)
                                         }
                                         AppButton {
                                             text: "删除"
                                             variant: "ghost"
                                             onClicked: app.requestDeleteSkill(
-                                                skillGroupRow.modelData.id, modelData.id)
+                                                skillGroupRow.modelData.id, skillRow.modelData.id)
                                         }
                                     }
-                                }
-                            }
 
-                            MouseArea {
-                                id: skillGroupHover
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                z: -1
+                                    MouseArea {
+                                        id: skillRowHover
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        z: -1
+                                    }
+                                }
                             }
                         }
                     }
