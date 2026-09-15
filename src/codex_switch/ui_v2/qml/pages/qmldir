@@ -1,0 +1,9 @@
+module pages
+
+AccountPoolPanel 1.0 AccountPoolPanel.qml
+DashboardPage 1.0 DashboardPage.qml
+ModelTestPanel 1.0 ModelTestPanel.qml
+NetworkPage 1.0 NetworkPage.qml
+ProfilesPage 1.0 ProfilesPage.qml
+ProjectsPage 1.0 ProjectsPage.qml
+SystemPage 1.0 SystemPage.qml

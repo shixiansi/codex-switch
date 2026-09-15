@@ -2,7 +2,7 @@
 
 Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex / Claude API 配置、全局/项目 MCP 配置、路由代理、号池和项目启动模板，并把选中的配置安全写入 Codex 使用的 `config.toml`、`auth.json`、Claude 使用的 `settings.json` 或项目级 `.codex` / `.claude` 目录。
 
-界面基于 `Tkinter + ttkbootstrap`，定位是轻量、离线、可打包的桌面工具。API Key、项目配置和文档模板默认只保存在本机。
+界面基于 `PySide6 + Qt Quick/QML`（浅色主题默认，支持深色切换），定位是轻量、离线、可打包的桌面工具。API Key、项目配置和文档模板默认只保存在本机。
 
 ## 适合解决的问题
 
@@ -107,7 +107,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 ### 设置
 
 - 设置模型批量测试的同时请求数量，范围固定为 1-5。
-- 查看应用版本、Python、Tk/Tcl、ttkbootstrap、配置库路径、Codex 配置路径、Claude 配置路径、当前工作目录和平台信息。
+- 查看应用版本、Python、PySide6/Qt、配置库路径、Codex 配置路径、Claude 配置路径、当前工作目录和平台信息。
 
 ## 安装使用
 
@@ -130,11 +130,7 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Linux 环境如果缺少 Tk，需要先安装系统包，例如 Ubuntu：
-
-```bash
-sudo apt-get install python3-tk
-```
+界面依赖 `PySide6-Essentials`。`requirements.txt` 同时保留了 `ttkbootstrap`，因为旧 Tk 界面模块与其测试仍在仓库中，但默认入口不会加载 Tk。
 
 ## 本地测试
 
@@ -153,7 +149,7 @@ Windows 本地打包：
 
 打包完成后输出在 `dist/CodexSwitch.exe`。
 
-跨平台发布包由 GitHub Actions 在 tag 推送时构建。工作流会在 Windows、Linux、macOS 上安装依赖、验证 tkinter、运行单元测试并上传 Release 资产。
+跨平台发布包由 GitHub Actions 在 tag 推送时构建。工作流会在 Windows、Linux、macOS 上安装依赖、运行单元测试（含 QML 离屏冒烟测试）并上传 Release 资产。
 
 ## 配置和数据位置
 
@@ -192,7 +188,7 @@ Windows 本地打包：
 ├── CodexSwitch.spec                # PyInstaller 配置
 ├── scripts/package_release.py      # Release 打包脚本
 ├── src/codex_switch/
-│   ├── main.py                     # 应用启动与 Tcl/Tk 环境修正
+│   ├── main.py                     # 应用启动入口（默认启动 QML 界面）
 │   ├── models.py                   # Profile、ProjectRecord、健康结果等数据模型
 │   ├── storage.py                  # profiles.json 读写
 │   ├── codex_config.py             # Codex config/auth 与 MCP TOML 生成逻辑
@@ -204,13 +200,20 @@ Windows 本地打包：
 │   ├── proxy/                      # 路由代理、协议转换与请求清洗
 │   ├── resources.py                # 包内资源加载
 │   ├── assets/                     # 默认 MCP JSON 与 AGENTS 模板
-│   └── ui/
-│       ├── app.py                  # 主窗口和页面逻辑
-│       ├── dialogs.py              # 配置、项目、MCP、聊天和批量测试弹窗
-│       ├── route_proxy_logic.py    # 项目路由代理规则推导
-│       ├── styles.py               # 主题、按钮、状态徽标、顶部菜单
-│       └── utils.py                # UI 辅助函数
-└── tests/                          # 单元测试
+│   ├── ui_v2/                      # PySide6 + QML 界面（默认入口）
+│   │   ├── app.py                  # QApplication / QQmlApplicationEngine 启动
+│   │   ├── controller.py           # QML 唯一边界：导航、抽屉、后台任务、提示
+│   │   ├── workspace.py            # 无 Qt 依赖的业务编排层
+│   │   ├── session.py              # 内存状态与 profiles.json 读写
+│   │   ├── snapshots.py            # 业务对象 → QML 展示数据
+│   │   ├── forms.py                # 抽屉表单结构与提交校验
+│   │   ├── theme.py                # 浅色/深色主题令牌
+│   │   ├── viewmodels/             # 各功能区域 ViewModel
+│   │   ├── workers/                # QThreadPool 后台任务
+│   │   ├── qml/                    # AppShell、components、pages、theme
+│   │   └── assets/icons/           # 本地 SVG 图标
+│   └── ui/                         # 旧 Tkinter 界面（保留，非默认入口）
+└── tests/                          # 单元测试与 QML 冒烟测试
 ```
 
 ## 安全说明
@@ -222,9 +225,11 @@ Windows 本地打包：
 
 ## 开发备注
 
-- UI 技术栈：`Tkinter + ttkbootstrap`。
+- UI 技术栈：`PySide6 + Qt Quick/QML`（`src/codex_switch/ui_v2`）。
 - 应用包布局：`src/codex_switch`。
-- 默认主题由 `src/codex_switch/ui/styles.py` 管理。
+- 主题令牌由 `src/codex_switch/ui_v2/theme.py` 与 `qml/theme/Theme.qml` 统一管理，默认浅色，可在「系统」页切换深色。
+- QML 不在 UI 线程执行网络、Git、模型测试或模板生成，统一走 `ui_v2/workers` 的后台任务。
+- 旧 `Tkinter + ttkbootstrap` 界面保留在 `src/codex_switch/ui`，但不再是默认入口。
 - MCP 默认配置来自 `src/codex_switch/assets/mcp-servers-2026-04-11.json`。
 - 默认文档模板来自 `src/codex_switch/assets/AGENTS.md`。
 

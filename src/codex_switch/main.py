@@ -14,6 +14,12 @@ def _has_required_tcl_file(path: str, filename: str) -> bool:
 
 
 def _normalize_tk_environment() -> None:
+    """Point TCL/TK_LIBRARY at usable Tcl directories when the environment is stale.
+
+    Retained for the legacy Tk interface and for frozen builds that still ship
+    Tcl data. It never imports ``tkinter``, so the QML entrypoint below stays
+    free of any Tk dependency.
+    """
     expected_dirs = {
         "TCL_LIBRARY": (
             "init.tcl",
@@ -46,13 +52,14 @@ def _normalize_tk_environment() -> None:
                 break
 
 
-def main() -> None:
-    _normalize_tk_environment()
+def main() -> int:
+    """Launch the PySide6/QML interface."""
+    # Imported lazily so importing this module (e.g. from tests) never requires
+    # PySide6 or initialises Qt.
+    from codex_switch.ui_v2.app import run_app
 
-    from codex_switch.ui.app import run_app
-
-    run_app()
+    return run_app()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,4 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller spec for Codex Switch.
+
+The default UI is PySide6/QML, so this build:
+* bundles the QML tree and the bundled SVG icons,
+* collects the Qt Quick / QuickControls2 plugins PyInstaller's hooks need,
+* keeps the Tk data because the legacy Tk modules are still importable.
+"""
 
 from pathlib import Path
 import sys
@@ -10,6 +17,8 @@ ROOT = Path.cwd()
 SRC_ROOT = ROOT / "src"
 BASE_PREFIX = Path(sys.base_prefix)
 HOOKS_ROOT = ROOT / "pyinstaller-hooks"
+QML_ROOT = SRC_ROOT / "codex_switch" / "ui_v2" / "qml"
+ICONS_ROOT = SRC_ROOT / "codex_switch" / "ui_v2" / "assets" / "icons"
 sys.path.insert(0, str(SRC_ROOT))
 
 
@@ -27,6 +36,7 @@ def _collect_tree(source: Path, target_root: str) -> list[tuple[str, str]]:
     return output
 
 
+# --- legacy Tk data (kept for the retained Tk modules) ----------------------
 TKINTER_HIDDENIMPORTS = [
     "_tkinter",
     "tkinter",
@@ -40,6 +50,26 @@ TKINTER_DATAS = (
     + _collect_tree(BASE_PREFIX / "tcl" / "tk8.6", "_tk_data")
     + _collect_tree(BASE_PREFIX / "tcl" / "tcl8", "tcl8")
 )
+
+# --- QML resources ----------------------------------------------------------
+# The QML tree is loaded from the package directory at runtime, so it must keep
+# the same relative layout inside the bundle: codex_switch/ui_v2/qml/...
+QML_PACKAGE_ROOT = "codex_switch/ui_v2"
+QML_DATAS = _collect_tree(QML_ROOT, f"{QML_PACKAGE_ROOT}/qml")
+ICON_DATAS = _collect_tree(ICONS_ROOT, f"{QML_PACKAGE_ROOT}/assets/icons")
+QML_HIDDENIMPORTS = [
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    "PySide6.QtQuickControls2",
+    "PySide6.QtWidgets",
+    "codex_switch.ui_v2",
+    "codex_switch.ui_v2.app",
+    "codex_switch.ui_v2.controller",
+    "codex_switch.ui_v2.workspace",
+]
+
 APP_DATAS = collect_data_files("codex_switch", includes=["assets/*"])
 TTKBOOTSTRAP_HIDDENIMPORTS = collect_submodules("ttkbootstrap")
 TTKBOOTSTRAP_DATAS = collect_data_files("ttkbootstrap")
@@ -49,8 +79,14 @@ a = Analysis(
     ['main.py'],
     pathex=[str(ROOT), str(SRC_ROOT)],
     binaries=[],
-    datas=TKINTER_DATAS + APP_DATAS + TTKBOOTSTRAP_DATAS,
-    hiddenimports=TKINTER_HIDDENIMPORTS + TTKBOOTSTRAP_HIDDENIMPORTS,
+    datas=(
+        TKINTER_DATAS
+        + APP_DATAS
+        + QML_DATAS
+        + ICON_DATAS
+        + TTKBOOTSTRAP_DATAS
+    ),
+    hiddenimports=TKINTER_HIDDENIMPORTS + TTKBOOTSTRAP_HIDDENIMPORTS + QML_HIDDENIMPORTS,
     hookspath=[str(HOOKS_ROOT)],
     hooksconfig={},
     runtime_hooks=[],

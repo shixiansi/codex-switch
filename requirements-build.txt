@@ -1,2 +1,4 @@
 pyinstaller==6.19.0
+PySide6-Essentials>=6.8,<6.12
+# Required by the retained legacy Tk modules and their tests.
 ttkbootstrap>=1.10,<2

@@ -13,7 +13,7 @@ import unittest
 from urllib import error as url_error
 from unittest.mock import patch
 
-from helpers import start_test_server, workspace_tempdir
+from helpers import git_clone_available, start_test_server, workspace_tempdir
 
 from codex_switch import main
 from codex_switch.chat import (
@@ -4028,6 +4028,10 @@ args = ["-m", "alpha"]
         git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
         if git_available.returncode != 0:
             self.skipTest("git is not available")
+        # ls-remote/clone need MSYS sh, which some sandboxes block.
+        clone_ok, clone_reason = git_clone_available()
+        if not clone_ok:
+            self.skipTest(clone_reason)
 
         def run_git(*args: str) -> str:
             completed = subprocess.run(
@@ -4599,6 +4603,9 @@ args = ["-m", "alpha"]
         git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
         if git_available.returncode != 0:
             self.skipTest("git is not available")
+        clone_ok, clone_reason = git_clone_available()
+        if not clone_ok:
+            self.skipTest(clone_reason)
 
         def run_git(*args: str) -> str:
             completed = subprocess.run(
@@ -4690,6 +4697,9 @@ args = ["-m", "alpha"]
         git_available = subprocess.run(["git", "--version"], capture_output=True, text=True, check=False, timeout=10)
         if git_available.returncode != 0:
             self.skipTest("git is not available")
+        clone_ok, clone_reason = git_clone_available()
+        if not clone_ok:
+            self.skipTest(clone_reason)
 
         def run_git(*args: str) -> str:
             completed = subprocess.run(

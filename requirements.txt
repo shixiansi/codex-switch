@@ -1,1 +1,4 @@
+PySide6-Essentials>=6.8,<6.12
+# The legacy Tk interface under codex_switch/ui is no longer the default
+# entrypoint, but its modules and tests still import it.
 ttkbootstrap>=1.10,<2

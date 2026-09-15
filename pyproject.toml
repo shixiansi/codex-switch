@@ -8,6 +8,7 @@ version = "0.2.2"
 description = "Local desktop tool for switching Codex API profiles."
 requires-python = ">=3.11"
 dependencies = [
+  "PySide6-Essentials>=6.8,<6.12",
   "ttkbootstrap>=1.10,<2",
 ]
 
@@ -15,4 +16,4 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-codex_switch = ["assets/*"]
+codex_switch = ["assets/*", "ui_v2/assets/icons/*", "ui_v2/qml/**/*.qml", "ui_v2/qml/**/qmldir"]

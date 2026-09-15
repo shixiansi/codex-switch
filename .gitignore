@@ -7,6 +7,12 @@ dist/
 !CodexSwitch.spec
 artifacts/
 .test-temp/
+.tmp/
+._app_restore.tmp
+._app_tail.patch
+._check_env.py
+._write_probe.tmp
+%SystemDrive%/
 
 # Local runtime and agent state
 .codex/
