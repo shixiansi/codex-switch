@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
@@ -88,12 +89,15 @@ class QmlSmokeTests(unittest.TestCase):
         self.addCleanup(self._temp.__exit__, None, None, None)
 
         self.store = ProfileStore(self.root)
+        # Both profiles require sign-in so the batch action has work to do.
         codex = Profile.create(
             name="主账号",
             base_url="https://api.example.com",
             api_key="sk-codex",
             vendor="codex",
             codex_model="gpt-5",
+            requires_sign_in=True,
+            sign_in_url="https://api.example.com/console/personal",
         )
         codex.health = HealthResult(status="healthy", detail="接口可用", models=["gpt-5", "gpt-5-mini"])
         claude = Profile.create(
@@ -103,6 +107,8 @@ class QmlSmokeTests(unittest.TestCase):
             vendor="claude",
             claude_model="sonnet",
             claude_fallback_model="haiku",
+            requires_sign_in=True,
+            sign_in_url="https://claude.example.com/console/personal",
         )
         claude.health = HealthResult(status="error", detail="鉴权失败")
         project_dir = self.root / "demo-project"
@@ -258,6 +264,51 @@ class QmlSmokeTests(unittest.TestCase):
         self.assertEqual(self.controller.dashboard.summary["profileCount"], 2)
         self.assertEqual(self.controller.dashboard.summary["healthyCount"], 1)
         self.assertEqual(self.controller.dashboard.summary["errorCount"], 1)
+
+    def test_batch_sign_in_surface_is_exposed(self) -> None:
+        """The one-click sign-in action must be reachable from the UI model."""
+        self._load()
+        self._pump()
+        # Both seeded profiles require sign-in, so the action is available.
+        sign_in = self.controller.profiles.signIn
+        self.assertEqual(sign_in["pending"], 2)
+        self.assertTrue(self.controller.profiles.hasPendingSignIn)
+
+        # Opening is delegated to the workspace; stub it so no browser opens.
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            self.controller.profiles.signInAll()
+        self._pump()
+
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(self.controller.profiles.signIn["pending"], 0)
+        self.assertFalse(self.controller.profiles.hasPendingSignIn)
+        self.assertEqual(self.warnings, [], f"QML warnings: {self.warnings[:5]}")
+        self.assertNoRuntimeErrors()
+
+    def test_sign_in_button_exists_in_loaded_qml(self) -> None:
+        """The one-click button must be present in the real QML object tree."""
+        from PySide6.QtQuick import QQuickItem
+
+        root = self._load()
+        self.controller.navigateTo("profiles")
+        self._pump()
+
+        def texts(item) -> list[str]:
+            found = []
+            for child in item.findChildren(QQuickItem):
+                prop = child.property("text")
+                if isinstance(prop, str) and prop:
+                    found.append(prop)
+            if isinstance(item.property("text"), str):
+                found.append(item.property("text"))
+            return found
+
+        all_text = texts(root)
+        sign_in_labels = [t for t in all_text if "一键签到" in t]
+        self.assertTrue(sign_in_labels, f"一键签到 button not found; labels={all_text[:25]}")
+        # Pending count is surfaced in the label for this fixture.
+        self.assertIn("一键签到 (2)", sign_in_labels)
 
     def test_empty_state_renders_without_data(self) -> None:
         # A workspace with no profiles exercises every EmptyState branch.

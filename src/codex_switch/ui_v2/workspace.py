@@ -299,6 +299,7 @@ class Workspace:
             "global_codex_name": codex_profile.name if codex_profile else "",
             "global_claude_name": claude_profile.name if claude_profile else "",
             "health": health_summary,
+            "sign_in": self.sign_in_summary(),
             "hide_error_profiles": bool(session.hide_error_profiles),
 
             "projects": [snapshots.project_row(item, session.selected_project_id) for item in session.projects],
@@ -665,6 +666,98 @@ class Workspace:
         profile.last_signed_date = today_iso()
         self.persist()
         return ActionResult(message=f"已记录今日签到：{profile.name}")
+
+    def sign_in_pending(self) -> list[Profile]:
+        """Profiles that need signing in today and have a usable URL."""
+        today = today_iso()
+        return [
+            profile
+            for profile in self.session.profiles
+            if profile.requires_sign_in
+            and profile.sign_in_url.strip()
+            and profile.last_signed_date != today
+        ]
+
+    def sign_in_summary(self) -> dict[str, Any]:
+        """Counts shown next to the batch sign-in action."""
+        today = today_iso()
+        with_url = [
+            profile
+            for profile in self.session.profiles
+            if profile.requires_sign_in and profile.sign_in_url.strip()
+        ]
+        signed = [profile for profile in with_url if profile.last_signed_date == today]
+        missing_url = [
+            profile
+            for profile in self.session.profiles
+            if profile.requires_sign_in and not profile.sign_in_url.strip()
+        ]
+        return {
+            "required": len(with_url) + len(missing_url),
+            "signedToday": len(signed),
+            "pending": len(with_url) - len(signed),
+            "missingUrl": len(missing_url),
+            "urls": [profile.sign_in_url.strip() for profile in with_url],
+        }
+
+    def open_all_sign_in_urls(self) -> ActionResult:
+        """Open every pending sign-in page and mark those profiles as signed.
+
+        Already-signed profiles are skipped so repeated clicks do not reopen the
+        same tabs. Opening a browser tab is the only verification available, so
+        a profile is marked signed once its page is handed to the browser.
+        """
+        session = self.session
+        pending = self.sign_in_pending()
+        missing_url = [
+            profile
+            for profile in session.profiles
+            if profile.requires_sign_in and not profile.sign_in_url.strip()
+        ]
+
+        if not pending and not missing_url:
+            return ActionResult(
+                message="所有需要签到的配置今天都已签到。",
+                level="info",
+            )
+
+        today = today_iso()
+        opened: list[str] = []
+        failed: list[str] = []
+        for profile in pending:
+            try:
+                _open_url(profile.sign_in_url)
+            except Exception as exc:  # noqa: BLE001 - keep going for the rest
+                failed.append(f"{profile.name}：{exc}")
+                continue
+            profile.last_signed_date = today
+            opened.append(profile.name)
+
+        if opened:
+            self.persist()
+
+        detail_parts: list[str] = []
+        if missing_url:
+            detail_parts.append("缺少签到地址：" + "、".join(item.name for item in missing_url))
+        if failed:
+            detail_parts.append("打开失败：" + "；".join(failed))
+        detail = "\n".join(detail_parts)
+
+        if not opened:
+            return ActionResult(
+                message=f"未能打开任何签到页面（{len(failed)} 个失败）。",
+                level="error",
+                detail=detail,
+            )
+
+        message = f"已打开 {len(opened)} 个签到页面并标记为今日已签到。"
+        if missing_url:
+            message += f" {len(missing_url)} 个配置缺少签到地址。"
+        return ActionResult(
+            message=message,
+            level="warning" if (missing_url or failed) else "success",
+            detail=detail,
+        )
 
     # =====================================================================
     # Health checks

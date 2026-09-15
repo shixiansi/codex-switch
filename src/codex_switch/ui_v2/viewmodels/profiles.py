@@ -14,6 +14,7 @@ class ProfilesViewModel(SnapshotViewModel):
     detailChanged = Signal()
     formChanged = Signal()
     globalTargetsChanged = Signal()
+    signInChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
@@ -26,6 +27,7 @@ class ProfilesViewModel(SnapshotViewModel):
         self._claude_choices: list[dict[str, Any]] = []
         self._global_codex_id = ""
         self._global_claude_id = ""
+        self._sign_in: dict[str, Any] = {}
         super().__init__(self._build_items, parent)
 
     # -- properties ------------------------------------------------------
@@ -77,6 +79,14 @@ class ProfilesViewModel(SnapshotViewModel):
     def globalClaudeId(self) -> str:
         return self._global_claude_id
 
+    @Property("QVariantMap", notify=signInChanged)
+    def signIn(self) -> dict[str, Any]:
+        return dict(self._sign_in)
+
+    @Property(bool, notify=signInChanged)
+    def hasPendingSignIn(self) -> bool:
+        return int(self._sign_in.get("pending") or 0) > 0
+
     # -- building --------------------------------------------------------
     def _build_items(self) -> list[dict[str, Any]]:
         state = dict(self._controller.snapshot() or {})
@@ -120,6 +130,11 @@ class ProfilesViewModel(SnapshotViewModel):
             self._global_codex_id = global_codex
             self._global_claude_id = global_claude
             self.globalTargetsChanged.emit()
+
+        sign_in = dict(state.get("sign_in") or {})
+        if sign_in != self._sign_in:
+            self._sign_in = sign_in
+            self.signInChanged.emit()
 
         return rows
 
@@ -200,6 +215,11 @@ class ProfilesViewModel(SnapshotViewModel):
     @Slot(str)
     def markSignedIn(self, profile_id: str) -> None:
         self._controller.markSignedIn(str(profile_id))
+
+    @Slot()
+    def signInAll(self) -> None:
+        """Open every pending sign-in page and mark those profiles as signed."""
+        self._controller.signInAll()
 
 
 __all__ = ["ProfilesViewModel"]

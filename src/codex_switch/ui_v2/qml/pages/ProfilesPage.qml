@@ -35,6 +35,24 @@ Item {
                 onClicked: profilesModel.runHealthCheckAll()
             }
             AppButton {
+                id: signInAllButton
+                text: profilesModel.signIn.pending > 0
+                    ? "一键签到 (" + profilesModel.signIn.pending + ")"
+                    : "一键签到"
+                iconName: "check"
+                enabled: profilesModel.hasPendingSignIn && !app.busy
+                onClicked: profilesModel.signInAll()
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: profilesModel.signIn.required > 0
+                    ? "今日待签到 " + profilesModel.signIn.pending
+                        + " 个 · 已签到 " + profilesModel.signIn.signedToday
+                        + " 个" + (profilesModel.signIn.missingUrl > 0
+                            ? " · " + profilesModel.signIn.missingUrl + " 个缺地址" : "")
+                    : "没有需要签到的配置"
+            }
+            AppButton {
                 text: "新增配置"
                 iconName: "plus"
                 variant: "primary"
@@ -156,12 +174,18 @@ Item {
                                 required property var modelData
 
                                 width: profileList.width
-                                iconName: "profile"
+                                // The icon carries sign-in state so the health badge
+                                // stays visible instead of being replaced.
+                                iconName: modelData.requiresSignIn && !modelData.signedToday
+                                    ? "warning"
+                                    : modelData.requiresSignIn ? "check" : "profile"
                                 title: modelData.name
                                 subtitle: modelData.baseUrl
                                 badgeText: modelData.healthLabel
                                 badgeTone: modelData.healthTone
-                                meta: modelData.vendorLabel
+                                meta: modelData.requiresSignIn && !modelData.signedToday
+                                    ? modelData.vendorLabel + " · 待签到"
+                                    : modelData.vendorLabel
                                 selected: modelData.selected
                                 onClicked: profilesModel.select(modelData.id)
 
@@ -241,6 +265,16 @@ Item {
                                 value: profilesModel.selectedDetail.healthCheckedAt || "尚未检测"
                             }
                             DetailRow {
+                                label: "签到状态"
+                                value: {
+                                    var status = profilesModel.selectedDetail.signInStatus || "-"
+                                    var last = profilesModel.selectedDetail.lastSignedDate
+                                    return last ? (status + "（上次 " + last + "）") : status
+                                }
+                                tone: profilesModel.selectedDetail.signedToday === true ? "success" : "warning"
+                                visible: profilesModel.selectedDetail.requiresSignIn === true
+                            }
+                            DetailRow {
                                 label: "检测详情"
                                 value: profilesModel.selectedDetail.healthDetail || "-"
                                 tone: profilesModel.selectedDetail.healthTone || "unknown"
@@ -279,8 +313,10 @@ Item {
                                     onClicked: profilesModel.openSignIn(profilesModel.selectedId)
                                 }
                                 AppButton {
-                                    text: "标记已签到"
+                                    text: profilesModel.selectedDetail.signedToday === true
+                                        ? "已签到（今日）" : "标记已签到"
                                     visible: profilesModel.selectedDetail.requiresSignIn === true
+                                    enabled: profilesModel.selectedDetail.signedToday !== true
                                     onClicked: profilesModel.markSignedIn(profilesModel.selectedId)
                                 }
                                 AppButton {

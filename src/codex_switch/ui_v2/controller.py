@@ -400,6 +400,15 @@ class AppController(QObject):
     def markSignedIn(self, profile_id: str) -> None:
         self._run_sync(lambda: self.workspace.mark_signed_in(str(profile_id)))
 
+    @Slot()
+    def signInAll(self) -> None:
+        """One-click sign-in for every pending profile.
+
+        Opening browser tabs is fast (no network is awaited), so this runs on
+        the UI thread and reports a single aggregated toast.
+        """
+        self._run_sync(self.workspace.open_all_sign_in_urls)
+
     # =====================================================================
     # Health
     # =====================================================================

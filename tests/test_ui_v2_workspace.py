@@ -26,6 +26,7 @@ from codex_switch.models import (
     SkillMarketRepo,
     VENDOR_CLAUDE,
     VENDOR_CODEX,
+    today_iso,
 )
 from codex_switch.storage import ProfileStore
 from codex_switch.ui_v2 import forms, snapshots
@@ -264,6 +265,159 @@ class ProfileOperationTests(WorkspaceTestCase):
         profile = self.add_profile()
         with self.assertRaises(WorkspaceError):
             self.workspace.open_sign_in_url(profile.id)
+
+
+class BatchSignInTests(WorkspaceTestCase):
+    """一键签到：打开所有待签到页面并标记为今日已签到。"""
+
+    def _add_sign_in_profiles(self, count: int = 3) -> list[Profile]:
+        profiles = []
+        for index in range(count):
+            profiles.append(
+                self.add_profile(
+                    name=f"站点{index}",
+                    requires_sign_in=True,
+                    sign_in_url=f"https://signin{index}.example.com/checkin",
+                )
+            )
+        return profiles
+
+    def test_pending_excludes_profiles_without_url(self) -> None:
+        with_url = self.add_profile(
+            name="有地址", requires_sign_in=True, sign_in_url="https://a.example.com/signin"
+        )
+        self.add_profile(name="缺地址", requires_sign_in=True, sign_in_url="")
+        self.add_profile(name="无需签到")
+
+        pending = self.workspace.sign_in_pending()
+        self.assertEqual([item.id for item in pending], [with_url.id])
+
+    def test_summary_counts(self) -> None:
+        first = self.add_profile(
+            name="待签", requires_sign_in=True, sign_in_url="https://a.example.com/signin"
+        )
+        second = self.add_profile(
+            name="已签", requires_sign_in=True, sign_in_url="https://b.example.com/signin"
+        )
+        second.last_signed_date = today_iso()
+        self.add_profile(name="缺地址", requires_sign_in=True, sign_in_url="")
+        self.add_profile(name="无需签到")
+
+        summary = self.workspace.sign_in_summary()
+        self.assertEqual(summary["required"], 3)
+        self.assertEqual(summary["signedToday"], 1)
+        self.assertEqual(summary["pending"], 1)
+        self.assertEqual(summary["missingUrl"], 1)
+        self.assertEqual(len(summary["urls"]), 2)
+
+    def test_open_all_opens_pending_and_marks_them(self) -> None:
+        profiles = self._add_sign_in_profiles(3)
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            result = self.workspace.open_all_sign_in_urls()
+
+        self.assertIn("3", result.message)
+        self.assertEqual(result.level, "success")
+        self.assertEqual(len(opened), 3)
+        # Every profile is now recorded as signed today.
+        for profile in profiles:
+            self.assertEqual(profile.last_signed_date, today_iso())
+        self.assertEqual(self.workspace.sign_in_summary()["pending"], 0)
+
+    def test_already_signed_profiles_are_skipped(self) -> None:
+        profiles = self._add_sign_in_profiles(2)
+        profiles[0].last_signed_date = today_iso()
+        self.workspace.persist()
+
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            result = self.workspace.open_all_sign_in_urls()
+
+        # Only the second profile still needed signing in.
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0], profiles[1].sign_in_url)
+        self.assertIn("1", result.message)
+
+    def test_repeat_call_reports_nothing_to_do(self) -> None:
+        self._add_sign_in_profiles(2)
+        with patch("codex_switch.ui_v2.workspace._open_url"):
+            self.workspace.open_all_sign_in_urls()
+            again = self.workspace.open_all_sign_in_urls()
+
+        self.assertEqual(again.level, "info")
+        self.assertIn("都已签到", again.message)
+
+    def test_no_sign_in_profiles_at_all(self) -> None:
+        self.add_profile(name="普通配置")
+        result = self.workspace.open_all_sign_in_urls()
+        self.assertEqual(result.level, "info")
+        self.assertIn("都已签到", result.message)
+
+    def test_missing_url_is_reported_without_blocking_others(self) -> None:
+        good = self.add_profile(
+            name="有地址", requires_sign_in=True, sign_in_url="https://ok.example.com/signin"
+        )
+        self.add_profile(name="缺地址", requires_sign_in=True, sign_in_url="")
+
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            result = self.workspace.open_all_sign_in_urls()
+
+        self.assertEqual(opened, [good.sign_in_url])
+        self.assertEqual(result.level, "warning")
+        self.assertIn("缺少签到地址", result.detail)
+        self.assertIn("缺地址", result.detail)
+
+    def test_open_failure_does_not_mark_signed_and_continues(self) -> None:
+        first = self.add_profile(
+            name="会失败", requires_sign_in=True, sign_in_url="https://fail.example.com/signin"
+        )
+        second = self.add_profile(
+            name="正常", requires_sign_in=True, sign_in_url="https://ok.example.com/signin"
+        )
+
+        def flaky(url: str) -> None:
+            if "fail" in url:
+                raise OSError("no browser")
+
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=flaky):
+            result = self.workspace.open_all_sign_in_urls()
+
+        # The failing profile keeps its old state; the healthy one is marked.
+        self.assertIsNone(first.last_signed_date)
+        self.assertEqual(second.last_signed_date, today_iso())
+        self.assertEqual(result.level, "warning")
+        self.assertIn("打开失败", result.detail)
+
+    def test_all_failures_reports_error(self) -> None:
+        self._add_sign_in_profiles(2)
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=OSError("boom")):
+            result = self.workspace.open_all_sign_in_urls()
+
+        self.assertEqual(result.level, "error")
+        self.assertIn("未能打开", result.message)
+
+    def test_marking_survives_reload(self) -> None:
+        profiles = self._add_sign_in_profiles(2)
+        with patch("codex_switch.ui_v2.workspace._open_url"):
+            self.workspace.open_all_sign_in_urls()
+
+        reloaded = Workspace(store=self.store, project_root=self.root)
+        for profile in profiles:
+            stored = reloaded.session.profile_by_id(profile.id)
+            self.assertEqual(stored.last_signed_date, today_iso())
+        self.assertEqual(reloaded.sign_in_summary()["pending"], 0)
+
+    def test_snapshot_exposes_sign_in_summary(self) -> None:
+        self._add_sign_in_profiles(2)
+        snapshot = self.workspace.snapshot()
+        self.assertIn("sign_in", snapshot)
+        self.assertEqual(snapshot["sign_in"]["pending"], 2)
+        # Each row carries its own sign-in flags for list rendering.
+        row = snapshot["profiles"][0]
+        self.assertTrue(row["requiresSignIn"])
+        self.assertFalse(row["signedToday"])
+        self.assertEqual(row["signInStatus"], "未签到")
 
 
 class HealthCheckTests(WorkspaceTestCase):

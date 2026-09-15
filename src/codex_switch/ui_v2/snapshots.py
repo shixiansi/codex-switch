@@ -102,6 +102,11 @@ def profile_row(profile: Profile, selected_id: str | None = None) -> dict[str, A
         "notes": profile.notes,
         "requiresSignIn": bool(profile.requires_sign_in),
         "signInUrl": profile.sign_in_url,
+        "signInStatus": str(profile.sign_in_status),
+        "signedToday": bool(
+            profile.requires_sign_in and profile.last_signed_date == today_iso()
+        ),
+        "lastSignedDate": profile.last_signed_date or "",
         "selected": profile.id == selected_id,
     }
 
