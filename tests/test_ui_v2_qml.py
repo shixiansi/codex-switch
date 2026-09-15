@@ -614,6 +614,68 @@ Window {
         self.assertIsInstance(self.controller.profiles.hideErrorProfiles, bool)
         self.assertIsInstance(self.controller.profiles.errorCount, int)
 
+    def test_selecting_a_row_does_not_rebuild_the_list_model(self) -> None:
+        """Selection must not emit itemsChanged, which resets the ListView scroll.
+
+        The QML ListView binds to ``items``; re-emitting replaces the model,
+        destroys every delegate and snaps the scroll back to the top. Selecting
+        a profile must therefore leave the row list untouched.
+        """
+        # Seed extra profiles through the store so the list is scrollable.
+        extra = [
+            Profile.create(
+                name=f"滚动站点{index:02d}",
+                base_url=f"https://scroll{index}.example.com",
+                api_key=f"sk-scroll-{index}",
+                vendor="通用",
+                codex_model="gpt-5",
+            )
+            for index in range(12)
+        ]
+        self.store.save(
+            list(self.workspace.session.profiles) + extra,
+            self.workspace.session.selected_profile_id,
+            list(self.workspace.session.projects),
+            self.workspace.session.selected_project_id,
+        )
+        self.controller.refreshAll()
+        self._pump(2)
+
+        self._load()
+        self._pump()
+
+        emitted: list[int] = []
+        self.controller.profiles.itemsChanged.connect(lambda: emitted.append(1))
+        self.controller.profiles.refresh()
+        self._pump(2)
+        baseline = len(emitted)
+
+        # Click through several rows; none of these may re-emit the row list.
+        for row in self.controller.profiles.items[:5]:
+            self.controller.profiles.select(row["id"])
+            self._pump(2)
+
+        self.assertEqual(
+            len(emitted),
+            baseline,
+            "selecting a row re-emitted itemsChanged; the list would rebuild "
+            "and the scroll position would jump to the top",
+        )
+        self.assertNotEqual(self.controller.profiles.selectedId, "")
+
+    def test_selection_is_exposed_for_the_list_highlight(self) -> None:
+        """The highlight is driven by selectedId, not by a per-row flag."""
+        self._load()
+        self._pump()
+        rows = self.controller.profiles.items
+        self.assertTrue(rows, "fixture should have profiles")
+        for row in rows:
+            self.assertNotIn("selected", row)
+        target = rows[-1]["id"]
+        self.controller.profiles.select(target)
+        self._pump(3)
+        self.assertEqual(self.controller.profiles.selectedId, target)
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem

@@ -294,7 +294,7 @@ class Workspace:
         wire_api = default_wire_api_for_profile(chat_target) if chat_target else "responses"
 
         return {
-            "profiles": [snapshots.profile_row(item, session.selected_profile_id) for item in profiles],
+            "profiles": [snapshots.profile_row(item) for item in profiles],
             "profile_choices": snapshots.profile_choice_rows(session.profiles, session.selected_profile_id),
             "codex_choices": [
                 {"id": item.id, "name": item.name}
@@ -316,7 +316,7 @@ class Workspace:
             "sign_in": self.sign_in_summary(),
             "hide_error_profiles": bool(session.hide_error_profiles),
 
-            "projects": [snapshots.project_row(item, session.selected_project_id) for item in session.projects],
+            "projects": [snapshots.project_row(item) for item in session.projects],
             "selected_project_id": session.selected_project_id or "",
             "selected_project_detail": (
                 snapshots.project_detail(

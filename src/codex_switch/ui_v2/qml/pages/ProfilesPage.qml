@@ -208,7 +208,10 @@ Item {
                                 meta: modelData.requiresSignIn && !modelData.signedToday
                                     ? modelData.vendorLabel + " · 待签到"
                                     : modelData.vendorLabel
-                                selected: modelData.selected
+                                // Compare against the model's selection so the
+                                // row list itself never carries selection
+                                // state; rebuilding it would reset the scroll.
+                                selected: profilesModel.selectedId === modelData.id
                                 onClicked: profilesModel.select(modelData.id)
 
                                 ToolTip.visible: hovered

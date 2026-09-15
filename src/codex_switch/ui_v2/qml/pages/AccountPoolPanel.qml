@@ -81,7 +81,7 @@ RowLayout {
                     subtitle: modelData.poolType + " · " + modelData.defaultModel
                     badgeText: modelData.channelCount + " 渠道"
                     badgeTone: modelData.failedCount > 0 ? "warning" : "success"
-                    selected: modelData.selected
+                    selected: toolsModel.accountPool.selectedGroupId === modelData.id
                     onClicked: toolsModel.selectPoolGroup(modelData.id)
                 }
             }

@@ -70,7 +70,7 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 # -- profiles ------------------------------------------------------------
-def profile_row(profile: Profile, selected_id: str | None = None) -> dict[str, Any]:
+def profile_row(profile: Profile) -> dict[str, Any]:
     status = str(getattr(profile, "effective_health_status", "unknown") or "unknown")
     models = list(getattr(profile.health, "models", []) or [])
     return {
@@ -107,13 +107,12 @@ def profile_row(profile: Profile, selected_id: str | None = None) -> dict[str, A
             profile.requires_sign_in and profile.last_signed_date == today_iso()
         ),
         "lastSignedDate": profile.last_signed_date or "",
-        "selected": profile.id == selected_id,
     }
 
 
 def profile_detail(profile: Profile) -> dict[str, Any]:
     """Editable representation: includes full secret text for the drawer."""
-    snapshot = profile_row(profile, profile.id)
+    snapshot = profile_row(profile)
     snapshot.update(
         {
             "apiKeysText": "\n".join(profile.api_keys or []),
@@ -146,7 +145,7 @@ def vendor_stats(models: Iterable[str]) -> list[dict[str, Any]]:
 
 
 # -- projects ------------------------------------------------------------
-def project_row(project: ProjectRecord, selected_id: str | None = None) -> dict[str, Any]:
+def project_row(project: ProjectRecord) -> dict[str, Any]:
     return {
         "id": project.id,
         "name": project.name,
@@ -162,12 +161,11 @@ def project_row(project: ProjectRecord, selected_id: str | None = None) -> dict[
         "skillGroupIds": list(project.skill_group_ids or []),
         "skillCount": len(project.skills or []),
         "hasGithub": bool(project.github_repo),
-        "selected": project.id == selected_id,
     }
 
 
 def project_detail(project: ProjectRecord, *, codex_profile: Profile | None, claude_profile: Profile | None) -> dict[str, Any]:
-    snapshot = project_row(project, project.id)
+    snapshot = project_row(project)
     snapshot.update(
         {
             "codexProfileName": codex_profile.name if codex_profile else "未绑定",
@@ -271,7 +269,6 @@ def account_pool_group_row(group: AccountPoolGroup, settings: AccountPoolSetting
         "channelCount": len(channels),
         "normalCount": normal,
         "failedCount": len(channels) - normal,
-        "selected": group.id == settings.selected_group_id,
     }
 
 

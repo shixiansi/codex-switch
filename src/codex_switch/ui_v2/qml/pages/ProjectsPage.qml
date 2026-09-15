@@ -154,7 +154,7 @@ Item {
                                 badgeText: modelData.githubRepo !== "" ? "GIT" : ""
                                 badgeTone: "info"
                                 meta: modelData.skillCount + " Skills"
-                                selected: modelData.selected
+                                selected: projectsModel.selectedId === modelData.id
                                 onClicked: projectsModel.select(modelData.id)
                             }
                         }

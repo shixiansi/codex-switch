@@ -79,7 +79,7 @@ class ProjectsViewModel(SnapshotViewModel):
                 ).casefold()
                 if needle not in blob:
                     continue
-            if item.get("selected"):
+            if item.get("id") == selected_id:
                 detail = dict(state.get("selected_project_detail") or item)
             rows.append(item)
 

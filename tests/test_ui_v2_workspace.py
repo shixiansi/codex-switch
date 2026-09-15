@@ -544,7 +544,10 @@ class SnapshotAggregationTests(WorkspaceTestCase):
         state = self.workspace.snapshot()
         row = state["profiles"][0]
         self.assertEqual(row["healthTone"], "success")
-        self.assertTrue(row["selected"])
+        # Selection is carried by the snapshot, not by each row: baking it into
+        # the rows made every click replace the model and reset list scroll.
+        self.assertNotIn("selected", row)
+        self.assertEqual(state["selected_profile_id"], profile.id)
 
     def test_vendor_choices_partition_by_capability(self) -> None:
         codex = self.add_profile(name="c", vendor=VENDOR_CODEX)
@@ -1417,6 +1420,56 @@ class ManualHealthAndFilterTests(WorkspaceTestCase):
         self.workspace.set_hide_error_profiles(True)
         names = [row["name"] for row in self.workspace.snapshot()["profiles"]]
         self.assertEqual(names, ["被误判的站"])
+
+
+class SelectionNotInRowsTests(WorkspaceTestCase):
+    """Selection must live in the snapshot, never inside each row.
+
+    Baking ``selected`` into the row dicts made the whole row list change on
+    every click. The QML ListView then dropped and rebuilt every delegate and
+    the scroll position snapped back to the top.
+    """
+
+    def test_profile_rows_do_not_carry_selection(self) -> None:
+        first = self.add_profile(name="甲")
+        second = self.add_profile(name="乙")
+        self.workspace.session.selected_profile_id = second.id
+        state = self.workspace.snapshot()
+        for row in state["profiles"]:
+            self.assertNotIn("selected", row, "row payload carries selection state")
+        self.assertEqual(state["selected_profile_id"], second.id)
+        self.assertNotEqual(first.id, second.id)
+
+    def test_project_rows_do_not_carry_selection(self) -> None:
+        project = self.add_project()
+        state = self.workspace.snapshot()
+        for row in state["projects"]:
+            self.assertNotIn("selected", row)
+        self.assertEqual(state["selected_project_id"], project.id)
+
+    def test_pool_group_rows_do_not_carry_selection(self) -> None:
+        state = self.workspace.snapshot()
+        for row in state["account_pool_groups"]:
+            self.assertNotIn("selected", row)
+        # The selected group still travels in the pool summary.
+        self.assertIn("selectedGroupId", state["account_pool"])
+
+    def test_selecting_a_profile_keeps_row_payload_identical(self) -> None:
+        """The essential guarantee: clicking must not change the row list."""
+        first = self.add_profile(name="甲")
+        second = self.add_profile(name="乙")
+        self.workspace.session.selected_profile_id = first.id
+        before = self.workspace.snapshot()["profiles"]
+
+        self.workspace.select_profile(second.id)
+        after = self.workspace.snapshot()["profiles"]
+
+        self.assertEqual(
+            before,
+            after,
+            "selecting changed the row payload; the list would rebuild and lose scroll",
+        )
+        self.assertEqual(self.workspace.snapshot()["selected_profile_id"], second.id)
 
 
 class ViewModelContractTests(WorkspaceTestCase):

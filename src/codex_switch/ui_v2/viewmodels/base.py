@@ -40,7 +40,16 @@ class BaseViewModel(QObject):
         return not self._items
 
     def set_items(self, items: Any) -> None:
-        self._items = [dict(item) for item in (items or [])]
+        """Replace the row list, emitting only when the data actually changed.
+
+        Emitting unconditionally forces the QML ListView to drop and rebuild
+        every delegate, which resets the scroll position to the top. Skipping a
+        no-op update avoids that rebuild when nothing the list shows has moved.
+        """
+        rows = [dict(item) for item in (items or [])]
+        if rows == self._items:
+            return
+        self._items = rows
         self.itemsChanged.emit()
 
     def set_busy(self, value: bool) -> None:

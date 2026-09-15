@@ -12,6 +12,8 @@ class ToolsViewModel(SnapshotViewModel):
     chatChanged = Signal()
     batchChanged = Signal()
     poolChanged = Signal()
+    poolGroupsChanged = Signal()
+    poolChannelsChanged = Signal()
     mcpChanged = Signal()
     skillsChanged = Signal()
     formChanged = Signal()
@@ -44,11 +46,11 @@ class ToolsViewModel(SnapshotViewModel):
     def accountPool(self) -> dict[str, Any]:
         return dict(self._pool)
 
-    @Property("QVariantList", notify=poolChanged)
+    @Property("QVariantList", notify=poolGroupsChanged)
     def poolGroups(self) -> list[dict[str, Any]]:
         return list(self._poolGroups)
 
-    @Property("QVariantList", notify=poolChanged)
+    @Property("QVariantList", notify=poolChannelsChanged)
     def poolChannels(self) -> list[dict[str, Any]]:
         return list(self._poolChannels)
 
@@ -102,9 +104,18 @@ class ToolsViewModel(SnapshotViewModel):
         pool = dict(state.get("account_pool") or {})
         groups = list(state.get("account_pool_groups") or [])
         channels = list(state.get("account_pool_channels") or [])
-        if (pool, groups, channels) != (self._pool, self._poolGroups, self._poolChannels):
-            self._pool, self._poolGroups, self._poolChannels = pool, groups, channels
+        # Each surface gets its own signal: selecting a group changes the pool
+        # summary (and channel list) but NOT the group rows, so the group list
+        # is not rebuilt and its scroll position survives.
+        if pool != self._pool:
+            self._pool = pool
             self.poolChanged.emit()
+        if groups != self._poolGroups:
+            self._poolGroups = groups
+            self.poolGroupsChanged.emit()
+        if channels != self._poolChannels:
+            self._poolChannels = channels
+            self.poolChannelsChanged.emit()
 
         mcp = list(state.get("mcp_servers") or [])
         mcp_detail = dict(state.get("mcp_detail") or {})

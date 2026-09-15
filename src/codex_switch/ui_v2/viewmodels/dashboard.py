@@ -34,8 +34,11 @@ class DashboardViewModel(SnapshotViewModel):
         pool = dict(state.get("account_pool") or {})
         health = dict(state.get("health") or {})
 
-        current_profile = next((item for item in profiles if item.get("selected")), None)
-        current_project = next((item for item in projects if item.get("selected")), None)
+        # Selection is not part of the row payload; look it up by id instead.
+        profile_id = str(state.get("selected_profile_id") or "")
+        project_id = str(state.get("selected_project_id") or "")
+        current_profile = next((item for item in profiles if item.get("id") == profile_id), None)
+        current_project = next((item for item in projects if item.get("id") == project_id), None)
         current_codex = self._controller.session.global_codex_profile()
         current_claude = self._controller.session.global_claude_profile()
 
