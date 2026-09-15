@@ -21,12 +21,30 @@ Rectangle {
 
     implicitHeight: Math.max(Theme.rowHeight + Theme.space2, layout.implicitHeight + Theme.space3)
     radius: Theme.radiusSm
-    color: root.selected ? Theme.accentSoft : (hover.containsMouse && root.interactive ? Theme.surfaceHover : "transparent")
     border.width: root.selected ? Theme.borderWidth : 0
     border.color: Theme.accent
 
-    Behavior on color {
-        ColorAnimation { duration: Theme.durationFast }
+    // Background is painted by an inner layer whose OPACITY is animated.
+    //
+    // Animating `color` between "transparent" and a solid tone looks like a
+    // grey flash: "transparent" is rgba(0,0,0,0), so Qt interpolates from
+    // BLACK, passing through a dark grey that is briefly visible. Fading a
+    // pre-tinted rectangle avoids that entirely.
+    color: "transparent"
+
+    Rectangle {
+        id: background
+        anchors.fill: parent
+        radius: root.radius
+        color: root.selected ? Theme.accentSoft : Theme.surfaceHover
+        opacity: root.selected ? 1 : (hover.containsMouse && root.interactive ? 1 : 0)
+
+        Behavior on opacity {
+            NumberAnimation {
+                duration: Theme.durationFast
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 
     RowLayout {

@@ -379,6 +379,109 @@ class QmlSmokeTests(unittest.TestCase):
                 checked += 1
         self.assertGreater(checked, 0, "no visible EmptyState children found")
 
+    def test_no_component_animates_color_from_transparent(self) -> None:
+        """Guard the whole QML tree against the grey-flash hover pattern.
+
+        Any file that animates `color` must not also interpolate from the
+        literal "transparent" on the same element, because Qt blends from
+        rgba(0,0,0,0) and the element visibly darkens mid-animation.
+        """
+        qml_root = QML_ENTRYPOINT.parent
+        offenders: list[str] = []
+        for path in qml_root.rglob("*.qml"):
+            text = path.read_text(encoding="utf-8")
+            if "Behavior on color" not in text:
+                continue
+            # A file may animate colour safely (opaque -> opaque) but must not
+            # drive that animation from a transparent source.
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("//"):
+                    continue
+                if "Behavior on color" in stripped:
+                    continue
+                if ": \"transparent\"" in stripped and "?" in stripped:
+                    offenders.append(f"{path.name}: {stripped}")
+        self.assertEqual(offenders, [], f"colour animated from transparent: {offenders}")
+
+    def test_listrow_has_opaque_background_layer(self) -> None:
+        """ListRow must paint a full-size opaque layer and fade its opacity.
+
+        Structural check, so it does not depend on animation timing. Before the
+        fix ListRow had no background layer at all: it animated its own `color`
+        from "transparent", which Qt interpolates from black (grey flash).
+        """
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQuick import QQuickItem
+
+        from codex_switch.ui_v2.theme import LIGHT_COLORS
+
+        probe = self.root / "listrow_probe.qml"
+        probe.write_text(
+            """
+import QtQuick
+import QtQuick.Window
+import theme
+import components
+
+Window {
+    visible: false
+    width: 460; height: 120
+    ListRow {
+        id: row
+        width: 420
+        title: "probe"
+        subtitle: "https://probe.example.com"
+        iconName: "profile"
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        engine = build_engine(self.controller)
+        engine.load(QUrl.fromLocalFile(str(probe)))
+        roots = engine.rootObjects()
+        self.assertTrue(roots, "ListRow probe failed to load")
+        win = roots[0]
+        try:
+            rows = [
+                o for o in win.findChildren(QQuickItem)
+                if o.metaObject().className().startswith("ListRow")
+            ]
+            self.assertTrue(rows, "ListRow was not instantiated")
+            row = rows[0]
+
+            # The row itself must not be painted; a child layer carries the tint.
+            self.assertLessEqual(
+                row.property("color").alpha(), 0, "ListRow root should be transparent"
+            )
+
+            layers = [
+                c for c in row.childItems()
+                if c.metaObject().className().startswith("QQuickRectangle")
+                and abs(c.width() - row.width()) <= 1
+                and abs(c.height() - row.height()) <= 1
+            ]
+            self.assertTrue(
+                layers,
+                "ListRow has no full-size background layer; hover would animate colour",
+            )
+            bg = layers[0]
+
+            hover_tone = LIGHT_COLORS["surfaceHover"].lower()
+            accent_soft = LIGHT_COLORS["accentSoft"].lower()
+            colour = bg.property("color").name().lower()
+            with self.subTest(layer="hover tone"):
+                self.assertIn(colour, (hover_tone, accent_soft))
+                self.assertGreater(bg.property("color").alpha(), 0, "layer is see-through")
+
+            # Unselected rows rest fully faded out and fade in via opacity.
+            self.assertEqual(bg.property("opacity"), 0.0)
+        finally:
+            win.deleteLater()
+            engine.deleteLater()
+            self._flush_deferred_deletes()
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem

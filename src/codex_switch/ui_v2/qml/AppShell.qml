@@ -246,12 +246,22 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             implicitHeight: 42
                             radius: Theme.radiusSm
-                            color: navItem.active
-                                ? Theme.accentSoft
-                                : (navHover.containsMouse ? Theme.surfaceHover : "transparent")
+                            // Opacity-animated layer: animating `color` from
+                            // "transparent" interpolates from black and flashes.
+                            color: "transparent"
 
-                            Behavior on color {
-                                ColorAnimation { duration: Theme.durationFast }
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: parent.radius
+                                color: navItem.active ? Theme.accentSoft : Theme.surfaceHover
+                                opacity: navItem.active || navHover.containsMouse ? 1 : 0
+
+                                Behavior on opacity {
+                                    NumberAnimation {
+                                        duration: Theme.durationFast
+                                        easing.type: Easing.OutCubic
+                                    }
+                                }
                             }
 
                             RowLayout {

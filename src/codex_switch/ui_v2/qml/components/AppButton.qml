@@ -18,16 +18,6 @@ Button {
     readonly property bool isDanger: variant === "danger"
     readonly property bool isGhost: variant === "ghost"
 
-    readonly property color _bg: {
-        if (isPrimary)
-            return control.down ? Qt.darker(Theme.accent, 1.15) : (control.hovered ? Theme.accentHover : Theme.accent)
-        if (isDanger)
-            return control.down ? Qt.darker(Theme.danger, 1.15) : (control.hovered ? Qt.lighter(Theme.danger, 1.06) : Theme.danger)
-        if (isGhost)
-            return control.down ? Theme.surfaceActive : (control.hovered ? Theme.surfaceHover : "transparent")
-        return control.down ? Theme.surfaceActive : (control.hovered ? Theme.surfaceHover : Theme.surface)
-    }
-
     readonly property color _fg: {
         if (isPrimary)
             return Theme.accentText
@@ -38,13 +28,43 @@ Button {
 
     readonly property color _borderColor: isPrimary || isDanger ? "transparent" : Theme.border
 
+    // The painted colour and its opacity are separated so the ghost variant can
+    // fade in instead of animating `color` from "transparent". "transparent" is
+    // rgba(0,0,0,0), so a colour animation interpolates from BLACK and the
+    // button briefly darkens — a visible flash on hover.
+    readonly property color _bgSolid: {
+        if (isPrimary)
+            return control.down ? Qt.darker(Theme.accent, 1.15) : (control.hovered ? Theme.accentHover : Theme.accent)
+        if (isDanger)
+            return control.down ? Qt.darker(Theme.danger, 1.15) : (control.hovered ? Qt.lighter(Theme.danger, 1.06) : Theme.danger)
+        if (isGhost)
+            // Faded in/out via opacity, so a hover tone is always painted.
+            return control.down ? Theme.surfaceActive : Theme.surfaceHover
+        // Secondary: an opaque card surface at rest.
+        return control.down ? Theme.surfaceActive : (control.hovered ? Theme.surfaceHover : Theme.surface)
+    }
+
+    readonly property real _bgOpacity: (isGhost && !control.hovered && !control.down) ? 0 : 1
+
     background: Rectangle {
         radius: Theme.radiusSm
-        color: control._bg
+        color: control._bgSolid
+        opacity: control._bgOpacity
         border.width: control.isGhost ? 0 : Theme.borderWidth
         border.color: control._borderColor
 
+        // Ghost fades its tinted layer; the others animate between two opaque
+        // tones, which never passes through black.
+        Behavior on opacity {
+            enabled: control.isGhost
+            NumberAnimation {
+                duration: Theme.durationFast
+                easing.type: Easing.OutCubic
+            }
+        }
+
         Behavior on color {
+            enabled: !control.isGhost
             ColorAnimation { duration: Theme.durationFast }
         }
     }
