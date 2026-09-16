@@ -516,6 +516,7 @@ def project_from_dialog_result(result: dict) -> ProjectRecord:
         github_auto_update=result["github_auto_update"],
         codex_profile_id=result["codex_profile_id"],
         claude_profile_id=result["claude_profile_id"],
+        env_text=result.get("env_text", ""),
     )
 
 
@@ -779,6 +780,7 @@ def updated_project_from_dialog(project: ProjectRecord, result: dict, *, updated
             else project.github_last_sync_commit
         ),
         github_auto_update=result["github_auto_update"],
+        env_text=result.get("env_text", getattr(project, "env_text", "")),
         updated_at=updated_at,
     )
     return ProjectEditUpdate(

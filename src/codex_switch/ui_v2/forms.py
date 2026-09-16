@@ -29,8 +29,10 @@ from ..models import (
     normalize_api_key_index,
     normalize_api_keys,
     parse_custom_headers_text,
+    parse_env_text,
 )
 from ..chat import SUPPORTED_WIRE_APIS
+from ..codex_config import PROJECT_ENV_KEY
 from .errors import FormError
 
 VENDOR_LABELS = {"codex": "Codex", "claude": "Claude", VENDOR_GENERIC: "通用", "其他": "其他"}
@@ -257,6 +259,13 @@ def project_form(
         _text("githubRef", "Git 引用", getattr(project, "github_ref", "HEAD")),
         {"key": "githubAutoUpdate", "label": "自动更新", "type": "switch",
          "value": bool(getattr(project, "github_auto_update", False))},
+        {
+            "key": "envText",
+            "label": "环境变量",
+            "type": "textarea",
+            "value": getattr(project, "env_text", ""),
+            "hint": "一行一个，格式 KEY=VALUE，保存后写入 .codex/local.env",
+        },
     ]
 
 
@@ -275,6 +284,18 @@ def project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if github_repo and not github_repo.startswith("https://github.com/"):
         raise FormError("GitHub 地址必须是 https://github.com/owner/repo 形式。")
 
+    # Validate the editor text so a typo is reported instead of silently
+    # landing a broken variable in local.env.
+    env_text = str(payload.get("envText", "") or "").strip()
+    env_pairs, env_errors = parse_env_text(env_text)
+    if env_errors:
+        raise FormError("环境变量无效：" + "；".join(env_errors))
+    reserved = [
+        name for name in env_pairs if name.upper() == PROJECT_ENV_KEY.upper()
+    ]
+    if reserved:
+        raise FormError(f"{PROJECT_ENV_KEY} 由程序管理（写 API Key），请勿在此填写。")
+
     return {
         "name": _payload_str(payload, "name"),
         "project_dir": project_dir,
@@ -289,6 +310,7 @@ def project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "skill_names": None,
         "skill_group_ids": _payload_list(payload, "skillGroupIds"),
         "skills": [],
+        "env_text": env_text,
     }
 
 

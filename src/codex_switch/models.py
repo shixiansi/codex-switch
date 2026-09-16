@@ -307,6 +307,41 @@ def normalize_custom_headers(value: object | None) -> dict[str, str]:
     return headers
 
 
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def parse_env_text(text: str) -> tuple[dict[str, str], list[str]]:
+    """Parse ``KEY=VALUE`` lines, one pair per line, into an ordered dict.
+
+    Blank lines and ``#`` comments are ignored. Returns ``(pairs, errors)`` so a
+    malformed line is reported instead of being silently dropped.
+    """
+    pairs: dict[str, str] = {}
+    errors: list[str] = []
+    for line_number, raw_line in enumerate(str(text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            errors.append(f"第 {line_number} 行缺少等号。")
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if not name:
+            errors.append(f"第 {line_number} 行变量名为空。")
+            continue
+        if not _ENV_NAME_RE.match(name):
+            errors.append(f"第 {line_number} 行变量名无效：{name}")
+            continue
+        pairs[name] = value.strip()
+    return pairs, errors
+
+
+def env_text_to_text(pairs: dict[str, str] | None) -> str:
+    """Render stored pairs back into the one-per-line editor text."""
+    return "\n".join(f"{name}={value}" for name, value in (pairs or {}).items())
+
+
 def custom_headers_to_text(headers: dict[str, str] | None) -> str:
     normalized = normalize_custom_headers(headers)
     return "\n".join(f"{name}: {value}" for name, value in normalized.items())
@@ -1723,6 +1758,7 @@ class ProjectRecord:
     github_ref: str = "HEAD"
     github_last_sync_commit: str = ""
     github_auto_update: bool = False
+    env_text: str = ""
 
     @classmethod
     def create(
@@ -1741,6 +1777,7 @@ class ProjectRecord:
         github_auto_update: bool = False,
         codex_profile_id: str | None = None,
         claude_profile_id: str | None = None,
+        env_text: str = "",
     ) -> "ProjectRecord":
         normalized_dir = normalize_project_dir(project_dir)
         default_name = name.strip() if name else ""
@@ -1766,6 +1803,7 @@ class ProjectRecord:
             github_ref=github_ref.strip() or "HEAD",
             github_last_sync_commit=github_last_sync_commit.strip(),
             github_auto_update=bool(github_auto_update),
+            env_text=env_text.strip(),
         )
 
     @classmethod
@@ -1824,6 +1862,7 @@ class ProjectRecord:
             github_ref=str(data.get("github_ref") or "HEAD").strip() or "HEAD",
             github_last_sync_commit=str(data.get("github_last_sync_commit", "") or "").strip(),
             github_auto_update=bool(data.get("github_auto_update", False)),
+            env_text=str(data.get("env_text", "") or "").strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:

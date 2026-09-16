@@ -50,6 +50,7 @@ from ..models import (
     VENDOR_CODEX,
     mask_secret,
     normalize_hot_update_interval_minutes,
+    parse_env_text,
     profile_supports_claude,
     profile_supports_codex,
     today_iso,
@@ -925,10 +926,16 @@ class Workspace:
         if duplicate_error:
             raise WorkspaceError(duplicate_error)
 
+        # Captured before the record is replaced: deleted variables are dropped
+        # from local.env by comparing against this.
+        previous_env_text = ""
+        project = session.project_by_id(project_id) if project_id else None
+        if project_id and project is None:
+            raise WorkspaceError("项目不存在或已被删除。")
+        if project is not None:
+            previous_env_text = getattr(project, "env_text", "")
+
         if project_id:
-            project = session.project_by_id(project_id)
-            if project is None:
-                raise WorkspaceError("项目不存在或已被删除。")
             plan = build_project_edit_execution_plan(
                 project,
                 data,
@@ -947,7 +954,30 @@ class Workspace:
             message = plan.status_text
 
         self.persist()
+        # Both plan objects expose the saved record, so the env text is read
+        # from it regardless of whether this was a create or an edit.
+        saved = getattr(plan, "project", None)
+        self._write_project_env(
+            saved or session.selected_project() or None,
+            previous_pairs=parse_env_text(previous_env_text)[0],
+        )
         return ActionResult(message=message)
+
+    def _write_project_env(
+        self,
+        project: ProjectRecord | None,
+        *,
+        previous_pairs: dict[str, str] | None = None,
+    ) -> None:
+        """Write the project's custom variables into <project>/.codex/local.env."""
+        if project is None:
+            return
+        env_pairs, _errors = parse_env_text(getattr(project, "env_text", ""))
+        if not env_pairs and not previous_pairs:
+            return
+        self.template_service.sync_project_env(
+            Path(project.project_dir), env_pairs, previous_pairs=previous_pairs
+        )
 
     def delete_project(self, project_id: str) -> ActionResult:
         session = self.session

@@ -687,6 +687,116 @@ class ProjectOperationTests(WorkspaceTestCase):
         self.assertIn("新名", result.message)
         self.assertEqual(len(self.workspace.session.projects), 1)
 
+    # -- project environment variables ----------------------------------
+    def _make_project(self, name: str = "环境变量项目") -> tuple[Path, str]:
+        """Create a project dir with a pre-existing local.env and return it."""
+        profile = self.add_profile(name="环境配置")
+        project_dir = self.root / "env-proj"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        codex_dir = project_dir / ".codex"
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        (codex_dir / "local.env").write_text(
+            "PROJECT_API_KEY=sk-existing\nHAND_MADE=keep-me\n", encoding="utf-8"
+        )
+        self.workspace.save_project(
+            {
+                "name": name,
+                "projectDir": str(project_dir),
+                "codexProfileId": profile.id,
+                "claudeProfileId": profile.id,
+            }
+        )
+        project = self.workspace.session.projects[0]
+        return project_dir, project.id
+
+    def test_saving_project_writes_env_vars_into_local_env(self) -> None:
+        project_dir, project_id = self._make_project()
+        self.workspace.save_project(
+            {
+                "name": "环境变量项目",
+                "projectDir": str(project_dir),
+                "codexProfileId": self.workspace.session.profiles[0].id,
+                "claudeProfileId": self.workspace.session.profiles[0].id,
+                "envText": "MY_TOKEN=abc123\nDEBUG_MODE=true\n# 注释\n\nAPI_BASE=https://x.example.com",
+            },
+            project_id=project_id,
+        )
+        content = (project_dir / ".codex" / "local.env").read_text(encoding="utf-8")
+        self.assertIn("MY_TOKEN=abc123", content)
+        self.assertIn("DEBUG_MODE=true", content)
+        self.assertIn("API_BASE=https://x.example.com", content)
+        # Untouched lines survive, including the managed API key.
+        self.assertIn("PROJECT_API_KEY=sk-existing", content)
+        self.assertIn("HAND_MADE=keep-me", content)
+        # Comments and blank lines from the editor are not copied over.
+        self.assertNotIn("# 注释", content)
+
+    def test_removing_an_env_var_deletes_it_from_local_env(self) -> None:
+        project_dir, project_id = self._make_project()
+        profile_id = self.workspace.session.profiles[0].id
+        self.workspace.save_project(
+            {
+                "name": "x", "projectDir": str(project_dir),
+                "codexProfileId": profile_id, "claudeProfileId": profile_id,
+                "envText": "KEEP=1\nDROP=2",
+            },
+            project_id=project_id,
+        )
+        self.assertIn("DROP=2", (project_dir / ".codex" / "local.env").read_text(encoding="utf-8"))
+
+        self.workspace.save_project(
+            {
+                "name": "x", "projectDir": str(project_dir),
+                "codexProfileId": profile_id, "claudeProfileId": profile_id,
+                "envText": "KEEP=9",
+            },
+            project_id=project_id,
+        )
+        content = (project_dir / ".codex" / "local.env").read_text(encoding="utf-8")
+        self.assertIn("KEEP=9", content)
+        self.assertNotIn("DROP", content, "deleted variable must be removed")
+        self.assertIn("PROJECT_API_KEY=sk-existing", content)
+
+    def test_env_editor_rejects_malformed_lines(self) -> None:
+        profile = self.add_profile()
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.save_project(
+                {
+                    "name": "x", "projectDir": str(self.root / "bad"),
+                    "codexProfileId": profile.id, "claudeProfileId": profile.id,
+                    "envText": "NO_EQUALS_SIGN",
+                }
+            )
+        self.assertIn("等号", str(ctx.exception))
+
+    def test_env_editor_rejects_reserved_api_key_variable(self) -> None:
+        profile = self.add_profile()
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.save_project(
+                {
+                    "name": "x", "projectDir": str(self.root / "res"),
+                    "codexProfileId": profile.id, "claudeProfileId": profile.id,
+                    "envText": "PROJECT_API_KEY=my-own-key",
+                }
+            )
+        self.assertIn("PROJECT_API_KEY", str(ctx.exception))
+
+    def test_env_text_is_persisted_on_the_project(self) -> None:
+        project_dir, project_id = self._make_project()
+        profile_id = self.workspace.session.profiles[0].id
+        self.workspace.save_project(
+            {
+                "name": "x", "projectDir": str(project_dir),
+                "codexProfileId": profile_id, "claudeProfileId": profile_id,
+                "envText": "A=1\nB=2",
+            },
+            project_id=project_id,
+        )
+        self.assertEqual(self.workspace.session.project_by_id(project_id).env_text, "A=1\nB=2")
+        # Reopening the form shows what was saved.
+        fields = {item["key"]: item for item in self.workspace.project_form_fields(project_id)}
+        self.assertEqual(fields["envText"]["value"], "A=1\nB=2")
+
     def test_project_requires_a_profile(self) -> None:
         with self.assertRaises(WorkspaceError):
             self.workspace.save_project({"name": "x", "projectDir": str(self.root / "p")})

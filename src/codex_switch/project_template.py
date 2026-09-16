@@ -300,6 +300,43 @@ class ProjectTemplateService:
 
         return updated_paths
 
+    def sync_project_env(
+        self,
+        project_root: Path,
+        env_pairs: dict[str, str],
+        previous_pairs: dict[str, str] | None = None,
+    ) -> list[Path]:
+        """Write the project's custom KEY=VALUE pairs into .codex/local.env.
+
+        Unrelated lines survive, so the API key written by sync_api_binding and
+        anything hand-edited are kept. Keys that were previously managed but are
+        no longer listed are dropped, so deleting a line in the editor really
+        deletes it instead of leaving a stale variable behind.
+        """
+        project_root = project_root.resolve()
+        env_path = project_root / ".codex" / "local.env"
+        managed = {name.upper() for name in env_pairs}
+        managed.update(name.upper() for name in (previous_pairs or {}))
+        managed.discard(PROJECT_ENV_KEY.upper())
+
+        existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+        kept: list[str] = []
+        for line in existing.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+            stripped = line.strip()
+            name = ""
+            if stripped and not stripped.startswith("#") and "=" in line:
+                name = line.split("=", 1)[0].strip().upper()
+            if name and name in managed:
+                continue
+            kept.append(line)
+
+        for name, value in env_pairs.items():
+            kept.append(f"{name}={value}")
+
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("\n".join(kept).rstrip("\n") + "\n" if kept else "", encoding="utf-8")
+        return [env_path]
+
     def sync_claude_binding(
         self,
         project_root: Path,
