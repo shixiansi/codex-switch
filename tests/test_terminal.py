@@ -116,6 +116,138 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(screen.last_line, "第二行")
 
 
+class _ManagerBackedTest(unittest.TestCase):
+    """需要假 PTY 后端的测试基类。"""
+
+    def _factory(self, store: dict[str, _FakeBackend]):
+        def make(command, cwd, env):
+            backend = _FakeBackend(command, cwd, env)
+            store.setdefault("last", backend)
+            return backend
+
+        return make
+
+
+class TimelineTests(_ManagerBackedTest):
+    def test_mark_segment_records_timestamped_snapshot(self) -> None:
+        screen = TerminalScreen()
+        screen.feed("第一段输出\n".encode())
+        self.assertTrue(screen.mark_segment(), "首次打点应新增一段")
+
+        lines = screen.timeline_lines()
+        self.assertEqual(len(lines), 1)
+        # 形如 "[HH:MM:SS] 第一段输出"
+        self.assertRegex(lines[0], r"^\[\d{2}:\d{2}:\d{2}\] ")
+        self.assertIn("第一段输出", lines[0])
+
+    def test_identical_snapshot_is_not_duplicated(self) -> None:
+        """输出没有变化时不应重复记录，否则时间线会被刷屏。"""
+        screen = TerminalScreen()
+        screen.feed("内容\n".encode())
+        self.assertTrue(screen.mark_segment())
+        self.assertFalse(screen.mark_segment(), "内容未变不应再记录")
+        self.assertEqual(len(screen.timeline_lines()), 1)
+
+    def test_force_marks_even_when_not_dirty(self) -> None:
+        """会话结束时要强制记最后一段。"""
+        screen = TerminalScreen()
+        screen.feed("收尾内容\n".encode())
+        screen.mark_segment()
+        self.assertFalse(screen.mark_segment())
+        # 内容变化后再 force
+        screen.feed("新内容\n".encode())
+        self.assertTrue(screen.mark_segment(force=True))
+
+    def test_idle_seconds_tracks_activity(self) -> None:
+        screen = TerminalScreen()
+        self.assertEqual(screen.idle_seconds, 0.0, "从未收到输出时应为 0")
+        screen.feed("x\n".encode())
+        time.sleep(0.2)
+        self.assertGreater(screen.idle_seconds, 0.1)
+
+    def test_timeline_marks_on_pause_not_only_with_data(self) -> None:
+        """回归：时间线打点必须每轮检查，否则 idle 永远为 0、时间线一直为空。"""
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr._segment_idle_seconds = 0.3
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            store["last"].push(b"output one\n")
+            time.sleep(0.8)  # 期间没有新数据，靠轮询发现"停顿"
+            timeline = mgr.timeline_text(sid)
+            self.assertIn("output one", timeline)
+            self.assertRegex(timeline, r"\[\d{2}:\d{2}:\d{2}\]")
+        finally:
+            mgr.shutdown()
+
+
+class ElapsedTests(_ManagerBackedTest):
+    def test_elapsed_label_formatting(self) -> None:
+        from codex_switch.ui_v2.terminal.manager import _format_elapsed
+
+        self.assertEqual(_format_elapsed(0), "0s")
+        self.assertEqual(_format_elapsed(5_000), "5s")
+        self.assertEqual(_format_elapsed(65_000), "01m05s")
+        self.assertEqual(_format_elapsed(3_725_000), "1h02m05s")
+
+    def test_summary_reports_elapsed(self) -> None:
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            time.sleep(0.25)
+            summary = next(s for s in mgr.summaries() if s.session_id == sid)
+            self.assertGreater(summary.elapsed_ms, 0)
+            self.assertNotEqual(summary.to_dict()["elapsedLabel"], "")
+        finally:
+            mgr.shutdown()
+
+
+class AutoAnswerTests(_ManagerBackedTest):
+    def test_auto_answer_selects_first_option_once(self) -> None:
+        """开启自动应答后，菜单出现即自动选第一项，且同一菜单只答一次。"""
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.auto_answer = True
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            store["last"].push("› 1. Yes, continue\n  2. No, quit\n".encode())
+            deadline = time.time() + 2.5
+            while time.time() < deadline:
+                if "\r" in store["last"].written():
+                    break
+                time.sleep(0.05)
+            self.assertEqual(
+                store["last"].written(), "1\r", "应自动选择第 1 项（单 CR 提交）"
+            )
+            # 同一菜单不应重复应答
+            calls_after_first = len(store["last"].write_calls())
+            time.sleep(0.8)
+            self.assertEqual(
+                len(store["last"].write_calls()),
+                calls_after_first,
+                "同一菜单不应被反复自动选择",
+            )
+        finally:
+            mgr.shutdown()
+
+    def test_auto_answer_disabled_by_default(self) -> None:
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        self.assertFalse(mgr.auto_answer, "manager 默认不自动应答")
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            store["last"].push("› 1. Yes\n  2. No\n".encode())
+            time.sleep(0.8)
+            self.assertEqual(store["last"].written(), "", "关闭时不应自动发送任何输入")
+        finally:
+            mgr.shutdown()
+
+
 class CompletionTests(unittest.TestCase):
     def test_confirm_prompt(self) -> None:
         awaiting, choices = detect_choice("Overwrite file? [Y/n] ")

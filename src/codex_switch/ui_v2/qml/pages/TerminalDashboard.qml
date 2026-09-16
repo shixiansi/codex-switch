@@ -41,6 +41,8 @@ Item {
 
     // 新建会话：按项目打开 / 自定义命令
     property string newProjectId: ""
+    // 是否显示带时间戳的时间线面板
+    property bool showTimeline: false
     property string newProjectClient: "codex"
     property string newTitle: ""
     property string newCommand: "codex"
@@ -103,6 +105,16 @@ Item {
                 ToolTip.visible: hovered
                 ToolTip.delay: 400
                 ToolTip.text: "查看终端日志（启动命令、输出、退出与回收记录）"
+            }
+            AppButton {
+                text: terminalModel.autoAnswer ? "自动选择：开" : "自动选择：关"
+                iconName: terminalModel.autoAnswer ? "check" : "close"
+                variant: terminalModel.autoAnswer ? "primary" : "ghost"
+                onClicked: terminalModel.setAutoAnswer(!terminalModel.autoAnswer)
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "开启后，检测到选择菜单会自动选第一项（如 codex 的信任目录确认）"
             }
             AppButton {
                 text: "清理残留"
@@ -206,6 +218,8 @@ Item {
                             badgeTone: modelData.status === "running" ? "accent"
                                 : modelData.status === "completed" ? "success"
                                 : modelData.status === "failed" ? "danger" : "unknown"
+                            // 运行时长作为尾部提示，便于同时多开时对照进度。
+                            meta: modelData.elapsedLabel || ""
                             selected: terminalModel.activeId === modelData.sessionId
                             onClicked: terminalModel.focus(modelData.sessionId)
                         }
@@ -237,13 +251,27 @@ Item {
                             Layout.fillWidth: true
                             spacing: 1
 
-                            Text {
+                            RowLayout {
                                 Layout.fillWidth: true
-                                text: page.activeSession().title || ""
-                                color: Theme.text
-                                font.pixelSize: Theme.fontTitle
-                                font.weight: Font.DemiBold
-                                elide: Text.ElideRight
+                                spacing: Theme.space2
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: page.activeSession().title || ""
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fontTitle
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+
+                                // 运行时长：随轮询实时更新
+                                StatusBadge {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    text: (page.activeSession().status === "running" ? "已运行 " : "耗时 ")
+                                        + (page.activeSession().elapsedLabel || "0s")
+                                    tone: page.activeSession().status === "running" ? "accent" : "unknown"
+                                    showDot: page.activeSession().status === "running"
+                                }
                             }
 
                             Text {
@@ -255,6 +283,17 @@ Item {
                             }
                         }
 
+                        AppButton {
+                            text: page.showTimeline ? "隐藏时间线" : "时间线"
+                            iconName: "log"
+                            variant: page.showTimeline ? "primary" : "ghost"
+                            visible: page.activeSession().status !== ""
+                            onClicked: page.showTimeline = !page.showTimeline
+
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 400
+                            ToolTip.text: "按时间顺序查看带时间戳的输出段落"
+                        }
                         AppButton {
                             text: "放大"
                             iconName: "search"
@@ -291,7 +330,7 @@ Item {
                     TerminalView {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        visible: terminalModel.activeId !== ""
+                        visible: terminalModel.activeId !== "" && !page.showTimeline
                         screenText: terminalModel.screen
                         awaitingChoice: terminalModel.awaitingChoice
                         choices: terminalModel.choices
@@ -299,6 +338,77 @@ Item {
                         onInputSubmitted: function (text) { terminalModel.sendInput(text) }
                         onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
                         onKeySent: function (key) { terminalModel.sendKey(key) }
+                    }
+
+                    // ---- 时间线：带时间戳的输出段落 ----
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: terminalModel.activeId !== "" && page.showTimeline
+                        radius: Theme.radiusSm
+                        color: Theme.codeBg
+                        border.width: Theme.borderWidth
+                        border.color: Theme.border
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: Theme.space2
+                            spacing: Theme.space2
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.space2
+
+                                AppIcon { name: "log"; color: Theme.accent; size: 15 }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "时间线　·　每段输出按发生时间排列"
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontCaption
+                                    font.weight: Font.Medium
+                                }
+
+                                AppButton {
+                                    text: "回到终端"
+                                    variant: "ghost"
+                                    implicitHeight: Theme.controlHeightSm
+                                    onClicked: page.showTimeline = false
+                                }
+                            }
+
+                            Flickable {
+                                id: timelineFlick
+
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                contentWidth: width
+                                contentHeight: timelineText.implicitHeight
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                                property bool pinnedToBottom: true
+                                onContentYChanged: pinnedToBottom = contentY >= contentHeight - height - 2
+                                onContentHeightChanged: {
+                                    if (pinnedToBottom)
+                                        contentY = Math.max(0, contentHeight - height)
+                                }
+
+                                Text {
+                                    id: timelineText
+
+                                    width: parent.width
+                                    text: terminalModel.activeTimeline !== ""
+                                        ? terminalModel.activeTimeline
+                                        : "（暂无输出）"
+                                    color: terminalModel.activeTimeline !== "" ? Theme.text : Theme.textFaint
+                                    font.family: "Consolas, Menlo, Monaco, monospace"
+                                    font.pixelSize: 12
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                            }
+                        }
                     }
                 }
             }

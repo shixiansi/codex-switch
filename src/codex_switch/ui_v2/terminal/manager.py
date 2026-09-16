@@ -33,6 +33,8 @@ log = get_logger()
 EVENT_OUTPUT = "output"
 EVENT_STATUS = "status"
 EVENT_CHOICE = "choice"
+# 时间线新增了一段（输出停顿后打点），用于让界面刷新时间线面板。
+EVENT_TIMELINE = "timeline"
 
 # 特殊按键 → 终端字节序列。TUI 菜单多靠方向键移动、回车确认、Esc 取消，
 # 而普通输入框只能发文本，因此需要单独提供这些控制键。
@@ -78,6 +80,11 @@ class SessionSummary:
     awaiting_choice: bool = False
     choices: list[str] = field(default_factory=list)
     last_line: str = ""
+    # 运行时长（毫秒）：运行中为"至今"，结束后为总时长。由 manager 计算，
+    # 避免 QML 侧做时间运算。
+    elapsed_ms: int = 0
+    # 当前选项是否已由自动应答处理过。
+    auto_answered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,7 +100,39 @@ class SessionSummary:
             "awaitingChoice": self.awaiting_choice,
             "choices": list(self.choices),
             "lastLine": self.last_line,
+            "elapsedMs": self.elapsed_ms,
+            "elapsedLabel": _format_elapsed(self.elapsed_ms),
+            "autoAnswered": self.auto_answered,
         }
+
+
+def _elapsed_ms(session: PtySession) -> int:
+    """会话运行时长（毫秒）：运行中算到此刻，结束后用结束时间。"""
+    if not session.started_at_ms:
+        return 0
+    end = session.finished_at_ms or (time.time() * 1000.0)
+    return max(0, int(end - session.started_at_ms))
+
+
+def _auto_choice_index(choices: list[str]) -> int:
+    """自动应答时选哪一项。
+
+    默认第一项：codex/claude 的确认菜单首项通常是"继续/默认"语义
+    （如 ``Yes, continue``），最符合"自动放行"的预期。
+    """
+    return 0
+
+
+def _format_elapsed(milliseconds: int) -> str:
+    """把毫秒格式化成 ``1h02m03s`` / ``02m03s`` / ``03s`` 形式。"""
+    total = max(0, int(milliseconds // 1000))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes:02d}m{seconds:02d}s"
+    return f"{seconds}s"
 
 
 _STATUS_LABELS = {
@@ -123,6 +162,11 @@ class TerminalManager:
         self._pending_lock = threading.Lock()
         self._pending_event = threading.Event()
         self._writer: threading.Thread | None = None
+        # 自动应答：检测到选择菜单时自动按预设策略回答，无需人工点击。
+        # 默认关闭，由界面上的开关控制。
+        self.auto_answer = False
+        # 输出停顿多久算"一段结束"，用于给时间线打点。
+        self._segment_idle_seconds = 1.2
 
     # -- 生命周期 ------------------------------------------------------
     def start(self) -> None:
@@ -195,6 +239,7 @@ class TerminalManager:
             cwd=cwd,
             env=dict(env or {}),
             started_at=_now(),
+            started_at_ms=time.time() * 1000.0,
         )
         log.info("启动会话 id=%s title=%r", session_id, session.title)
         log.info("  命令: %s", command)
@@ -249,15 +294,21 @@ class TerminalManager:
         text = text.replace("\r\n", "\r").replace("\n", "\r")
         if not text:
             return
-        with self._pending_lock:
-            self._pending.append((session_id, text))
-        self._pending_event.set()
+        self._queue_input(session_id, text)
         # 用户输入后，CLI 通常会清掉提示；乐观地关闭"等待选择"态。
         session = self._sessions.get(session_id)
         if session is not None and session.awaiting_choice:
             session.awaiting_choice = False
             session.choices = []
             self._emit(session_id, EVENT_CHOICE, {"awaitingChoice": False, "choices": []})
+
+    def _queue_input(self, session_id: str, text: str) -> None:
+        """把一行文本排入写入队列（由写入线程补发回车）。"""
+        if not text:
+            return
+        with self._pending_lock:
+            self._pending.append((session_id, text))
+        self._pending_event.set()
 
     def send_key(self, session_id: str, key: str) -> bool:
         """发送一个特殊按键（方向键 / Enter / Esc / Tab / Ctrl-C）。
@@ -308,9 +359,16 @@ class TerminalManager:
                     awaiting_choice=s.awaiting_choice,
                     choices=list(s.choices),
                     last_line=last,
+                    elapsed_ms=_elapsed_ms(s),
+                    auto_answered=bool(s.choices) and tuple(s.choices) == s.auto_answered,
                 )
             )
         return out
+
+    def timeline_text(self, session_id: str, max_segments: int = 200) -> str:
+        """带时间戳的输出时间线。"""
+        screen = self._screens.get(session_id)
+        return screen.timeline(max_segments) if screen is not None else ""
 
     def screen_text(self, session_id: str) -> str:
         screen = self._screens.get(session_id)
@@ -389,9 +447,45 @@ class TerminalManager:
                         EVENT_CHOICE,
                         {"awaitingChoice": awaiting, "choices": list(choices)},
                     )
+            # 输出停顿一段时间后，把这一屏记入带时间戳的时间线。
+            # 必须每轮都检查：停顿意味着"本轮没有数据"，若只在收到数据时才判断，
+            # idle_seconds 永远是 0，时间线会一直是空的。
+            if session.received_output and screen.idle_seconds >= self._segment_idle_seconds:
+                if screen.mark_segment():
+                    self._emit(
+                        session_id,
+                        EVENT_TIMELINE,
+                        {"text": screen.timeline(), "segments": len(screen.timeline_lines())},
+                    )
+            # 自动应答：检测到菜单且用户开启了自动处理时，按策略直接应答。
+            if session.awaiting_choice and session.choices:
+                self._maybe_auto_answer(session)
             # 检测退出
             if not alive and not session.status.is_terminal:
                 self._finish(session_id, session, backend)
+
+    def _maybe_auto_answer(self, session: PtySession) -> None:
+        """按预设策略自动回应选择菜单（默认选第 1 项）。
+
+        只在选项内容变化时回答一次，避免同一菜单被反复自动选择；用户仍可在
+        界面上手动点选，自动应答只是省掉一次点击（例如 codex 的"信任目录"）。
+        """
+        if not self.auto_answer:
+            return
+        signature = tuple(session.choices)
+        if signature == session.auto_answered:
+            return
+        session.auto_answered = signature
+        # 策略：选第一项。codex/claude 的确认菜单首项通常是"Yes, continue"这类
+        # "继续/默认"语义，最符合"自动放行"的预期。
+        find_choice = _auto_choice_index(session.choices)
+        log.info(
+            "自动应答会话 id=%s 选项=%s -> 第 %d 项",
+            session.session_id,
+            list(session.choices),
+            find_choice + 1,
+        )
+        self._queue_input(session.session_id, str(find_choice + 1))
 
     def _finish(self, session_id: str, session: PtySession, backend: _Backend) -> None:
         if session.status == SessionStatus.STOPPED:
@@ -401,6 +495,12 @@ class TerminalManager:
         else:
             exit_code = getattr(backend, "exit_code", None)
             status = mark_finished(session, 0 if exit_code is None else exit_code)
+        if not session.finished_at_ms:
+            session.finished_at_ms = time.time() * 1000.0
+        # 会话结束前把最后状态记入时间线，否则最后一段会缺失。
+        screen = self._screens.get(session_id)
+        if screen is not None:
+            screen.mark_segment(force=True)
         # 核心：整树回收，消灭 codex/claude 残留子进程。
         reaped = reap_tree(session)
         log.info(

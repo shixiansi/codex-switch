@@ -55,6 +55,9 @@ class PtySession:
     exit_code: int | None = None
     started_at: str = ""
     finished_at: str = ""
+    # 时间戳（epoch 毫秒），供界面实时计算运行时长；字符串形式不利于做减法。
+    started_at_ms: float = 0.0
+    finished_at_ms: float = 0.0
     # 运行期由 backend 填充，单测可留空。
     root_pid: int = 0
     child_pids: set[int] = None  # type: ignore[assignment]
@@ -62,6 +65,8 @@ class PtySession:
     choices: list[str] = None  # type: ignore[assignment]
     # 是否已收到过任何输出：用于区分"CLI 没输出"与"读取环节坏了"。
     received_output: bool = False
+    # 上一次已自动应答过的选项签名，避免同一菜单被反复自动选择。
+    auto_answered: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.child_pids is None:
@@ -306,6 +311,8 @@ def start_session(
     session.root_pid = backend.pid()
     session.child_pids = collect_child_pids(session.root_pid)
     session.status = SessionStatus.RUNNING
+    if not session.started_at_ms:
+        session.started_at_ms = time.time() * 1000.0
     return backend
 
 
@@ -319,6 +326,7 @@ def mark_finished(session: PtySession, exit_code: int | None) -> SessionStatus:
     else:
         session.status = SessionStatus.FAILED
     session.finished_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    session.finished_at_ms = time.time() * 1000.0
     return session.status
 
 

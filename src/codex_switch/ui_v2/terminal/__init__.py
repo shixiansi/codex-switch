@@ -6,7 +6,14 @@
 
 from __future__ import annotations
 
-from .manager import TerminalManager, SessionSummary, EVENT_OUTPUT, EVENT_STATUS, EVENT_CHOICE
+from .manager import (
+    TerminalManager,
+    SessionSummary,
+    EVENT_OUTPUT,
+    EVENT_STATUS,
+    EVENT_CHOICE,
+    EVENT_TIMELINE,
+)
 from .pty_session import PtySession, SessionStatus, check_pty_backend
 from .screen import TerminalScreen
 from .completion import detect_choice
@@ -18,6 +25,7 @@ __all__ = [
     "EVENT_OUTPUT",
     "EVENT_STATUS",
     "EVENT_CHOICE",
+    "EVENT_TIMELINE",
     "PtySession",
     "SessionStatus",
     "TerminalScreen",

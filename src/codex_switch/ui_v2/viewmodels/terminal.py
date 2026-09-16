@@ -8,7 +8,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..qt_compat import Property, Signal, Slot
-from ..terminal import EVENT_CHOICE, EVENT_STATUS, TerminalManager, check_pty_backend
+from ..terminal import (
+    EVENT_CHOICE,
+    EVENT_STATUS,
+    EVENT_TIMELINE,
+    TerminalManager,
+    check_pty_backend,
+)
 from ..terminal.logging_setup import get_logger, log_path
 from .base import BaseViewModel
 
@@ -24,6 +30,8 @@ class TerminalViewModel(BaseViewModel):
     choiceChanged = Signal()
     runningCountChanged = Signal()
     zoomChanged = Signal()
+    timelineChanged = Signal()
+    autoAnswerChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
@@ -38,6 +46,10 @@ class TerminalViewModel(BaseViewModel):
         self._zoomed_screen = ""
         self._zoomed_choices: list[str] = []
         self._zoomed_awaiting = False
+        # 自动应答开关：默认开启，检测到选择菜单时自动选第一项。
+        self._auto_answer = True
+        self._manager.auto_answer = True
+        self._active_timeline = ""
         super().__init__(parent)
         self._manager.start()
 
@@ -53,6 +65,20 @@ class TerminalViewModel(BaseViewModel):
     @Property(str, notify=screenChanged)
     def screen(self) -> str:
         return self._screen
+
+    @Property(str, notify=timelineChanged)
+    def activeTimeline(self) -> str:
+        """当前会话带时间戳的输出时间线。"""
+        return self._active_timeline
+
+    @Property(bool, notify=autoAnswerChanged)
+    def autoAnswer(self) -> bool:
+        """是否自动应答选择菜单。"""
+        return self._auto_answer
+
+    @autoAnswer.setter
+    def autoAnswer(self, value: bool) -> None:
+        self.setAutoAnswer(bool(value))
 
     @Property(bool, notify=choiceChanged)
     def awaitingChoice(self) -> bool:
@@ -115,6 +141,26 @@ class TerminalViewModel(BaseViewModel):
         return rows
 
     # -- 动作 ----------------------------------------------------------
+    @Slot(bool)
+    def setAutoAnswer(self, value: bool) -> None:
+        """开启/关闭选择菜单的自动应答。"""
+        enabled = bool(value)
+        if enabled == self._auto_answer:
+            return
+        self._auto_answer = enabled
+        self._manager.auto_answer = enabled
+        self.autoAnswerChanged.emit()
+        log.info("自动应答选择菜单：%s", "开启" if enabled else "关闭")
+        self._controller.showToast(
+            "已开启自动应答：检测到选择菜单会自动选第一项。" if enabled
+            else "已关闭自动应答：选择菜单需手动处理。",
+            "info",
+        )
+
+    @Slot(bool)
+    def toggleAutoAnswer(self) -> None:
+        self.setAutoAnswer(not self._auto_answer)
+
     @Slot(str, str, str)
     def createSession(self, title: str, command: str, cwd: str) -> None:
         command = str(command or "").strip()
@@ -362,6 +408,7 @@ class TerminalViewModel(BaseViewModel):
         if text != self._screen:
             self._screen = text
             self.screenChanged.emit()
+        self._refresh_timeline()
         # 同步"等待选择"态
         awaiting = False
         choices: list[str] = []
@@ -374,6 +421,13 @@ class TerminalViewModel(BaseViewModel):
             self._awaiting_choice = awaiting
             self._choices = choices
             self.choiceChanged.emit()
+
+    def _refresh_timeline(self) -> None:
+        """刷新当前会话的带时间戳时间线。"""
+        timeline = self._manager.timeline_text(self._active_id) if self._active_id else ""
+        if timeline != self._active_timeline:
+            self._active_timeline = timeline
+            self.timelineChanged.emit()
 
     def _refresh_zoom(self) -> None:
         if not self._zoomed_id:
@@ -426,6 +480,10 @@ class TerminalViewModel(BaseViewModel):
                 self._refresh_screen()
             if session_id == self._zoomed_id:
                 self._refresh_zoom()
+        elif event == EVENT_TIMELINE:
+            # 时间线新增了一段：立即刷新，否则面板会慢一拍。
+            if session_id == self._active_id:
+                self._refresh_timeline()
 
     def _report_status(self, session_id: str, payload: dict[str, Any]) -> None:
         status = payload.get("status")
