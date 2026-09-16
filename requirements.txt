@@ -3,10 +3,15 @@ PySide6-Essentials>=6.8,<6.12
 # entrypoint, but its modules and tests still import it.
 ttkbootstrap>=1.10,<2
 
-# AI 终端多开管理器
-# pywinpty: Windows ConPTY 封装，提供真正的 PTY（交互式 CLI 必需）
-# pyte: 若后续升级为 VT 字符网格渲染时使用（当前首版用轻量文本缓冲）
-# psutil: 跨平台遍历进程树，实现"整树回收零残留"
+# AI terminal multiplexer dependencies.
+# pywinpty: Windows ConPTY wrapper providing a real PTY (required for
+#           interactive CLIs such as codex / claude).
+# pyte:     VT100 screen model used to render cursor-addressed output.
+# psutil:   process-tree traversal used to reap every child on exit.
+#
+# NOTE: keep this file ASCII-only. pip decodes requirements files with the
+# locale encoding (GBK on Chinese Windows) unless a BOM is present, so any
+# non-ASCII comment makes `pip install -r requirements.txt` fail outright.
 pywinpty>=2.0.0
 pyte>=0.8.0
 psutil>=5.9.0

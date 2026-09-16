@@ -2,7 +2,8 @@ pyinstaller==6.19.0
 PySide6-Essentials>=6.8,<6.12
 # Required by the retained legacy Tk modules and their tests.
 ttkbootstrap>=1.10,<2
-# AI 终端多开管理器依赖：冻结包必须在构建环境里存在才能被打进 bundle。
+# AI terminal multiplexer dependencies. They must be present in the build
+# environment so the frozen bundle can include their native files.
 pywinpty>=2.0.0
 pyte>=0.8.0
 psutil>=5.9.0
