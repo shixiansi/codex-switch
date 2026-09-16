@@ -1,0 +1,160 @@
+"""AI 终端业务层测试（无 Qt 依赖，使用假 PTY 后端）。
+
+覆盖：屏幕文本累积、可选项检测、会话创建/输出/退出事件、整树回收零残留。
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import time
+import unittest
+from pathlib import Path
+
+# 让测试模块不依赖 conftest 即可找到 codex_switch 包（与 tests/helpers.py 一致）。
+_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _ROOT / "src"
+for _p in (_SRC, _ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+os.environ.setdefault("CODEX_SWITCH_DISABLE_OPEN_URL", "1")
+
+from codex_switch.ui_v2.terminal import TerminalManager
+from codex_switch.ui_v2.terminal.completion import detect_choice
+from codex_switch.ui_v2.terminal.pty_session import PtySession, SessionStatus, _Backend
+from codex_switch.ui_v2.terminal.screen import TerminalScreen
+
+
+class _FakeBackend(_Backend):
+    """用一个可手动驱动的缓冲区模拟 PTY 后端。"""
+
+    def __init__(self, command: str, cwd: str, env: dict[str, str]) -> None:
+        self._buf = b""
+        self._alive = True
+        self._pid = 4242
+        self._lock = threading.Lock()
+
+    def read(self) -> bytes:
+        with self._lock:
+            data = self._buf
+            self._buf = b""
+        return data
+
+    def write(self, data: str) -> None:
+        # 记录写入，便于断言"发送输入"生效。
+        with self._lock:
+            self._written = getattr(self, "_written", "") + data
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def pid(self) -> int:
+        return self._pid
+
+    def kill(self) -> None:
+        self._alive = False
+
+    def push(self, data: bytes) -> None:
+        with self._lock:
+            self._buf += data
+
+    def written(self) -> str:
+        return getattr(self, "_written", "")
+
+
+class ScreenTests(unittest.TestCase):
+    def test_feed_strips_escape_and_splits_lines(self) -> None:
+        screen = TerminalScreen()
+        screen.feed(b"\x1b[32mHello\x1b[0m\r\nWorld")
+        self.assertEqual(screen.text, "Hello\nWorld")
+
+    def test_tail_keeps_last_n(self) -> None:
+        screen = TerminalScreen()
+        for i in range(10):
+            screen.feed(f"line{i}\n".encode())
+        tail = screen.tail(3)
+        self.assertIn("line9", tail)
+        self.assertNotIn("line0", tail)
+
+
+class CompletionTests(unittest.TestCase):
+    def test_confirm_prompt(self) -> None:
+        awaiting, choices = detect_choice("Overwrite file? [Y/n] ")
+        self.assertTrue(awaiting)
+        self.assertEqual(choices, ["是", "否"])
+
+    def test_choice_prompt(self) -> None:
+        awaiting, choices = detect_choice("? Which model › gpt-4o\n  claude")
+        self.assertTrue(awaiting)
+        self.assertTrue(choices)
+
+    def test_no_prompt(self) -> None:
+        awaiting, choices = detect_choice("Normal output line")
+        self.assertFalse(awaiting)
+        self.assertEqual(choices, [])
+
+
+class ManagerTests(unittest.TestCase):
+    def _factory(self, store: dict[str, _FakeBackend]):
+        def make(command, cwd, env):
+            backend = _FakeBackend(command, cwd, env)
+            store.setdefault("last", backend)
+            return backend
+        return make
+
+    def test_create_emits_status_and_streams_output(self) -> None:
+        events: list[tuple[str, str, dict]] = []
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager(on_event=lambda sid, ev, pl: events.append((sid, ev, pl)))
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            self.assertTrue(any(e[1] == "status" for e in events))
+            store["last"].push(b"hello world\n")
+            time.sleep(0.4)
+            self.assertIn("hello world", mgr.screen_text(sid))
+        finally:
+            mgr.shutdown()
+
+    def test_input_writes_crlf(self) -> None:
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            mgr.send_input(sid, "y")
+            self.assertIn("y\r\n", store["last"].written())
+        finally:
+            mgr.shutdown()
+
+    def test_finish_emits_terminal_status(self) -> None:
+        events: list[tuple[str, str, dict]] = []
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager(on_event=lambda sid, ev, pl: events.append((sid, ev, pl)))
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            store["last"]._alive = False  # 模拟进程退出
+            time.sleep(0.4)
+            statuses = [pl["status"] for _, ev, pl in events if ev == "status"]
+            self.assertTrue(any(s in {"completed", "failed", "stopped"} for s in statuses))
+        finally:
+            mgr.shutdown()
+
+    def test_cleanup_orphans_reaps_dead_tree(self) -> None:
+        # 一个已结束但登记了子进程的会话，cleanup_orphans 应报告清理。
+        mgr = TerminalManager()
+        session = PtySession(
+            session_id="x", title="x", command="codex", cwd="", env={},
+            status=SessionStatus.COMPLETED,
+        )
+        session.child_pids = {999999}
+        mgr._sessions["x"] = session
+        cleaned = mgr.cleanup_orphans()
+        self.assertTrue(any(c["sessionId"] == "x" for c in cleaned))
+
+
+if __name__ == "__main__":
+    unittest.main()

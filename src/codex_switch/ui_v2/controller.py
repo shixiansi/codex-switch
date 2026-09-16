@@ -24,6 +24,7 @@ from .viewmodels import (
     ProxyViewModel,
     ScriptsViewModel,
     SettingsViewModel,
+    TerminalViewModel,
     ToolsViewModel,
 )
 from .workers import TaskContext, TaskResult, TaskRunner, TaskState
@@ -34,13 +35,14 @@ from .workspace import (
     Workspace,
     WorkspaceError,
 )
-SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "scripts", "system")
+SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "scripts", "terminal", "system")
 SECTION_TITLES = {
     "dashboard": "首页",
     "profiles": "配置中心",
     "projects": "项目工作区",
     "network": "网络与监控",
     "scripts": "脚本中心",
+    "terminal": "AI 终端",
     "system": "系统",
 }
 
@@ -121,6 +123,7 @@ class AppController(QObject):
         self.tools = ToolsViewModel(self, self)
         self.settings = SettingsViewModel(self, self)
         self.scripts = ScriptsViewModel(self, self)
+        self.terminal = TerminalViewModel(self, self)
 
         self._models = (
             self.dashboard,
@@ -130,6 +133,7 @@ class AppController(QObject):
             self.tools,
             self.settings,
             self.scripts,
+            self.terminal,
         )
         for model in self._models:
             model.errorRaised.connect(self._on_view_model_error)
@@ -225,6 +229,10 @@ class AppController(QObject):
     @Property(ScriptsViewModel, constant=True)
     def scriptsModel(self):
         return self.scripts
+
+    @Property(TerminalViewModel, constant=True)
+    def terminalModel(self):
+        return self.terminal
 
     @Property("QVariantList", notify=stateChanged)
     def contextInfo(self) -> list[dict[str, Any]]:
@@ -1244,6 +1252,11 @@ class AppController(QObject):
         self._script_timer.stop()
         self.workspace.script_runs.shutdown()
         self._runner.cancel_all()
+        try:
+            # AI 终端：整树回收所有仍在运行的会话，避免关 App 留下孤儿进程。
+            self.terminal.dispose()
+        except Exception:  # noqa: BLE001 - never block shutdown
+            pass
         try:
             if self.workspace.proxy_running:
                 self.workspace.stop_proxy()

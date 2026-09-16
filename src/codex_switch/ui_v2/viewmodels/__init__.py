@@ -5,6 +5,7 @@ from .projects import ProjectsViewModel
 from .proxy import ProxyViewModel
 from .scripts import ScriptsViewModel
 from .settings import SettingsViewModel
+from .terminal import TerminalViewModel
 from .tools import ToolsViewModel
 
 __all__ = [
@@ -16,5 +17,6 @@ __all__ = [
     "ScriptsViewModel",
     "SettingsViewModel",
     "SnapshotViewModel",
+    "TerminalViewModel",
     "ToolsViewModel",
 ]

@@ -25,6 +25,7 @@ ApplicationWindow {
         { key: "projects", label: "项目工作区", icon: "folder", hint: "项目 / 模板 / MCP / Skills" },
         { key: "network", label: "网络与监控", icon: "route", hint: "代理 / 统计 / 日志" },
         { key: "scripts", label: "脚本中心", icon: "terminal", hint: "添加 / 运行 / 修改脚本" },
+        { key: "terminal", label: "AI 终端", icon: "terminal", hint: "多开 AI CLI / 零残留" },
         { key: "system", label: "系统", icon: "settings", hint: "模板 / 更新 / 设置" }
     ]
 
@@ -360,7 +361,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 currentIndex: {
-                    var keys = ["dashboard", "profiles", "projects", "network", "scripts", "system"]
+                    var keys = ["dashboard", "profiles", "projects", "network", "scripts", "terminal", "system"]
                     var index = keys.indexOf(app.currentSection)
                     return index === -1 ? 0 : index
                 }
@@ -370,6 +371,7 @@ ApplicationWindow {
                 ProjectsPage {}
                 NetworkPage {}
                 ScriptsPage {}
+                TerminalDashboard {}
                 SystemPage {}
             }
         }
