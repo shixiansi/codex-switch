@@ -105,9 +105,7 @@ class TerminalViewModel(BaseViewModel):
         if not command:
             self.report_error("请填写要运行的命令。")
             return
-        session_id = self._manager.create_session(str(title or command), command, str(cwd or ""))
-        self._refresh_sessions()
-        self.focus(session_id)
+        self._start_session(str(title or command), command, str(cwd or ""), {})
 
     @Slot(str, str)
     def createProjectSession(self, project_id: str, client: str) -> None:
@@ -129,12 +127,27 @@ class TerminalViewModel(BaseViewModel):
         if not command:
             self.report_error("项目启动命令为空。")
             return
-        session_id = self._manager.create_session(
+        self._start_session(
             str(spec.get("title") or command),
             command,
             str(spec.get("cwd") or ""),
-            env=dict(spec.get("env") or {}),
+            dict(spec.get("env") or {}),
         )
+
+    def _start_session(self, title: str, command: str, cwd: str, env: dict[str, str]) -> None:
+        """启动会话并把失败转成可见提示。
+
+        PTY 启动可能因为命令不存在（如未安装 codex/claude）而抛错；这里统一
+        捕获并通过 toast/错误通道报告，避免"点了启动却没反应"。
+        """
+        try:
+            session_id = self._manager.create_session(title, command, cwd, env=env)
+        except FileNotFoundError:
+            self.report_error(f"找不到命令：{command}。请确认已安装并加入 PATH。")
+            return
+        except Exception as exc:  # noqa: BLE001 - 统一转成可读提示
+            self.report_error(f"启动会话失败：{exc}")
+            return
         self._refresh_sessions()
         self.focus(session_id)
 

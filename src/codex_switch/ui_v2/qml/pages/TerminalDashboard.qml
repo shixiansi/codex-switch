@@ -4,324 +4,392 @@ import QtQuick.Layouts
 import theme
 import components
 
-Page {
-    id: root
+// AI 终端：多开运行交互式 AI CLI，并统一回收残留进程。
+Item {
+    id: page
 
-    background: Rectangle { color: Theme.bg }
+    objectName: "terminalDashboard"
 
-    // 新建会话抽屉状态
-    property bool creating: false
+    // 供截图脚本等外部调用
+    function openCreateDialog() {
+        createDialog.open()
+    }
+
+    // 新建会话：按项目打开 / 自定义命令
+    property string newProjectId: ""
+    property string newProjectClient: "codex"
     property string newTitle: ""
     property string newCommand: "codex"
     property string newCwd: ""
-    // 按项目打开
-    property string newProjectId: ""
-    property string newProjectClient: "codex"
 
-    RowLayout {
+    ColumnLayout {
         anchors.fill: parent
-        spacing: 0
+        anchors.margins: Theme.space5
+        spacing: Theme.space4
 
-        // ================= 左侧：会话总览 =================
-        Rectangle {
-            Layout.preferredWidth: 300
-            Layout.fillHeight: true
-            color: Theme.surface
-            border.width: Theme.borderWidth
-            border.color: Theme.border
+        SectionHeader {
+            title: "AI 终端"
+            description: "在应用内运行 codex / claude 等交互式 AI CLI，支持多开会话、放大查看，并在结束时整树回收残留进程。"
 
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: Theme.space2
+            AppButton {
+                text: "清理残留"
+                iconName: "refresh"
+                enabled: terminalModel.runningCount === 0 || terminalModel.sessions.length > 0
+                onClicked: terminalModel.cleanupOrphans()
 
-                // 顶栏：标题 + 新建 + 清理残留
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.margins: Theme.space3
-                    spacing: Theme.space2
-
-                    Text {
-                        text: "AI 终端"
-                        color: Theme.text
-                        font.pixelSize: Theme.fontTitle
-                        font.weight: Font.DemiBold
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    AppButton {
-                        text: "新建"
-                        iconName: "terminal"
-                        variant: "primary"
-                        onClicked: createPopup.open()
-                    }
-
-                    AppButton {
-                        text: "清理残留 (" + terminalModel.runningCount + ")"
-                        iconName: "refresh"
-                        variant: "ghost"
-                        onClicked: terminalModel.cleanupOrphans()
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 1
-                    color: Theme.border
-                }
-
-                // 会话卡片列表
-                ListView {
-                    id: sessionList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    model: terminalModel.sessions
-                    spacing: Theme.space2
-                    anchors.leftMargin: Theme.space2
-                    anchors.rightMargin: Theme.space2
-
-                    delegate: Rectangle {
-                        id: card
-                        required property var modelData
-                        width: sessionList.width
-                        implicitHeight: 64
-                        radius: Theme.radiusSm
-                        color: terminalModel.activeId === modelData.sessionId ? Theme.accentSoft : Theme.surfaceAlt
-                        border.width: Theme.borderWidth
-                        border.color: terminalModel.activeId === modelData.sessionId ? Theme.accent : Theme.border
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: terminalModel.focus(modelData.sessionId)
-                        }
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.margins: Theme.space2
-                            spacing: Theme.space2
-
-                            Rectangle {
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: {
-                                    switch (modelData.status) {
-                                    case "running": return Theme.accent
-                                    case "completed": return Theme.success
-                                    case "failed": return Theme.danger
-                                    case "stopped": return Theme.unknown
-                                    default: return Theme.unknown
-                                    }
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 2
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.title
-                                    color: Theme.text
-                                    font.pixelSize: Theme.fontBody
-                                    font.weight: Font.Medium
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.statusLabel + (modelData.lastLine ? " · " + modelData.lastLine : "")
-                                    color: Theme.textFaint
-                                    font.pixelSize: Theme.fontCaption
-                                    elide: Text.ElideRight
-                                }
-                            }
-
-                            AppButton {
-                                text: "停止"
-                                iconName: "close"
-                                variant: "ghost"
-                                visible: modelData.status === "running"
-                                onClicked: terminalModel.stopSession(modelData.sessionId)
-                            }
-                            AppButton {
-                                text: "放大"
-                                iconName: "expand"
-                                variant: "ghost"
-                                visible: modelData.status === "running"
-                                onClicked: terminalModel.zoom(modelData.sessionId)
-                            }
-                            AppButton {
-                                text: "移除"
-                                iconName: "trash"
-                                variant: "ghost"
-                                visible: modelData.status !== "running"
-                                onClicked: terminalModel.removeSession(modelData.sessionId)
-                            }
-                        }
-                    }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: Theme.space3
-                    Layout.rightMargin: Theme.space3
-                    Layout.bottomMargin: Theme.space2
-                    visible: terminalModel.sessions.length === 0
-                    text: "还没有会话。点击右上角「新建」启动一个 AI CLI（如 codex / claude）。"
-                    color: Theme.textFaint
-                    font.pixelSize: Theme.fontCaption
-                    wrapMode: Text.Wrap
-                }
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "回收已结束会话遗留的子进程"
+            }
+            AppButton {
+                text: "新建会话"
+                iconName: "plus"
+                variant: "primary"
+                onClicked: createDialog.open()
             }
         }
 
-        // ================= 右侧：终端视图 =================
-        ColumnLayout {
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 0
+            spacing: Theme.space4
 
-            // 选项条：检测到 CLI 等待选择时浮出
+            // ================= 左：会话总览 =================
             Rectangle {
-                Layout.fillWidth: true
-                visible: terminalModel.awaitingChoice && terminalModel.choices.length > 0
-                implicitHeight: visible ? choiceRow.implicitHeight + Theme.space2 * 2 : 0
-                color: Theme.accentSoft
-                border.width: Theme.borderWidth
-                border.color: Theme.accent
-
-                RowLayout {
-                    id: choiceRow
-                    anchors.fill: parent
-                    anchors.margins: Theme.space2
-                    spacing: Theme.space2
-
-                    Text {
-                        text: "请选择："
-                        color: Theme.text
-                        font.pixelSize: Theme.fontBody
-                        font.weight: Font.Medium
-                    }
-
-                    Repeater {
-                        model: terminalModel.choices
-                        delegate: AppButton {
-                            required property var modelData
-                            text: modelData
-                            variant: "primary"
-                            onClicked: terminalModel.sendChoice(index)
-                        }
-                    }
-                }
-            }
-
-            // 输出区：只读文本流（首版用 TextArea，后续可换 VT 网格）
-            ScrollView {
-                Layout.fillWidth: true
+                Layout.preferredWidth: 320
                 Layout.fillHeight: true
-                clip: true
-                TextArea {
-                    id: outputArea
-                    text: terminalModel.screen
-                    readOnly: true
-                    font.family: "Consolas, Menlo, Monaco, monospace"
-                    font.pixelSize: 13
-                    color: Theme.text
-                    background: Rectangle { color: Theme.bg }
-                    textFormat: TextEdit.PlainText
-                    wrapMode: TextEdit.NoWrap
-                    Component.onCompleted: {
-                        // 新输出时自动滚到底部
-                    }
-                }
-            }
-
-            // 输入栏
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: Theme.topBarHeight
+                radius: Theme.radius
                 color: Theme.surface
                 border.width: Theme.borderWidth
                 border.color: Theme.border
 
-                RowLayout {
+                ColumnLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: Theme.space3
-                    anchors.rightMargin: Theme.space3
+                    anchors.margins: Theme.space3
                     spacing: Theme.space2
 
-                    TextField {
-                        id: inputField
+                    RowLayout {
                         Layout.fillWidth: true
-                        placeholderText: terminalModel.activeId ? "输入并回车发送给 AI CLI …" : "请先选择或新建一个会话"
-                        enabled: terminalModel.activeId !== ""
-                        onAccepted: {
-                            terminalModel.sendInput(text)
-                            text = ""
+                        spacing: Theme.space2
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "会话 (" + terminalModel.sessions.length + ")"
+                            color: Theme.text
+                            font.pixelSize: Theme.fontSubtitle
+                            font.weight: Font.DemiBold
+                        }
+
+                        StatusBadge {
+                            text: terminalModel.runningCount + " 运行中"
+                            tone: terminalModel.runningCount > 0 ? "accent" : "unknown"
+                            showDot: terminalModel.runningCount > 0
+                            visible: terminalModel.sessions.length > 0
                         }
                     }
 
-                    AppButton {
-                        text: "发送"
-                        variant: "primary"
-                        enabled: terminalModel.activeId !== "" && inputField.text !== ""
-                        onClicked: {
-                            terminalModel.sendInput(inputField.text)
-                            inputField.text = ""
+                    EmptyState {
+                        Layout.fillWidth: true
+                        visible: terminalModel.sessions.length === 0
+                        iconName: "terminal"
+                        title: "还没有会话"
+                        description: "点击右上角「新建会话」，按项目打开或运行自定义命令。"
+                        actionText: "新建会话"
+                        onActionTriggered: createDialog.open()
+                    }
+
+                    ListView {
+                        id: sessionList
+
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        visible: terminalModel.sessions.length > 0
+                        model: terminalModel.sessions
+                        spacing: Theme.space1
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                        delegate: ListRow {
+                            id: row
+
+                            required property var modelData
+
+                            width: sessionList.width
+                            iconName: "terminal"
+                            title: modelData.title
+                            subtitle: modelData.lastLine !== ""
+                                ? modelData.lastLine : modelData.cwd
+                            badgeText: modelData.statusLabel
+                            badgeTone: modelData.status === "running" ? "accent"
+                                : modelData.status === "completed" ? "success"
+                                : modelData.status === "failed" ? "danger" : "unknown"
+                            selected: terminalModel.activeId === modelData.sessionId
+                            onClicked: terminalModel.focus(modelData.sessionId)
                         }
+                    }
+                }
+            }
+
+            // ================= 右：终端视图 =================
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                radius: Theme.radius
+                color: Theme.surface
+                border.width: Theme.borderWidth
+                border.color: Theme.border
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: Theme.space3
+                    spacing: Theme.space3
+
+                    // ---- 头部：标题 + 路径 + 状态 ----
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space2
+                        visible: terminalModel.activeId !== ""
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: {
+                                    var list = terminalModel.sessions
+                                    for (var i = 0; i < list.length; i++) {
+                                        if (list[i].sessionId === terminalModel.activeId)
+                                            return list[i].title
+                                    }
+                                    return ""
+                                }
+                                color: Theme.text
+                                font.pixelSize: Theme.fontTitle
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: {
+                                    var list = terminalModel.sessions
+                                    for (var i = 0; i < list.length; i++) {
+                                        if (list[i].sessionId === terminalModel.activeId)
+                                            return list[i].cwd
+                                    }
+                                    return ""
+                                }
+                                color: Theme.textFaint
+                                font.pixelSize: Theme.fontCaption
+                                elide: Text.ElideMiddle
+                            }
+                        }
+
+                        AppButton {
+                            text: "放大"
+                            iconName: "search"
+                            variant: "ghost"
+                            onClicked: terminalModel.zoom(terminalModel.activeId)
+                        }
+                        AppButton {
+                            text: "停止"
+                            iconName: "close"
+                            variant: "danger"
+                            onClicked: terminalModel.stopSession(terminalModel.activeId)
+                        }
+                    }
+
+                    EmptyState {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: terminalModel.activeId === ""
+                        iconName: "terminal"
+                        title: "未选择会话"
+                        description: "在左侧选择一个会话查看实时输出，或新建一个会话。"
+                    }
+
+                    TerminalView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: terminalModel.activeId !== ""
+                        screenText: terminalModel.screen
+                        awaitingChoice: terminalModel.awaitingChoice
+                        choices: terminalModel.choices
+                        inputEnabled: terminalModel.activeId !== ""
+                        onInputSubmitted: function (text) { terminalModel.sendInput(text) }
+                        onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
                     }
                 }
             }
         }
     }
 
-    // ================= 新建会话弹窗 =================
+    // ================= 新建会话对话框 =================
     Popup {
-        id: createPopup
+        id: createDialog
+
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - Theme.space6 * 2)
         modal: true
         focus: true
-        anchors.centerIn: parent
-        width: 540
-        padding: Theme.space4
-        background: Rectangle { radius: Theme.radius; color: Theme.surface; border.width: Theme.borderWidth; border.color: Theme.border }
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: Theme.space3
+        background: Rectangle {
+            radius: Theme.radius
+            color: Theme.surface
+            border.width: Theme.borderWidth
+            border.color: Theme.border
+        }
 
-            Text { text: "新建 AI 终端会话"; color: Theme.text; font.pixelSize: Theme.fontTitle; font.weight: Font.DemiBold }
+        contentItem: ColumnLayout {
+            spacing: 0
 
-            // 模式切换：按项目打开 / 自定义命令
-            TabBar {
-                id: modeTabs
+            // ---- 头部 ----
+            Rectangle {
                 Layout.fillWidth: true
-                TabButton { text: "按项目打开" }
-                TabButton { text: "自定义命令" }
+                implicitHeight: headerRow.implicitHeight + Theme.space4 * 2
+                color: "transparent"
+
+                RowLayout {
+                    id: headerRow
+
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.space4
+                    anchors.rightMargin: Theme.space4
+                    spacing: Theme.space2
+
+                    Rectangle {
+                        width: 30
+                        height: 30
+                        radius: Theme.radiusSm
+                        color: Theme.accentSoft
+
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "terminal"
+                            color: Theme.accent
+                            size: 16
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+
+                        Text {
+                            text: "新建 AI 终端会话"
+                            color: Theme.text
+                            font.pixelSize: Theme.fontTitle
+                            font.weight: Font.DemiBold
+                        }
+
+                        Text {
+                            text: "在应用内运行交互式 AI CLI"
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontCaption
+                        }
+                    }
+
+                    AppButton {
+                        text: "关闭"
+                        iconName: "close"
+                        variant: "ghost"
+                        onClicked: createDialog.close()
+                    }
+                }
             }
 
-            StackLayout {
+            Rectangle {
                 Layout.fillWidth: true
-                currentIndex: modeTabs.currentIndex
+                Layout.preferredHeight: 1
+                color: Theme.border
+            }
 
-                // ---- 模式一：选择项目，自动导入环境与配置 ----
+            // ---- 主体 ----
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: Theme.space4
+                spacing: Theme.space3
+
+                // 模式切换：分段控件（避免默认 TabBar 的粗黑样式）
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: Theme.controlHeight
+                    radius: Theme.radiusSm
+                    color: Theme.surfaceAlt
+                    border.width: Theme.borderWidth
+                    border.color: Theme.border
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        spacing: 2
+
+                        Repeater {
+                            model: [ "按项目打开", "自定义命令" ]
+
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                radius: Theme.radiusSm - 2
+                                color: modeTabs.current === index ? Theme.surface : "transparent"
+                                border.width: modeTabs.current === index ? Theme.borderWidth : 0
+                                border.color: Theme.border
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData
+                                    color: modeTabs.current === index ? Theme.accent : Theme.textMuted
+                                    font.pixelSize: Theme.fontBody
+                                    font.weight: modeTabs.current === index ? Font.DemiBold : Font.Normal
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: modeTabs.current = index
+                                }
+                            }
+                        }
+                    }
+                }
+
+                QtObject {
+                    id: modeTabs
+                    property int current: 0
+                }
+
+                // ---- 模式一：按项目打开 ----
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Theme.space3
+                    visible: modeTabs.current === 0
 
                     Text {
                         Layout.fillWidth: true
-                        text: "选择项目后会自动同步该项目的 Codex / Claude 配置、路由代理与运行时环境变量。"
-                        color: Theme.textFaint
+                        text: "选择项目后会自动同步该项目的 Codex / Claude 配置、路由代理与运行时环境变量，并以项目目录作为工作目录启动。"
+                        color: Theme.textMuted
                         font.pixelSize: Theme.fontCaption
-                        wrapMode: Text.Wrap
+                        wrapMode: Text.WordWrap
                     }
 
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: Theme.space1
-                        Text { text: "项目"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+
+                        Text {
+                            text: "项目"
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontCaption
+                        }
+
                         AppComboBox {
-                            id: projectPicker
                             Layout.fillWidth: true
                             options: {
                                 var rows = []
@@ -330,36 +398,53 @@ Page {
                                     rows.push({ value: list[i].id, label: list[i].name })
                                 return rows
                             }
-                            onSelectionChanged: function (value) { newProjectId = value }
+                            onSelectionChanged: function (value) { page.newProjectId = value }
                         }
                     }
 
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: Theme.space1
-                        Text { text: "客户端"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+
+                        Text {
+                            text: "客户端"
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontCaption
+                        }
+
                         RowLayout {
                             spacing: Theme.space2
+
                             AppButton {
                                 text: "Codex"
-                                variant: newProjectClient === "codex" ? "primary" : "ghost"
-                                onClicked: newProjectClient = "codex"
+                                variant: page.newProjectClient === "codex" ? "primary" : "secondary"
+                                onClicked: page.newProjectClient = "codex"
                             }
                             AppButton {
                                 text: "Claude"
-                                variant: newProjectClient === "claude" ? "primary" : "ghost"
-                                onClicked: newProjectClient = "claude"
+                                variant: page.newProjectClient === "claude" ? "primary" : "secondary"
+                                onClicked: page.newProjectClient = "claude"
                             }
+                            Item { Layout.fillWidth: true }
                         }
                     }
 
-                    Text {
+                    Rectangle {
                         Layout.fillWidth: true
+                        implicitHeight: noProjectText.implicitHeight + Theme.space2 * 2
+                        radius: Theme.radiusSm
+                        color: Theme.warningSoft
                         visible: terminalModel.projects.length === 0
-                        text: "还没有项目，请先在「项目工作区」添加项目。"
-                        color: Theme.textFaint
-                        font.pixelSize: Theme.fontCaption
-                        wrapMode: Text.Wrap
+
+                        Text {
+                            id: noProjectText
+                            anchors.fill: parent
+                            anchors.margins: Theme.space2
+                            text: "还没有项目，请先在「项目工作区」添加项目。"
+                            color: Theme.warning
+                            font.pixelSize: Theme.fontCaption
+                            wrapMode: Text.WordWrap
+                        }
                     }
                 }
 
@@ -367,63 +452,88 @@ Page {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Theme.space3
+                    visible: modeTabs.current === 1
 
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: Theme.space1
+
                         Text { text: "标题（可选）"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+
                         AppTextField {
                             Layout.fillWidth: true
                             placeholderText: "例如：codex 重构任务"
-                            text: newTitle
-                            onTextChanged: newTitle = text
+                            text: page.newTitle
+                            onTextChanged: page.newTitle = text
                         }
                     }
+
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: Theme.space1
+
                         Text { text: "命令"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+
                         AppTextField {
                             Layout.fillWidth: true
                             placeholderText: "codex 或 claude，可带参数"
-                            text: newCommand
-                            onTextChanged: newCommand = text
+                            text: page.newCommand
+                            onTextChanged: page.newCommand = text
                         }
                     }
+
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: Theme.space1
+
                         Text { text: "工作目录（可选）"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+
                         AppTextField {
                             Layout.fillWidth: true
                             placeholderText: "留空使用当前目录"
-                            text: newCwd
-                            onTextChanged: newCwd = text
+                            text: page.newCwd
+                            onTextChanged: page.newCwd = text
                         }
                     }
                 }
             }
 
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.border
+            }
+
+            // ---- 底部操作 ----
             RowLayout {
                 Layout.fillWidth: true
+                Layout.margins: Theme.space4
+                spacing: Theme.space2
+
                 Item { Layout.fillWidth: true }
+
                 AppButton {
                     text: "取消"
                     variant: "ghost"
-                    onClicked: createPopup.close()
+                    onClicked: createDialog.close()
                 }
+
                 AppButton {
                     text: "启动"
+                    iconName: "chevron-right"
                     variant: "primary"
-                    enabled: modeTabs.currentIndex === 0 ? newProjectId !== "" : newCommand !== ""
+                    enabled: modeTabs.current === 0
+                        ? page.newProjectId !== ""
+                        : page.newCommand !== ""
                     onClicked: {
-                        if (modeTabs.currentIndex === 0) {
-                            terminalModel.createProjectSession(newProjectId, newProjectClient)
-                        } else {
-                            terminalModel.createSession(newTitle, newCommand, newCwd)
-                            newTitle = ""; newCommand = "codex"; newCwd = ""
-                        }
-                        createPopup.close()
+                        if (modeTabs.current === 0)
+                            terminalModel.createProjectSession(page.newProjectId, page.newProjectClient)
+                        else
+                            terminalModel.createSession(page.newTitle, page.newCommand, page.newCwd)
+                        page.newTitle = ""
+                        page.newCommand = "codex"
+                        page.newCwd = ""
+                        createDialog.close()
                     }
                 }
             }
@@ -433,98 +543,76 @@ Page {
     // ================= 放大浮窗 =================
     Window {
         id: zoomWindow
+
         visible: terminalModel.zoomedId !== ""
-        width: 900
-        height: 640
+        width: 960
+        height: 680
         title: "AI 终端 · 放大"
         color: Theme.bg
         onClosing: terminalModel.closeZoom()
 
         ColumnLayout {
             anchors.fill: parent
-            spacing: 0
+            anchors.margins: Theme.space4
+            spacing: Theme.space3
 
-            // 选项条（放大视图内的独立选择）
-            Rectangle {
+            RowLayout {
                 Layout.fillWidth: true
-                visible: terminalModel.zoomedAwaiting && terminalModel.zoomedChoices.length > 0
-                implicitHeight: visible ? zChoiceRow.implicitHeight + Theme.space2 * 2 : 0
-                color: Theme.accentSoft
-                border.width: Theme.borderWidth
-                border.color: Theme.accent
+                spacing: Theme.space2
 
-                RowLayout {
-                    id: zChoiceRow
-                    anchors.fill: parent
-                    anchors.margins: Theme.space2
-                    spacing: Theme.space2
-                    Text { text: "请选择："; color: Theme.text; font.pixelSize: Theme.fontBody; font.weight: Font.Medium }
-                    Repeater {
-                        model: terminalModel.zoomedChoices
-                        delegate: AppButton {
-                            required property var modelData
-                            text: modelData
-                            variant: "primary"
-                            onClicked: terminalModel.sendZoomChoice(index)
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 1
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: {
+                            var list = terminalModel.sessions
+                            for (var i = 0; i < list.length; i++) {
+                                if (list[i].sessionId === terminalModel.zoomedId)
+                                    return list[i].title
+                            }
+                            return "AI 终端"
                         }
+                        color: Theme.text
+                        font.pixelSize: Theme.fontTitle
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
                     }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: {
+                            var list = terminalModel.sessions
+                            for (var i = 0; i < list.length; i++) {
+                                if (list[i].sessionId === terminalModel.zoomedId)
+                                    return list[i].cwd
+                            }
+                            return ""
+                        }
+                        color: Theme.textFaint
+                        font.pixelSize: Theme.fontCaption
+                        elide: Text.ElideMiddle
+                    }
+                }
+
+                AppButton {
+                    text: "停止"
+                    iconName: "close"
+                    variant: "danger"
+                    onClicked: terminalModel.stopZoom(terminalModel.zoomedId)
                 }
             }
 
-            ScrollView {
+            TerminalView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                clip: true
-                TextArea {
-                    text: terminalModel.zoomedScreen
-                    readOnly: true
-                    font.family: "Consolas, Menlo, Monaco, monospace"
-                    font.pixelSize: 13
-                    color: Theme.text
-                    background: Rectangle { color: Theme.bg }
-                    textFormat: TextEdit.PlainText
-                    wrapMode: TextEdit.NoWrap
-                }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: Theme.topBarHeight
-                color: Theme.surface
-                border.width: Theme.borderWidth
-                border.color: Theme.border
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: Theme.space3
-                    anchors.rightMargin: Theme.space3
-                    spacing: Theme.space2
-
-                    TextField {
-                        id: zoomInput
-                        Layout.fillWidth: true
-                        placeholderText: "输入并回车发送给 AI CLI …"
-                        onAccepted: {
-                            terminalModel.sendZoomInput(text)
-                            text = ""
-                        }
-                    }
-                    AppButton {
-                        text: "发送"
-                        variant: "primary"
-                        enabled: zoomInput.text !== ""
-                        onClicked: {
-                            terminalModel.sendZoomInput(zoomInput.text)
-                            zoomInput.text = ""
-                        }
-                    }
-                    AppButton {
-                        text: "停止"
-                        iconName: "close"
-                        variant: "ghost"
-                        onClicked: terminalModel.stopZoom(terminalModel.zoomedId)
-                    }
-                }
+                screenText: terminalModel.zoomedScreen
+                awaitingChoice: terminalModel.zoomedAwaiting
+                choices: terminalModel.zoomedChoices
+                inputEnabled: terminalModel.zoomedId !== ""
+                onInputSubmitted: function (text) { terminalModel.sendZoomInput(text) }
+                onChoiceSelected: function (index) { terminalModel.sendZoomChoice(index) }
             }
         }
     }

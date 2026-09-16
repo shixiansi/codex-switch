@@ -156,5 +156,41 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(any(c["sessionId"] == "x" for c in cleaned))
 
 
+class WinPtyBackendContractTests(unittest.TestCase):
+    """pywinpty 3.x 的 API 契约回归测试。
+
+    该库在 3.0 把导入模块从 ``pywinpty`` 改名为 ``winpty``、类从 ``PTYProcess``
+    改为 ``PtyProcess``；此前代码写死旧名字，导致每次启动都 ModuleNotFoundError，
+    而异常被吞掉后表现为"点击启动没反应"。这里锁定真实安装的 API 形态。
+    """
+
+    @unittest.skipIf(os.name != "nt", "ConPTY 后端仅 Windows 可用")
+    def test_can_construct_real_backend(self) -> None:
+        from codex_switch.ui_v2.terminal.pty_session import _WinPtyBackend
+
+        backend = _WinPtyBackend("cmd.exe /c echo CONTRACT_OK", "", {})
+        try:
+            self.assertGreater(backend.pid(), 0)
+            data = b""
+            for _ in range(80):
+                data += backend.read()
+                if not backend.is_alive():
+                    break
+                time.sleep(0.05)
+            self.assertIn(b"CONTRACT_OK", data)
+        finally:
+            backend.kill()
+
+    def test_winpty_module_importable(self) -> None:
+        # 只要装了 pywinpty，就必须能通过 winpty（3.x）或 pywinpty（2.x）导入。
+        try:
+            import winpty  # noqa: F401
+        except ImportError:
+            try:
+                import pywinpty  # noqa: F401
+            except ImportError:
+                self.skipTest("pywinpty 未安装")
+
+
 if __name__ == "__main__":
     unittest.main()

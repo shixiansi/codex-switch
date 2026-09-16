@@ -94,6 +94,32 @@ class ViewModelTests(unittest.TestCase):
         finally:
             vm.dispose()
 
+    def test_missing_command_reports_error_instead_of_silence(self) -> None:
+        """启动不存在的命令必须报错，而不是"点了没反应"。"""
+        ctrl = _StubController()
+        vm = TerminalViewModel(ctrl)
+        errors: list[str] = []
+        vm.errorRaised.connect(errors.append)
+        try:
+            vm.createSession("bad", "definitely_not_a_real_command_xyz_123", "")
+            self.assertEqual(vm.sessions, [])
+            self.assertTrue(errors, "缺少命令时必须通过错误通道报告")
+            self.assertIn("找不到命令", errors[0])
+        finally:
+            vm.dispose()
+
+    def test_create_project_session_without_project_reports_error(self) -> None:
+        ctrl = _StubController()
+        vm = TerminalViewModel(ctrl)
+        errors: list[str] = []
+        vm.errorRaised.connect(errors.append)
+        try:
+            vm.createProjectSession("", "codex")
+            self.assertTrue(errors)
+            self.assertIn("项目", errors[0])
+        finally:
+            vm.dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

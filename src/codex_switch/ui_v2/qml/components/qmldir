@@ -19,4 +19,5 @@ SearchField 1.0 SearchField.qml
 SectionHeader 1.0 SectionHeader.qml
 StatCard 1.0 StatCard.qml
 StatusBadge 1.0 StatusBadge.qml
+TerminalView 1.0 TerminalView.qml
 ToastHost 1.0 ToastHost.qml

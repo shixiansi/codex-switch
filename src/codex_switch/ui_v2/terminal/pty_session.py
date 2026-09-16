@@ -85,41 +85,61 @@ class _Backend:
 
 
 class _WinPtyBackend(_Backend):
-    """Windows ConPTY 后端（pywinpty）。"""
+    """Windows ConPTY 后端（pywinpty）。
+
+    pywinpty 3.x 的导入模块名是 ``winpty``（不是 ``pywinpty``），对外暴露
+    ``PtyProcess``。spawn 接受命令行字符串，dimensions 为 ``(rows, cols)``。
+    """
 
     def __init__(self, command: str, cwd: str, env: dict[str, str]) -> None:
-        from pywinpty import PTYProcess  # 延迟导入：非 Windows 不需要
+        try:
+            from winpty import PtyProcess  # pywinpty >= 3
+        except ImportError:  # pragma: no cover - pywinpty 2.x 旧模块名
+            from pywinpty import PtyProcess  # type: ignore[no-redef]
 
         cols, rows = 120, 30
-        self._proc = PTYProcess.spawn(
+        self._proc = PtyProcess.spawn(
             command,
             cwd=cwd or None,
             env=env or None,
-            dimensions=(cols, rows),
+            dimensions=(rows, cols),
         )
 
     def read(self) -> bytes:
         try:
-            return self._proc.read()
+            data = self._proc.read(65536)
         except EOFError:
             return b""
         except OSError:
             return b""
+        if data is None:
+            return b""
+        # 不同版本可能返回 str；统一转成字节供上层解码。
+        if isinstance(data, str):
+            return data.encode("utf-8", errors="replace")
+        return bytes(data)
 
     def write(self, data: str) -> None:
         self._proc.write(data)
 
     def is_alive(self) -> bool:
-        return self._proc.isalive()
+        return bool(self._proc.isalive())
 
     def pid(self) -> int:
-        return int(self._proc.pid)
+        return int(getattr(self._proc, "pid", 0) or 0)
 
     def kill(self) -> None:
         try:
             self._proc.terminate(force=True)
         except Exception:  # noqa: BLE001 - 关闭时尽力而为
             pass
+        # pywinpty 内部持有一个 socket 对；不显式关闭会泄漏句柄（ResourceWarning）。
+        fileobj = getattr(self._proc, "fileobj", None)
+        if fileobj is not None:
+            try:
+                fileobj.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class _UnixPtyBackend(_Backend):
