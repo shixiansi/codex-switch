@@ -24,6 +24,7 @@ ApplicationWindow {
         { key: "profiles", label: "配置中心", icon: "profile", hint: "配置 / 模型 / 号池" },
         { key: "projects", label: "项目工作区", icon: "folder", hint: "项目 / 模板 / MCP / Skills" },
         { key: "network", label: "网络与监控", icon: "route", hint: "代理 / 统计 / 日志" },
+        { key: "scripts", label: "脚本中心", icon: "terminal", hint: "添加 / 运行 / 修改脚本" },
         { key: "system", label: "系统", icon: "settings", hint: "模板 / 更新 / 设置" }
     ]
 
@@ -54,6 +55,10 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+4"
         onActivated: app.navigateTo("network")
+    }
+    Shortcut {
+        sequence: "Ctrl+6"
+        onActivated: app.navigateTo("scripts")
     }
     Shortcut {
         sequence: "Ctrl+5"
@@ -355,7 +360,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 currentIndex: {
-                    var keys = ["dashboard", "profiles", "projects", "network", "system"]
+                    var keys = ["dashboard", "profiles", "projects", "network", "scripts", "system"]
                     var index = keys.indexOf(app.currentSection)
                     return index === -1 ? 0 : index
                 }
@@ -364,6 +369,7 @@ ApplicationWindow {
                 ProfilesPage {}
                 ProjectsPage {}
                 NetworkPage {}
+                ScriptsPage {}
                 SystemPage {}
             }
         }
@@ -434,6 +440,7 @@ ApplicationWindow {
             open: true
             title: app.drawer === "profile-form" ? profilesModel.formTitle
                 : app.drawer === "project-form" ? projectsModel.formTitle
+                : app.drawer === "script-form" ? scriptsModel.formTitle
                 : app.drawer === "pool-group-form" || app.drawer === "pool-channel-form"
                   || app.drawer === "mcp-form" || app.drawer === "skill-group-form"
                   || app.drawer === "skill-form" || app.drawer === "skill-repo-form"
@@ -462,6 +469,8 @@ ApplicationWindow {
                         return skillFormComponent
                     if (app.drawer === "skill-repo-form")
                         return skillRepoFormComponent
+                    if (app.drawer === "script-form")
+                        return scriptFormComponent
                     return null
                 }
             }
@@ -544,6 +553,16 @@ ApplicationWindow {
             Layout.fillWidth: true
             fields: toolsModel.formFields
             onSubmitted: function (payload) { toolsModel.submitSkillRepoForm(payload) }
+            onCancelled: app.closeDrawer()
+        }
+    }
+
+    Component {
+        id: scriptFormComponent
+        FormRenderer {
+            Layout.fillWidth: true
+            fields: scriptsModel.form
+            onSubmitted: function (payload) { scriptsModel.submitForm(payload) }
             onCancelled: app.closeDrawer()
         }
     }
@@ -652,6 +671,7 @@ ApplicationWindow {
             { label: "配置中心 · 配置库", hint: "Ctrl+2", icon: "profile", section: "profiles" },
             { label: "项目工作区", hint: "Ctrl+3", icon: "folder", section: "projects" },
             { label: "网络与监控", hint: "Ctrl+4", icon: "route", section: "network" },
+            { label: "脚本中心", hint: "Ctrl+6", icon: "terminal", section: "scripts" },
             { label: "系统设置", hint: "Ctrl+5", icon: "settings", section: "system" },
             { label: "切换浅色 / 深色主题", hint: "Ctrl+D", icon: "settings", section: "system" }
         ]

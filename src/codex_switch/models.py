@@ -1762,6 +1762,73 @@ class SkillMarketRepo:
         return asdict(self)
 
 
+SCRIPT_KIND_CHOICES = ("shell", "python")
+SCRIPT_KIND_LABELS = {"shell": "Shell / 批处理", "python": "Python"}
+
+
+@dataclass
+class ScriptRecord:
+    """A user-defined script shown in the script centre.
+
+    Scripts are stored by content, not by path, so they survive being moved
+    with the app and need no external file to keep in sync.
+    """
+
+    id: str
+    name: str
+    kind: str
+    content: str
+    working_dir: str = ""
+    description: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        *,
+        kind: str = "shell",
+        content: str = "",
+        working_dir: str = "",
+        description: str = "",
+    ) -> "ScriptRecord":
+        timestamp = now_iso()
+        normalized = (kind or "shell").strip().lower()
+        if normalized not in SCRIPT_KIND_CHOICES:
+            normalized = "shell"
+        return cls(
+            id=str(uuid.uuid4()),
+            name=name.strip(),
+            kind=normalized,
+            content=content,
+            working_dir=working_dir.strip(),
+            description=description.strip(),
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ScriptRecord":
+        timestamp = data.get("updated_at") or data.get("created_at") or now_iso()
+        kind = str(data.get("kind") or "shell").strip().lower()
+        if kind not in SCRIPT_KIND_CHOICES:
+            kind = "shell"
+        return cls(
+            id=str(data.get("id") or uuid.uuid4()),
+            name=str(data.get("name") or "未命名脚本").strip() or "未命名脚本",
+            kind=kind,
+            content=str(data.get("content") or ""),
+            working_dir=str(data.get("working_dir") or "").strip(),
+            description=str(data.get("description") or "").strip(),
+            created_at=data.get("created_at", timestamp),
+            updated_at=data.get("updated_at", timestamp),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class ProjectRecord:
     id: str

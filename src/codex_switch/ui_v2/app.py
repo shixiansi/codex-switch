@@ -55,6 +55,7 @@ def build_engine(controller: AppController) -> QQmlApplicationEngine:
     context.setContextProperty("proxyModel", controller.proxy)
     context.setContextProperty("toolsModel", controller.tools)
     context.setContextProperty("settingsModel", controller.settings)
+    context.setContextProperty("scriptsModel", controller.scripts)
     return engine
 
 

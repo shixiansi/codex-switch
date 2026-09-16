@@ -3,6 +3,7 @@ from .dashboard import DashboardViewModel
 from .profiles import ProfilesViewModel
 from .projects import ProjectsViewModel
 from .proxy import ProxyViewModel
+from .scripts import ScriptsViewModel
 from .settings import SettingsViewModel
 from .tools import ToolsViewModel
 
@@ -12,6 +13,7 @@ __all__ = [
     "ProfilesViewModel",
     "ProjectsViewModel",
     "ProxyViewModel",
+    "ScriptsViewModel",
     "SettingsViewModel",
     "SnapshotViewModel",
     "ToolsViewModel",

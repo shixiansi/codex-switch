@@ -17,6 +17,7 @@ from ..models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
+    ScriptRecord,
     SkillGroup,
     SkillMarketRepo,
     normalize_hot_update_interval_minutes,
@@ -57,6 +58,7 @@ SESSION_FIELDS = (
     "hot_update_interval_minutes",
     "model_vendor_keywords",
     "hot_update_events",
+    "scripts",
 )
 
 EVENT_LOG_LIMIT = 300
@@ -88,6 +90,7 @@ class AppSession:
     hot_update_interval_minutes: int = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
     model_vendor_keywords: dict[str, list[str]] = field(default_factory=dict)
     hot_update_events: list[HotUpdateEvent] = field(default_factory=list)
+    scripts: list[ScriptRecord] = field(default_factory=list)
 
     # -- transient runtime state (never persisted) ------------------------
     dark_mode: bool = False
@@ -140,6 +143,7 @@ class AppSession:
             hot_update_interval_minutes=self.hot_update_interval_minutes,
             model_vendor_keywords=self.model_vendor_keywords,
             hot_update_events=self.hot_update_events,
+            scripts=self.scripts,
         )
         save_dark_mode(store, self.dark_mode)
 
@@ -148,6 +152,11 @@ class AppSession:
         if not profile_id:
             return None
         return next((item for item in self.profiles if item.id == profile_id), None)
+
+    def script_by_id(self, script_id: str | None) -> ScriptRecord | None:
+        if not script_id:
+            return None
+        return next((item for item in self.scripts if item.id == script_id), None)
 
     def project_by_id(self, project_id: str | None) -> ProjectRecord | None:
         if not project_id:

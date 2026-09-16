@@ -22,6 +22,7 @@ from .viewmodels import (
     ProfilesViewModel,
     ProjectsViewModel,
     ProxyViewModel,
+    ScriptsViewModel,
     SettingsViewModel,
     ToolsViewModel,
 )
@@ -34,12 +35,13 @@ from .workspace import (
     WorkspaceError,
 )
 
-SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "system")
+SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "scripts", "system")
 SECTION_TITLES = {
     "dashboard": "首页",
     "profiles": "配置中心",
     "projects": "项目工作区",
     "network": "网络与监控",
+    "scripts": "脚本中心",
     "system": "系统",
 }
 
@@ -89,6 +91,7 @@ class AppController(QObject):
         self._drawer_skill_group_id = ""
         self._drawer_skill_id = ""
         self._drawer_skill_repo_id = ""
+        self._drawer_script_id = ""
         self._mcp_selected = ""
         self._confirm_spec: dict[str, Any] = {}
         self._confirm_action: Callable[[], None] | None = None
@@ -117,6 +120,7 @@ class AppController(QObject):
         self.proxy = ProxyViewModel(self, self)
         self.tools = ToolsViewModel(self, self)
         self.settings = SettingsViewModel(self, self)
+        self.scripts = ScriptsViewModel(self, self)
 
         self._models = (
             self.dashboard,
@@ -125,6 +129,7 @@ class AppController(QObject):
             self.proxy,
             self.tools,
             self.settings,
+            self.scripts,
         )
         for model in self._models:
             model.errorRaised.connect(self._on_view_model_error)
@@ -209,6 +214,10 @@ class AppController(QObject):
     @Property(SettingsViewModel, constant=True)
     def settingsModel(self):
         return self.settings
+
+    @Property(ScriptsViewModel, constant=True)
+    def scriptsModel(self):
+        return self.scripts
 
     @Property("QVariantList", notify=stateChanged)
     def contextInfo(self) -> list[dict[str, Any]]:
@@ -1034,6 +1043,37 @@ class AppController(QObject):
         )
 
     # =====================================================================
+    # Scripts
+    # =====================================================================
+    @Slot(str, result="QVariantList")
+    def scriptForm(self, script_id: str) -> list:
+        try:
+            return self.workspace.script_form_fields(str(script_id))
+        except WorkspaceError as exc:
+            self.errorRaised.emit(str(exc))
+            return []
+
+    @Slot("QVariantMap")
+    def saveScriptForm(self, payload) -> None:
+        data = dict(payload or {})
+        script_id = self._drawer_script_id or ""
+        self._run_sync(lambda: self.workspace.save_script(data, script_id=script_id))
+
+    @Slot(str)
+    def deleteScript(self, script_id: str) -> None:
+        self._run_sync(lambda: self.workspace.delete_script(str(script_id)))
+
+    @Slot(str)
+    def runScript(self, script_id: str) -> None:
+        self._run_sync(lambda: self.workspace.run_script(str(script_id)))
+
+    def script_rows(self) -> list[dict[str, Any]]:
+        return self.workspace.script_rows()
+
+    def script_detail(self, script_id: str) -> dict[str, Any]:
+        return self.workspace.script_detail(str(script_id))
+
+    # =====================================================================
     # Settings
     # =====================================================================
     @Slot(bool)
@@ -1101,6 +1141,8 @@ class AppController(QObject):
             self._drawer_skill_id = skill_id
         elif kind == "skill-repo-form":
             self._drawer_skill_repo_id = value
+        elif kind == "script-form":
+            self._drawer_script_id = value
 
     # =====================================================================
     # Helpers

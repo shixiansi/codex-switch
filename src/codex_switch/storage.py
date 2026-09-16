@@ -12,6 +12,7 @@ from codex_switch.models import (
     Profile,
     ProjectRecord,
     RouteProxySettings,
+    ScriptRecord,
     SkillGroup,
     SkillMarketRepo,
     default_model_vendor_keywords,
@@ -72,6 +73,7 @@ class ProfileStore:
         int,
         dict[str, list[str]],
         list[HotUpdateEvent],
+        list[ScriptRecord],
     ]:
         default_global_mcp_toml = load_default_global_mcp_toml()
         default_agents_doc_text = load_default_agents_doc_text()
@@ -158,6 +160,7 @@ class ProfileStore:
         hot_update_interval_minutes = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES
         model_vendor_keywords = default_model_vendor_keywords()
         hot_update_events: list[HotUpdateEvent] = []
+        scripts: list[ScriptRecord] = []
         if isinstance(settings_payload, dict):
             global_mcp_opt_out = bool(settings_payload.get("global_mcp_opt_out", False))
             if "global_mcp_toml" in settings_payload:
@@ -192,6 +195,13 @@ class ProfileStore:
                 skill_groups = [
                     SkillGroup.from_dict(item)
                     for item in raw_skill_groups
+                    if isinstance(item, dict)
+                ]
+            raw_scripts = settings_payload.get("scripts", [])
+            if isinstance(raw_scripts, list):
+                scripts = [
+                    ScriptRecord.from_dict(item)
+                    for item in raw_scripts
                     if isinstance(item, dict)
                 ]
             raw_skill_market_repos = settings_payload.get("skill_market_repos", [])
@@ -232,6 +242,7 @@ class ProfileStore:
             hot_update_interval_minutes,
             model_vendor_keywords,
             hot_update_events,
+            scripts,
         )
 
     def save(
@@ -258,6 +269,7 @@ class ProfileStore:
         hot_update_interval_minutes: int = DEFAULT_HOT_UPDATE_INTERVAL_MINUTES,
         model_vendor_keywords: dict[str, list[str]] | None = None,
         hot_update_events: list[HotUpdateEvent] | None = None,
+        scripts: list[ScriptRecord] | None = None,
     ) -> None:
         if agents_doc_text is None:
             agents_doc_text = load_default_agents_doc_text()
@@ -294,6 +306,7 @@ class ProfileStore:
                 "hot_update_interval_minutes": normalize_hot_update_interval_minutes(hot_update_interval_minutes),
                 "model_vendor_keywords": normalize_model_vendor_keywords(model_vendor_keywords),
                 "hot_update_events": [event.to_dict() for event in normalize_hot_update_events(hot_update_events)],
+                "scripts": [script.to_dict() for script in (scripts or [])],
             },
         }
         with self.storage_path.open("w", encoding="utf-8") as handle:

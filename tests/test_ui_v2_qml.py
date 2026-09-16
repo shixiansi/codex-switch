@@ -686,6 +686,80 @@ Window {
         self._pump(3)
         self.assertEqual(self.controller.profiles.selectedId, target)
 
+    def test_scripts_page_is_reachable_and_renders(self) -> None:
+        """The script centre must be a real nav target with working bindings."""
+        root = self._load()
+        self.controller.navigateTo("scripts")
+        self._pump()
+
+        self.assertEqual(self.controller.currentSection, "scripts")
+        self.assertEqual(self.controller.currentSectionTitle, "脚本中心")
+
+        from PySide6.QtQuick import QQuickItem
+
+        def texts(item) -> list[str]:
+            found = []
+            for child in item.findChildren(QQuickItem):
+                try:
+                    value = child.property("text")
+                except (TypeError, RuntimeError):
+                    continue
+                if isinstance(value, str) and value:
+                    found.append(value)
+            return found
+
+        rendered = texts(root)
+        for label in ("脚本中心", "脚本列表", "新增脚本", "运行脚本"):
+            self.assertTrue(
+                any(label == item or label in item for item in rendered),
+                f"页面上没有找到「{label}」",
+            )
+        self.assertNoRuntimeErrors()
+
+    def test_script_centre_supports_add_edit_and_delete(self) -> None:
+        """Adding a script creates one record; editing updates it in place."""
+        self._load()
+        self._pump()
+
+        form = self.controller.scriptForm("")
+        keys = [field["key"] for field in form]
+        self.assertIn("name", keys)
+        self.assertIn("content", keys)
+        self.assertIn("kind", keys)
+
+        payload = {field["key"]: field.get("value") for field in form}
+        payload.update({
+            "name": "清理缓存",
+            "content": "echo hello",
+            "description": "演示",
+        })
+        self.controller.saveScriptForm(payload)
+        self._wait_for_tasks()
+
+        rows = self.controller.script_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "清理缓存")
+        script_id = rows[0]["id"]
+
+        # Edit through the drawer; a missing target would duplicate the record.
+        self.controller.openDrawerWithTarget("script-form", script_id)
+        self.controller.scripts.beginEdit(script_id)
+        self._pump(2)
+        form = self.controller.scriptForm(script_id)
+        payload = {field["key"]: field.get("value") for field in form}
+        self.assertEqual(payload["name"], "清理缓存")
+        payload["name"] = "已改名"
+        self.controller.saveScriptForm(payload)
+        self._wait_for_tasks()
+
+        rows = self.controller.script_rows()
+        self.assertEqual(len(rows), 1, "编辑产生了重复记录")
+        self.assertEqual(rows[0]["name"], "已改名")
+
+        self.controller.deleteScript(script_id)
+        self._wait_for_tasks()
+        self.assertEqual(self.controller.script_rows(), [])
+
     def test_one_click_sign_in_is_paced_in_batches(self) -> None:
         """The batch action must open pages 5 at a time with a pause between.
 

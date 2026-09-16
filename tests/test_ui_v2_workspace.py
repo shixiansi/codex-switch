@@ -911,6 +911,72 @@ class ProjectOperationTests(WorkspaceTestCase):
         self.assertTrue(fields["proxyEnabled"]["value"])
         self.assertEqual(fields["proxyUrl"]["value"], "http://127.0.0.1:7890")
 
+    # -- script centre ---------------------------------------------------
+    def _save_script(self, **overrides: Any) -> str:
+        payload = {
+            "name": "清理缓存",
+            "kind": "shell",
+            "content": "echo hello",
+            "workingDir": "",
+            "description": "演示",
+        }
+        payload.update(overrides)
+        self.workspace.save_script(payload)
+        return self.workspace.session.scripts[-1].id
+
+    def test_save_script_adds_and_updates_in_place(self) -> None:
+        self._save_script()
+        self.assertEqual(len(self.workspace.session.scripts), 1)
+        script_id = self.workspace.session.scripts[0].id
+
+        self.workspace.save_script(
+            {"name": "已改名", "kind": "shell", "content": "echo v2",
+             "workingDir": "", "description": ""},
+            script_id=script_id,
+        )
+        rows = self.workspace.script_rows()
+        self.assertEqual(len(rows), 1, "编辑脚本产生了重复记录")
+        self.assertEqual(rows[0]["name"], "已改名")
+
+    def test_script_requires_a_name_and_content(self) -> None:
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.save_script({"name": "", "kind": "shell", "content": "echo hi"})
+        self.assertIn("脚本名称", str(ctx.exception))
+
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.save_script({"name": "空脚本", "kind": "shell", "content": "   "})
+        self.assertIn("脚本内容", str(ctx.exception))
+
+    def test_running_a_script_launches_it_in_a_new_window(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script()
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            result = self.workspace.run_script(script_id)
+            self.assertTrue(popen.called)
+        self.assertIn("清理缓存", result.message)
+
+    def test_running_an_empty_script_is_refused(self) -> None:
+        script_id = self._save_script(content="echo hi")
+        script = self.workspace.session.script_by_id(script_id)
+        object.__setattr__(script, "content", "   ")
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.run_script(script_id)
+        self.assertIn("脚本内容为空", str(ctx.exception))
+
+    def test_run_rejects_a_missing_working_directory(self) -> None:
+        script_id = self._save_script(workingDir=str(self.root / "no-such-dir"))
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.run_script(script_id)
+        self.assertIn("工作目录不存在", str(ctx.exception))
+
+    def test_scripts_survive_a_reload(self) -> None:
+        self._save_script(name="持久化脚本")
+        self.workspace.persist()
+        reloaded = Workspace(store=self.store, project_root=self.root)
+        names = [row["name"] for row in reloaded.script_rows()]
+        self.assertIn("持久化脚本", names)
+
     def test_project_requires_a_profile(self) -> None:
         with self.assertRaises(WorkspaceError):
             self.workspace.save_project({"name": "x", "projectDir": str(self.root / "p")})

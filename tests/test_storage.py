@@ -109,6 +109,7 @@ class ProfileStoreTests(unittest.TestCase):
                 hot_update_interval_minutes,
                 model_vendor_keywords,
                 hot_update_events,
+                scripts,
             ) = store.load()
 
             self.assertEqual(selected_profile_id, profile.id)

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 import os
 import subprocess
+import sys
+import tempfile
 from typing import Any, Callable, Iterable
 
 from .. import __version__
@@ -44,6 +46,8 @@ from ..models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
+    SCRIPT_KIND_LABELS,
+    ScriptRecord,
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
@@ -1911,8 +1915,144 @@ class Workspace:
         self.persist()
         return ActionResult(message=f"已删除 Skills 仓库：{repo.url}")
 
+    # =====================================================================
+    # Scripts
+    # =====================================================================
+    def script_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": script.id,
+                "name": script.name,
+                "kind": script.kind,
+                "kindLabel": SCRIPT_KIND_LABELS.get(script.kind, script.kind),
+                "description": script.description,
+                "workingDir": script.working_dir,
+                "updatedAt": script.updated_at,
+            }
+            for script in self.session.scripts
+        ]
+
+    def script_detail(self, script_id: str) -> dict[str, Any]:
+        script = self.session.script_by_id(script_id)
+        if script is None:
+            return {}
+        return {
+            "id": script.id,
+            "name": script.name,
+            "kind": script.kind,
+            "kindLabel": SCRIPT_KIND_LABELS.get(script.kind, script.kind),
+            "description": script.description,
+            "workingDir": script.working_dir,
+            "content": script.content,
+            "updatedAt": script.updated_at,
+        }
+
+    def script_form_fields(self, script_id: str) -> list[dict[str, Any]]:
+        script = self.session.script_by_id(script_id)
+        if script_id and script is None:
+            raise WorkspaceError("脚本不存在或已被删除。")
+        return forms.script_form(script)
+
+    def save_script(self, payload: dict[str, Any], *, script_id: str = "") -> ActionResult:
+        data = forms.script_payload(payload)
+        session = self.session
+        if script_id:
+            script = session.script_by_id(script_id)
+            if script is None:
+                raise WorkspaceError("脚本不存在或已被删除。")
+            updated = replace(
+                script,
+                name=data["name"],
+                kind=data["kind"],
+                content=data["content"],
+                working_dir=data["working_dir"],
+                description=data["description"],
+                updated_at=_now(),
+            )
+            session.scripts = [
+                updated if item.id == updated.id else item for item in session.scripts
+            ]
+            message = f"已保存脚本：{updated.name}"
+        else:
+            created = ScriptRecord.create(
+                data["name"],
+                kind=data["kind"],
+                content=data["content"],
+                working_dir=data["working_dir"],
+                description=data["description"],
+            )
+            session.scripts = [*session.scripts, created]
+            message = f"已新增脚本：{created.name}"
+        self.persist()
+        return ActionResult(message=message)
+
+    def delete_script(self, script_id: str) -> ActionResult:
+        session = self.session
+        script = session.script_by_id(script_id)
+        if script is None:
+            raise WorkspaceError("脚本不存在或已被删除。")
+        session.scripts = [item for item in session.scripts if item.id != script_id]
+        self.persist()
+        return ActionResult(message=f"已删除脚本：{script.name}")
+
+    def script_command(self, script: ScriptRecord) -> tuple[list[str], str]:
+        """Build the argv to run a script, plus a human-readable summary.
+
+        Scripts are written to a temporary file so the content stored in the
+        app can be executed directly; the suffix matters because Windows
+        refuses to run a .py file with no extension and shells reject unknown
+        extensions.
+        """
+        suffix = ".py" if script.kind == "python" else (".ps1" if os.name == "nt" else ".sh")
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=suffix, delete=False
+        )
+        try:
+            handle.write(script.content)
+        finally:
+            handle.close()
+        if script.kind == "python":
+            return [sys.executable, handle.name], handle.name
+        if os.name == "nt":
+            return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", handle.name], handle.name
+        return ["bash", handle.name], handle.name
+
+    def run_script(self, script_id: str) -> ActionResult:
+        """Launch a script in a new console window.
+
+        The window stays open afterwards so the user can read the output and
+        any error; a script that closes instantly would hide why it failed.
+        """
+        script = self.session.script_by_id(script_id)
+        if script is None:
+            raise WorkspaceError("脚本不存在或已被删除。")
+        if not script.content.strip():
+            raise WorkspaceError("脚本内容为空，请先填写要执行的命令。")
+
+        argv, temp_path = self.script_command(script)
+        working_dir = script.working_dir.strip()
+        cwd = working_dir if working_dir and Path(working_dir).is_dir() else None
+        if working_dir and cwd is None:
+            raise WorkspaceError(f"工作目录不存在：{working_dir}")
+
+        try:
+            if os.name == "nt":
+                # /K keeps the window open; /C would close before output is read.
+                subprocess.Popen(
+                    ["cmd", "/K", *argv],
+                    cwd=cwd,
+                    creationflags=_CREATE_NEW_CONSOLE,
+                )
+            else:
+                subprocess.Popen(argv, cwd=cwd)
+        except OSError as exc:
+            raise WorkspaceError(f"运行脚本失败：{exc}") from exc
+
+        return ActionResult(message=f"已启动脚本：{script.name}", level="success", detail=temp_path)
+
     def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
         return self.store.root_dir / "skill-market" / repo.id
+
 
     def install_skill_repo(self, repo_id: str, *, group_id: str = "") -> ActionResult:
         session = self.session

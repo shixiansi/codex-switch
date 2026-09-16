@@ -22,6 +22,9 @@ from ..models import (
     AccountPoolGroup,
     Profile,
     ProjectRecord,
+    SCRIPT_KIND_CHOICES,
+    SCRIPT_KIND_LABELS,
+    ScriptRecord,
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
@@ -396,6 +399,56 @@ def mcp_payload(payload: dict[str, Any], *, default_type: str = "stdio", default
         config["env"] = env
 
     return name, config
+
+
+# -- script --------------------------------------------------------------
+def script_form(script: ScriptRecord | None = None) -> list[dict[str, Any]]:
+    return [
+        _text("name", "脚本名称", getattr(script, "name", "")),
+        {
+            "key": "kind",
+            "label": "脚本类型",
+            "type": "choice",
+            **_choice(
+                [(key, SCRIPT_KIND_LABELS[key]) for key in SCRIPT_KIND_CHOICES],
+                getattr(script, "kind", "shell") or "shell",
+            ),
+        },
+        _text("description", "说明", getattr(script, "description", "")),
+        {
+            "key": "workingDir",
+            "label": "工作目录",
+            "type": "path",
+            "value": getattr(script, "working_dir", ""),
+            "directory": True,
+            "placeholder": "留空则在程序目录下运行",
+        },
+        {
+            "key": "content",
+            "label": "脚本内容",
+            "type": "textarea",
+            "value": getattr(script, "content", ""),
+        },
+    ]
+
+
+def script_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    name = _payload_str(payload, "name")
+    if not name:
+        raise FormError("请填写脚本名称。")
+    content = str(payload.get("content", "") or "")
+    if not content.strip():
+        raise FormError("请填写脚本内容。")
+    kind = _payload_str(payload, "kind", "shell") or "shell"
+    if kind not in SCRIPT_KIND_CHOICES:
+        raise FormError("脚本类型无效。")
+    return {
+        "name": name,
+        "kind": kind,
+        "content": content,
+        "working_dir": _payload_str(payload, "workingDir"),
+        "description": _payload_str(payload, "description"),
+    }
 
 
 # -- skills --------------------------------------------------------------
