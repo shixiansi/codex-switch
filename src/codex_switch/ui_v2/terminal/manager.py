@@ -282,8 +282,11 @@ class TerminalManager:
                     session.received_output = True
                     log.info("会话首次收到输出 id=%s 字节=%s", session_id, len(data))
                 screen.feed(data)
-                self._emit(session_id, EVENT_OUTPUT, {"text": screen.tail()})
-                awaiting, choices = detect_choice(screen.text)
+                # 只渲染一次文本：tail()/text 在长历史下都是 O(行数)，
+                # 每轮调用两次会让 4Hz 轮询随历史增长而变慢。
+                rendered = screen.tail()
+                self._emit(session_id, EVENT_OUTPUT, {"text": rendered})
+                awaiting, choices = detect_choice(rendered)
                 if awaiting != session.awaiting_choice or choices != session.choices:
                     session.awaiting_choice = awaiting
                     session.choices = choices
