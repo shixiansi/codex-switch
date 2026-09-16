@@ -8,8 +8,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..qt_compat import Property, Signal, Slot
-from ..terminal import EVENT_CHOICE, EVENT_STATUS, TerminalManager
+from ..terminal import EVENT_CHOICE, EVENT_STATUS, TerminalManager, check_pty_backend
+from ..terminal.logging_setup import get_logger, log_path
 from .base import BaseViewModel
+
+log = get_logger()
 
 
 class TerminalViewModel(BaseViewModel):
@@ -84,6 +87,19 @@ class TerminalViewModel(BaseViewModel):
     def hasSessions(self) -> bool:
         return bool(self._sessions)
 
+    @Property(str, constant=True)
+    def logPath(self) -> str:
+        """终端日志文件路径，供界面"打开日志"排查问题。"""
+        return str(log_path())
+
+    @Property(str, constant=True)
+    def backendIssue(self) -> str:
+        """PTY 运行环境问题描述；为空表示正常。
+
+        冻结包最容易缺 winpty 的原生文件，提前暴露原因比让用户面对空白界面好。
+        """
+        return check_pty_backend()
+
     @Property("QVariantList", notify=sessionsChanged)
     def projects(self) -> list[dict[str, Any]]:
         """可选项目列表（供"按项目打开"选择器使用）。"""
@@ -138,14 +154,22 @@ class TerminalViewModel(BaseViewModel):
         """启动会话并把失败转成可见提示。
 
         PTY 启动可能因为命令不存在（如未安装 codex/claude）而抛错；这里统一
-        捕获并通过 toast/错误通道报告，避免"点了启动却没反应"。
+        捕获并通过 toast/错误通道报告，同时写入终端日志，避免"点了启动却没反应"。
         """
+        log.info("请求启动会话 title=%r command=%r cwd=%r", title, command, cwd)
+        issue = check_pty_backend()
+        if issue:
+            log.error("PTY 环境不可用：%s", issue)
+            self.report_error(issue)
+            return
         try:
             session_id = self._manager.create_session(title, command, cwd, env=env)
         except FileNotFoundError:
+            log.error("找不到命令：%s", command)
             self.report_error(f"找不到命令：{command}。请确认已安装并加入 PATH。")
             return
         except Exception as exc:  # noqa: BLE001 - 统一转成可读提示
+            log.exception("启动会话失败：%s", exc)
             self.report_error(f"启动会话失败：{exc}")
             return
         self._refresh_sessions()

@@ -13,12 +13,15 @@ import os
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 try:  # pragma: no cover - psutil 为运行期依赖
     import psutil
 except ImportError:  # pragma: no cover
     psutil = None  # type: ignore[assignment]
+
+from .logging_setup import get_logger
 
 
 class SessionStatus(str, Enum):
@@ -57,6 +60,8 @@ class PtySession:
     child_pids: set[int] = None  # type: ignore[assignment]
     awaiting_choice: bool = False
     choices: list[str] = None  # type: ignore[assignment]
+    # 是否已收到过任何输出：用于区分"CLI 没输出"与"读取环节坏了"。
+    received_output: bool = False
 
     def __post_init__(self) -> None:
         if self.child_pids is None:
@@ -113,6 +118,11 @@ class _WinPtyBackend(_Backend):
                 self._sock.setblocking(False)
             except OSError:
                 self._sock = None
+        if self._sock is None:
+            # 不能静默降级：读不到输出会表现为"界面一片空白"，必须有迹可循。
+            get_logger().warning(
+                "PTY 后端未提供可用的非阻塞句柄，输出可能无法读取（pywinpty 版本不兼容？）"
+            )
 
     def read(self) -> bytes:
         """非阻塞读取原始字节；没有数据时立即返回空字节。
@@ -244,13 +254,19 @@ def collect_child_pids(root_pid: int) -> set[int]:
     return pids
 
 
-def reap_tree(session: PtySession) -> None:
-    """整树回收：终止 root 及其全部子孙进程，带走 AI CLI 遗留的子进程。"""
+def reap_tree(session: PtySession) -> int:
+    """整树回收：终止 root 及其全部子孙进程，带走 AI CLI 遗留的子进程。
+
+    返回本次终止的进程数量，供日志与界面反馈使用。
+    """
     if psutil is None:
-        return
+        return 0
     pids = set(session.child_pids)
     if session.root_pid > 0:
         pids.add(session.root_pid)
+    total = len(pids)
+    if not pids:
+        return 0
     for pid in pids:
         try:
             proc = psutil.Process(pid)
@@ -276,6 +292,7 @@ def reap_tree(session: PtySession) -> None:
             psutil.Process(pid).kill()
         except psutil.Error:  # type: ignore[attr-defined]
             pass
+    return total
 
 
 def start_session(
@@ -305,10 +322,48 @@ def mark_finished(session: PtySession, exit_code: int | None) -> SessionStatus:
     return session.status
 
 
+def check_pty_backend() -> str:
+    """检查 PTY 运行环境是否可用，返回空字符串表示正常。
+
+    冻结包最容易缺的就是 winpty 的原生文件（winpty.dll / winpty-agent.exe /
+    OpenConsole.exe）。缺失时直接给出可读原因，而不是让用户在空白界面里猜。
+    """
+    if os.name != "nt":
+        return ""
+    try:
+        import winpty  # noqa: F401
+    except ImportError:
+        try:
+            import pywinpty  # noqa: F401
+        except ImportError:
+            return "未安装 pywinpty，无法创建伪终端。请执行 pip install -r requirements.txt。"
+
+    try:
+        import winpty as _winpty
+
+        pkg_dir = Path(_winpty.__file__).parent
+    except ImportError:  # pragma: no cover - pywinpty 2.x
+        return ""
+
+    missing = [
+        name
+        for name in ("winpty.dll", "winpty-agent.exe")
+        if not (pkg_dir / name).exists()
+    ]
+    if missing:
+        return (
+            "PTY 运行库不完整，缺少："
+            + "、".join(missing)
+            + "。若是打包版本，请重新构建以包含 pywinpty 的原生文件。"
+        )
+    return ""
+
+
 __all__ = [
     "PtySession",
     "SessionStatus",
     "_Backend",
+    "check_pty_backend",
     "collect_child_pids",
     "reap_tree",
     "start_session",

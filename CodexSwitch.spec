@@ -74,16 +74,41 @@ APP_DATAS = collect_data_files("codex_switch", includes=["assets/*"])
 TTKBOOTSTRAP_HIDDENIMPORTS = collect_submodules("ttkbootstrap")
 TTKBOOTSTRAP_DATAS = collect_data_files("ttkbootstrap")
 
-# --- AI 终端依赖（pywinpty 的 ConPTY 后端需要打包 ptycon.dll） -------------
-# pywinpty 把架构相关的 ptycon.dll 放在包目录下，PyInstaller 不一定自动收集，
-# 这里显式把整个包目录的 dll 一并打进 bundle，避免运行期找不到 ConPTY。
-try:
-    import pywinpty
+# --- AI 终端依赖（pywinpty 的 ConPTY 后端） --------------------------------
+# 注意：pywinpty 3.x 的导入模块名是 ``winpty``（不是 ``pywinpty``），包目录里
+# 除了 _winpty*.pyd / winpty.dll / conpty.dll，还有 winpty-agent.exe 与
+# OpenConsole.exe 这两个运行期可执行文件。它们不会被自动收集，必须显式打包，
+# 否则冻结后的应用在启动 PTY 时会失败。
+def _terminal_bundle() -> tuple[list, list]:
+    datas: list = []
+    binaries: list = []
+    try:
+        import winpty as _winpty  # pywinpty >= 3
+    except ImportError:
+        try:
+            import pywinpty as _winpty  # type: ignore[no-redef]  # pywinpty 2.x
+        except ImportError:
+            return datas, binaries
 
-    _PYWINPTY_PKG = Path(pywinpty.__file__).parent
-    TERMINAL_BINARIES = _collect_tree(_PYWINPTY_PKG, "codex_switch/ui_v2/terminal/_pywinpty")
-except Exception:  # pragma: no cover - 构建环境未装 pywinpty 时跳过
-    TERMINAL_BINARIES = []
+    pkg = Path(_winpty.__file__).parent
+    # 目的地必须与 winpty 包在 bundle 中的位置一致：winpty.dll 会按相对自身
+    # 模块目录的方式寻找 winpty-agent.exe / OpenConsole.exe。
+    target = "winpty"
+    for path in pkg.rglob("*"):
+        if not path.is_file():
+            continue
+        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyi"}:
+            continue
+        relative = path.relative_to(pkg).parent.as_posix()
+        destination = f"{target}/{relative}" if relative != "." else target
+        if path.suffix.lower() in {".dll", ".pyd", ".exe"}:
+            binaries.append((str(path), destination))
+        elif not path.name.startswith("test_"):
+            datas.append((str(path), destination))
+    return datas, binaries
+
+
+TERMINAL_DATAS, TERMINAL_BINARIES = _terminal_bundle()
 
 TERMINAL_HIDDENIMPORTS = [
     "codex_switch.ui_v2.terminal",
@@ -91,9 +116,17 @@ TERMINAL_HIDDENIMPORTS = [
     "codex_switch.ui_v2.terminal.pty_session",
     "codex_switch.ui_v2.terminal.screen",
     "codex_switch.ui_v2.terminal.completion",
+    "codex_switch.ui_v2.terminal.logging_setup",
     "codex_switch.ui_v2.viewmodels.terminal",
+    # pywinpty 3.x 的真实模块名；旧名一并列出以兼容 2.x 环境。
+    "winpty",
+    "winpty.ptyprocess",
+    "winpty.enums",
     "pywinpty",
     "pyte",
+    "pyte.streams",
+    "pyte.screens",
+    "wcwidth",
     "psutil",
 ]
 
@@ -101,14 +134,14 @@ TERMINAL_HIDDENIMPORTS = [
 a = Analysis(
     ['main.py'],
     pathex=[str(ROOT), str(SRC_ROOT)],
-    binaries=[],
+    binaries=TERMINAL_BINARIES,
     datas=(
         TKINTER_DATAS
         + APP_DATAS
         + QML_DATAS
         + ICON_DATAS
         + TTKBOOTSTRAP_DATAS
-        + TERMINAL_BINARIES
+        + TERMINAL_DATAS
     ),
     hiddenimports=TKINTER_HIDDENIMPORTS + TTKBOOTSTRAP_HIDDENIMPORTS + QML_HIDDENIMPORTS + TERMINAL_HIDDENIMPORTS,
     hookspath=[str(HOOKS_ROOT)],

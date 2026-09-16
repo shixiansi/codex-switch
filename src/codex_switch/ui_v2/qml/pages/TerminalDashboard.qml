@@ -27,10 +27,59 @@ Item {
         anchors.margins: Theme.space5
         spacing: Theme.space4
 
+        // PTY 环境不可用时直接说明原因，避免"界面一片空白不知从何查起"。
+        Rectangle {
+            Layout.fillWidth: true
+            visible: terminalModel.backendIssue !== ""
+            implicitHeight: issueText.implicitHeight + Theme.space3 * 2
+            radius: Theme.radiusSm
+            color: Theme.dangerSoft
+            border.width: Theme.borderWidth
+            border.color: Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.35)
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: Theme.space3
+                spacing: Theme.space2
+
+                AppIcon {
+                    Layout.alignment: Qt.AlignTop
+                    name: "warning"
+                    color: Theme.danger
+                    size: 16
+                }
+
+                Text {
+                    id: issueText
+                    Layout.fillWidth: true
+                    text: "终端环境不可用：" + terminalModel.backendIssue
+                    color: Theme.danger
+                    font.pixelSize: Theme.fontCaption
+                    wrapMode: Text.WordWrap
+                }
+
+                AppButton {
+                    text: "打开日志"
+                    iconName: "log"
+                    variant: "ghost"
+                    onClicked: app.openLocalPath(terminalModel.logPath)
+                }
+            }
+        }
+
         SectionHeader {
             title: "AI 终端"
             description: "在应用内运行 codex / claude 等交互式 AI CLI，支持多开会话、放大查看，并在结束时整树回收残留进程。"
 
+            AppButton {
+                text: "打开日志"
+                iconName: "log"
+                onClicked: app.openLocalPath(terminalModel.logPath)
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "查看终端日志（启动命令、输出、退出与回收记录）"
+            }
             AppButton {
                 text: "清理残留"
                 iconName: "refresh"

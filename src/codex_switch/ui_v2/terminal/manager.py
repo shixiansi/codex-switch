@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .completion import detect_choice
+from .logging_setup import get_logger
 from .pty_session import (
     PtySession,
     SessionStatus,
@@ -25,6 +26,8 @@ from .pty_session import (
     start_session,
 )
 from .screen import TerminalScreen
+
+log = get_logger()
 
 # 事件类型
 EVENT_OUTPUT = "output"
@@ -98,8 +101,9 @@ class TerminalManager:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="terminal-poll")
         self._thread.start()
+        log.info("轮询线程已启动 interval=%ss", self._poll_interval)
 
     def shutdown(self) -> None:
         """停止全部会话（整树回收）并结束轮询线程。"""
@@ -132,12 +136,25 @@ class TerminalManager:
             env=dict(env or {}),
             started_at=_now(),
         )
+        log.info("启动会话 id=%s title=%r", session_id, session.title)
+        log.info("  命令: %s", command)
+        log.info("  目录: %s", cwd or "(默认)")
+        if env:
+            log.info("  环境变量: %s", ", ".join(sorted(env)))
         with self._lock:
             self._sessions[session_id] = session
             self._screens[session_id] = TerminalScreen()
-        backend = start_session(session, backend_factory=backend_factory)
+        try:
+            backend = start_session(session, backend_factory=backend_factory)
+        except Exception as exc:  # noqa: BLE001 - 记录下来再抛出，避免"悄无声息"
+            log.exception("启动会话失败 id=%s: %s", session_id, exc)
+            with self._lock:
+                self._sessions.pop(session_id, None)
+                self._screens.pop(session_id, None)
+            raise
         with self._lock:
             self._backends[session_id] = backend
+        log.info("会话已启动 id=%s pid=%s", session_id, session.root_pid)
         self._emit(session_id, EVENT_STATUS, {"status": session.status.value})
         return session_id
 
@@ -255,6 +272,10 @@ class TerminalManager:
                         break
                     data += tail
             if data:
+                if not session.received_output:
+                    # 首个字节到达：用于区分"CLI 根本没输出"和"读取坏了"。
+                    session.received_output = True
+                    log.info("会话首次收到输出 id=%s 字节=%s", session_id, len(data))
                 screen.feed(data)
                 self._emit(session_id, EVENT_OUTPUT, {"text": screen.tail()})
                 awaiting, choices = detect_choice(screen.text)
@@ -279,7 +300,14 @@ class TerminalManager:
             exit_code = getattr(backend, "exit_code", None)
             status = mark_finished(session, 0 if exit_code is None else exit_code)
         # 核心：整树回收，消灭 codex/claude 残留子进程。
-        reap_tree(session)
+        reaped = reap_tree(session)
+        log.info(
+            "会话结束 id=%s status=%s exit=%s 回收子进程=%s",
+            session_id,
+            status.value,
+            session.exit_code,
+            reaped,
+        )
         self._emit(session_id, EVENT_STATUS, {"status": status.value})
 
     # -- 事件 ----------------------------------------------------------
