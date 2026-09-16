@@ -59,6 +59,7 @@ TASK_UPDATE = "update-check"
 TASK_SOFTWARE_UPDATE = "software-update"
 
 PROXY_POLL_INTERVAL_MS = 2000
+SCRIPT_POLL_INTERVAL_MS = 1000
 
 
 class AppController(QObject):
@@ -138,6 +139,10 @@ class AppController(QObject):
         self._proxy_timer.setInterval(PROXY_POLL_INTERVAL_MS)
         self._proxy_timer.timeout.connect(self._poll_proxy_state)
         self._proxy_timer.start()
+
+        self._script_timer = QTimer(self)
+        self._script_timer.setInterval(SCRIPT_POLL_INTERVAL_MS)
+        self._script_timer.timeout.connect(self._poll_script_runs)
 
         self._refresh_models()
         if self.workspace.session.route_proxy.enabled:
@@ -1066,12 +1071,45 @@ class AppController(QObject):
     @Slot(str)
     def runScript(self, script_id: str) -> None:
         self._run_sync(lambda: self.workspace.run_script(str(script_id)))
+        self._sync_script_polling()
+
+    @Slot(str)
+    def stopScript(self, script_id: str) -> None:
+        self._run_sync(lambda: self.workspace.stop_script(str(script_id)))
+        self._sync_script_polling()
 
     def script_rows(self) -> list[dict[str, Any]]:
         return self.workspace.script_rows()
 
     def script_detail(self, script_id: str) -> dict[str, Any]:
         return self.workspace.script_detail(str(script_id))
+
+    def _sync_script_polling(self) -> None:
+        """Run the poll timer only while a script is actually running."""
+        if self.workspace.script_runs.running_count() and not self._script_timer.isActive():
+            self._script_timer.start()
+        elif not self.workspace.script_runs.running_count() and self._script_timer.isActive():
+            self._script_timer.stop()
+
+    def _poll_script_runs(self) -> None:
+        """Refresh the script list only when a run actually changed state.
+
+        Rebuilding the model on every tick would reset the ListView scroll
+        position once a second, which made the page unusable while a script ran.
+        """
+        changed = self.workspace.poll_script_runs()
+        if not changed:
+            self._sync_script_polling()
+            return
+        self._refresh_models()
+        for script_id in changed:
+            row = self.workspace.script_detail(script_id)
+            name = row.get("name") or "脚本"
+            label = row.get("statusLabel") or "已结束"
+            code = row.get("exitCode")
+            suffix = f"（退出码 {code}）" if code is not None else ""
+            self._toast(f"{name}：{label}{suffix}", "success" if row.get("status") == "success" else "error")
+        self._sync_script_polling()
 
     # =====================================================================
     # Settings
@@ -1171,6 +1209,8 @@ class AppController(QObject):
     def shutdown(self) -> None:
         """Stop background work and the proxy before the window closes."""
         self._proxy_timer.stop()
+        self._script_timer.stop()
+        self.workspace.script_runs.shutdown()
         self._runner.cancel_all()
         try:
             if self.workspace.proxy_running:

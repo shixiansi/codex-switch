@@ -21,6 +21,8 @@ from ..models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
+    SCRIPT_KIND_LABELS,
+    SCRIPT_RUN_MODE_LABELS,
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
@@ -385,6 +387,59 @@ def skill_repo_row(repo: SkillMarketRepo) -> dict[str, Any]:
     }
 
 
+# -- scripts -------------------------------------------------------------
+# Single source of truth for run-state labels/tones, so the list badge and the
+# detail panel can never drift apart.
+SCRIPT_STATUS_LABELS = {
+    "idle": "未运行",
+    "running": "运行中",
+    "success": "已完成",
+    "failed": "失败",
+    "stopped": "已停止",
+}
+SCRIPT_STATUS_TONES = {
+    "idle": "unknown",
+    "running": "info",
+    "success": "success",
+    "failed": "danger",
+    "stopped": "warning",
+}
+
+
+def script_status_label(status: str) -> str:
+    return SCRIPT_STATUS_LABELS.get(str(status or "idle"), SCRIPT_STATUS_LABELS["idle"])
+
+
+def script_status_tone(status: str) -> str:
+    return SCRIPT_STATUS_TONES.get(str(status or "idle"), SCRIPT_STATUS_TONES["idle"])
+
+
+def script_row(script, run_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = dict(run_state or {})
+    status = str(state.get("status") or "idle")
+    return {
+        "id": script.id,
+        "name": script.name,
+        "kind": script.kind,
+        "kindLabel": SCRIPT_KIND_LABELS.get(script.kind, script.kind),
+        "description": script.description,
+        "workingDir": script.working_dir,
+        "updatedAt": script.updated_at,
+        "runMode": script.run_mode,
+        "runModeLabel": SCRIPT_RUN_MODE_LABELS.get(script.run_mode, script.run_mode),
+        "closeOnFinish": bool(script.close_on_finish),
+        "status": status,
+        "statusLabel": script_status_label(status),
+        "statusTone": script_status_tone(status),
+        "running": status == "running",
+        "exitCode": state.get("exitCode"),
+        "startedAt": str(state.get("startedAt") or ""),
+        "finishedAt": str(state.get("finishedAt") or ""),
+        "logPath": str(state.get("logPath") or ""),
+        "output": str(state.get("output") or ""),
+    }
+
+
 # -- mcp -----------------------------------------------------------------
 def mcp_server_row(name: str, config: dict[str, Any]) -> dict[str, Any]:
     args = config.get("args") if isinstance(config, dict) else None
@@ -440,6 +495,8 @@ def model_defaults() -> dict[str, str]:
 __all__ = [
     "HEALTH_LABELS",
     "HEALTH_TONES",
+    "SCRIPT_STATUS_LABELS",
+    "SCRIPT_STATUS_TONES",
     "account_pool_channel_row",
     "account_pool_group_row",
     "account_pool_summary",
@@ -455,6 +512,9 @@ __all__ = [
     "project_detail",
     "project_row",
     "proxy_status",
+    "script_row",
+    "script_status_label",
+    "script_status_tone",
     "settings_summary",
     "skill_group_row",
     "skill_repo_row",

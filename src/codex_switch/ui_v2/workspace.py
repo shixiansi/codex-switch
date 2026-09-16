@@ -47,7 +47,7 @@ from ..models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
-    SCRIPT_KIND_LABELS,
+    SCRIPT_RUN_MODE_HIDDEN,
     ScriptRecord,
     SkillDefinition,
     SkillGroup,
@@ -152,6 +152,7 @@ from ..ui.update_logic import (
 from ..ui import mcp_logic
 from . import forms
 from .errors import FormError, WorkspaceError
+from .script_runner import ScriptRunManager
 from .session import AppSession
 from . import snapshots
 
@@ -227,6 +228,7 @@ class Workspace:
         self.update_checker = update_checker or SoftwareUpdateChecker()
         self.account_pool_validator = AccountPoolSessionValidator(self.chat_tester)
         self.software_update_info: SoftwareUpdateInfo | None = None
+        self.script_runs = ScriptRunManager(log_dir=self.store.root_dir / "script-logs")
 
         self._proxy_events: list[RouteProxyEvent] = []
         self._proxy_dirty = False
@@ -1921,15 +1923,7 @@ class Workspace:
     # =====================================================================
     def script_rows(self) -> list[dict[str, Any]]:
         return [
-            {
-                "id": script.id,
-                "name": script.name,
-                "kind": script.kind,
-                "kindLabel": SCRIPT_KIND_LABELS.get(script.kind, script.kind),
-                "description": script.description,
-                "workingDir": script.working_dir,
-                "updatedAt": script.updated_at,
-            }
+            snapshots.script_row(script, self.script_runs.snapshot(script.id))
             for script in self.session.scripts
         ]
 
@@ -1937,16 +1931,9 @@ class Workspace:
         script = self.session.script_by_id(script_id)
         if script is None:
             return {}
-        return {
-            "id": script.id,
-            "name": script.name,
-            "kind": script.kind,
-            "kindLabel": SCRIPT_KIND_LABELS.get(script.kind, script.kind),
-            "description": script.description,
-            "workingDir": script.working_dir,
-            "content": script.content,
-            "updatedAt": script.updated_at,
-        }
+        detail = snapshots.script_row(script, self.script_runs.snapshot(script_id))
+        detail["content"] = script.content
+        return detail
 
     def script_form_fields(self, script_id: str) -> list[dict[str, Any]]:
         script = self.session.script_by_id(script_id)
@@ -1968,6 +1955,8 @@ class Workspace:
                 content=data["content"],
                 working_dir=data["working_dir"],
                 description=data["description"],
+                run_mode=data["run_mode"],
+                close_on_finish=data["close_on_finish"],
                 updated_at=_now(),
             )
             session.scripts = [
@@ -1981,6 +1970,8 @@ class Workspace:
                 content=data["content"],
                 working_dir=data["working_dir"],
                 description=data["description"],
+                run_mode=data["run_mode"],
+                close_on_finish=data["close_on_finish"],
             )
             session.scripts = [*session.scripts, created]
             message = f"已新增脚本：{created.name}"
@@ -1992,7 +1983,10 @@ class Workspace:
         script = session.script_by_id(script_id)
         if script is None:
             raise WorkspaceError("脚本不存在或已被删除。")
+        if self.script_runs.is_running(script_id):
+            raise WorkspaceError("脚本正在运行，请先停止再删除。")
         session.scripts = [item for item in session.scripts if item.id != script_id]
+        self.script_runs.forget(script_id)
         self.persist()
         return ActionResult(message=f"已删除脚本：{script.name}")
 
@@ -2019,37 +2013,57 @@ class Workspace:
         return ["bash", handle.name], handle.name
 
     def run_script(self, script_id: str) -> ActionResult:
-        """Launch a script in a new console window.
+        """Launch a script, either in a console window or hidden in the background.
 
-        The window stays open afterwards so the user can read the output and
-        any error; a script that closes instantly would hide why it failed.
+        Only one instance of a script may run at a time: a second click would
+        launch a duplicate with no way to tell the two apart.
         """
         script = self.session.script_by_id(script_id)
         if script is None:
             raise WorkspaceError("脚本不存在或已被删除。")
         if not script.content.strip():
             raise WorkspaceError("脚本内容为空，请先填写要执行的命令。")
+        if self.script_runs.is_running(script_id):
+            raise WorkspaceError(f"脚本「{script.name}」正在运行，请先停止或等待结束。")
 
-        argv, temp_path = self.script_command(script)
         working_dir = script.working_dir.strip()
         cwd = working_dir if working_dir and Path(working_dir).is_dir() else None
         if working_dir and cwd is None:
             raise WorkspaceError(f"工作目录不存在：{working_dir}")
 
+        hidden = script.run_mode == SCRIPT_RUN_MODE_HIDDEN
+        argv, temp_path = self.script_command(script)
+        if not hidden and os.name == "nt":
+            # /C closes the window as soon as the script ends; /K keeps it open
+            # so the output stays readable.
+            argv = ["cmd", "/C", *argv] if script.close_on_finish else ["cmd", "/K", *argv]
+
         try:
-            if os.name == "nt":
-                # /K keeps the window open; /C would close before output is read.
-                subprocess.Popen(
-                    ["cmd", "/K", *argv],
-                    cwd=cwd,
-                    creationflags=_CREATE_NEW_CONSOLE,
-                )
-            else:
-                subprocess.Popen(argv, cwd=cwd)
+            self.script_runs.start(script_id, argv, cwd=cwd, hidden=hidden, temp_path=temp_path)
         except OSError as exc:
             raise WorkspaceError(f"运行脚本失败：{exc}") from exc
 
-        return ActionResult(message=f"已启动脚本：{script.name}", level="success", detail=temp_path)
+        if hidden:
+            return ActionResult(
+                message=f"已在后台启动脚本：{script.name}",
+                level="success",
+                detail="输出将记录在日志文件中，可在下方查看。",
+            )
+        detail = temp_path if script.close_on_finish else "窗口将在脚本结束后保持打开，方便查看输出。"
+        return ActionResult(message=f"已启动脚本：{script.name}", level="success", detail=detail)
+
+    def stop_script(self, script_id: str) -> ActionResult:
+        """Ask a running script to stop; the final state lands on the next poll."""
+        script = self.session.script_by_id(script_id)
+        if script is None:
+            raise WorkspaceError("脚本不存在或已被删除。")
+        if not self.script_runs.stop(script_id):
+            raise WorkspaceError(f"脚本「{script.name}」当前没有在运行。")
+        return ActionResult(message=f"已请求停止脚本：{script.name}", level="info")
+
+    def poll_script_runs(self) -> list[str]:
+        """Reap finished script processes; returns ids whose state changed."""
+        return self.script_runs.poll()
 
     def _skill_repo_cache_dir(self, repo: SkillMarketRepo) -> Path:
         return self.store.root_dir / "skill-market" / repo.id

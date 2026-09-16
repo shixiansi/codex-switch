@@ -765,6 +765,75 @@ Window {
         self._wait_for_tasks()
         self.assertEqual(self.controller.script_rows(), [])
 
+    def test_script_page_shows_run_mode_state_and_stop(self) -> None:
+        """The script centre must expose run mode, live state and a stop action."""
+        root = self._load()
+        self.controller.navigateTo("scripts")
+        self._pump()
+
+        payload = {
+            "name": "后台演示脚本",
+            "kind": "shell",
+            "content": "echo hello",
+            "workingDir": "",
+            "description": "演示",
+            "runMode": "hidden",
+            "closeOnFinish": False,
+        }
+        self.controller.saveScriptForm(payload)
+        self._wait_for_tasks()
+
+        rows = self.controller.script_rows()
+        self.assertEqual(len(rows), 1)
+        script_id = rows[0]["id"]
+        self.controller.scripts.select(script_id)
+        self._pump(2)
+
+        detail = self.controller.script_detail(script_id)
+        self.assertEqual(detail["runMode"], "hidden")
+        self.assertEqual(detail["status"], "idle")
+        self.assertEqual(detail["statusLabel"], "未运行")
+
+        from PySide6.QtQuick import QQuickItem
+
+        def texts(item) -> list[str]:
+            found = []
+            for child in item.findChildren(QQuickItem):
+                try:
+                    value = child.property("text")
+                except (TypeError, RuntimeError):
+                    continue
+                if isinstance(value, str) and value:
+                    found.append(value)
+            return found
+
+        rendered = texts(root)
+        self.assertTrue(
+            any("后台运行" in item for item in rendered),
+            f"页面没有显示运行方式，实际文本：{rendered[:20]}",
+        )
+        self.assertTrue(any("运行输出" in item for item in rendered), "缺少输出区域")
+        self.assertNoRuntimeErrors()
+
+        # Running twice must be refused: one instance per script.
+        script = self.workspace.session.script_by_id(script_id)
+        script.content = "echo hello"
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.controller.runScript(script_id)
+            self._pump(2)
+            self.controller.runScript(script_id)
+            self._pump(2)
+        self.assertEqual(popen.call_count, 1)
+        self.assertTrue(self.controller.script_detail(script_id)["running"])
+
+        # Stopping clears the running state so the script can start again.
+        self.controller.stopScript(script_id)
+        self.controller.workspace.script_runs.shutdown()
+        self._pump(2)
+        self.assertFalse(self.controller.script_detail(script_id)["running"])
+        self.assertNoRuntimeErrors()
+
     def test_one_click_sign_in_is_paced_in_batches(self) -> None:
         """The batch action must open pages 5 at a time with a pause between.
 

@@ -1765,6 +1765,21 @@ class SkillMarketRepo:
 SCRIPT_KIND_CHOICES = ("shell", "python")
 SCRIPT_KIND_LABELS = {"shell": "Shell / 批处理", "python": "Python"}
 
+# How a script runs: in a visible console window, or hidden in the background
+# with its output captured to a log file.
+SCRIPT_RUN_MODE_WINDOW = "window"
+SCRIPT_RUN_MODE_HIDDEN = "hidden"
+SCRIPT_RUN_MODE_CHOICES = (SCRIPT_RUN_MODE_WINDOW, SCRIPT_RUN_MODE_HIDDEN)
+SCRIPT_RUN_MODE_LABELS = {
+    SCRIPT_RUN_MODE_WINDOW: "打开窗口",
+    SCRIPT_RUN_MODE_HIDDEN: "后台运行（不打开窗口）",
+}
+
+
+def normalize_script_run_mode(value: Any) -> str:
+    mode = str(value or SCRIPT_RUN_MODE_WINDOW).strip().lower()
+    return mode if mode in SCRIPT_RUN_MODE_CHOICES else SCRIPT_RUN_MODE_WINDOW
+
 
 @dataclass
 class ScriptRecord:
@@ -1782,6 +1797,8 @@ class ScriptRecord:
     description: str = ""
     created_at: str = ""
     updated_at: str = ""
+    run_mode: str = SCRIPT_RUN_MODE_WINDOW
+    close_on_finish: bool = False
 
     @classmethod
     def create(
@@ -1792,6 +1809,8 @@ class ScriptRecord:
         content: str = "",
         working_dir: str = "",
         description: str = "",
+        run_mode: str = SCRIPT_RUN_MODE_WINDOW,
+        close_on_finish: bool = False,
     ) -> "ScriptRecord":
         timestamp = now_iso()
         normalized = (kind or "shell").strip().lower()
@@ -1806,6 +1825,8 @@ class ScriptRecord:
             description=description.strip(),
             created_at=timestamp,
             updated_at=timestamp,
+            run_mode=normalize_script_run_mode(run_mode),
+            close_on_finish=bool(close_on_finish),
         )
 
     @classmethod
@@ -1823,6 +1844,8 @@ class ScriptRecord:
             description=str(data.get("description") or "").strip(),
             created_at=data.get("created_at", timestamp),
             updated_at=data.get("updated_at", timestamp),
+            run_mode=normalize_script_run_mode(data.get("run_mode")),
+            close_on_finish=bool(data.get("close_on_finish", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:

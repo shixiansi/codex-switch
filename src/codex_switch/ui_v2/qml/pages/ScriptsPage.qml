@@ -15,7 +15,7 @@ Item {
 
         SectionHeader {
             title: "脚本中心"
-            description: "添加常用命令或 Python 脚本，一键在新窗口中运行。"
+            description: "添加常用命令或 Python 脚本，可选择打开窗口或后台运行，同一脚本同时只允许一个实例。"
 
             AppButton {
                 text: "刷新"
@@ -86,8 +86,8 @@ Item {
                             title: modelData.name
                             subtitle: modelData.workingDir !== ""
                                 ? modelData.workingDir : "默认工作目录"
-                            badgeText: modelData.kindLabel
-                            badgeTone: "info"
+                            badgeText: modelData.status === "idle" ? modelData.kindLabel : modelData.statusLabel
+                            badgeTone: modelData.status === "idle" ? "info" : modelData.statusTone
                             selected: scriptsModel.selectedId === modelData.id
                             onClicked: scriptsModel.select(modelData.id)
                         }
@@ -127,6 +127,12 @@ Item {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: Theme.space2
+
+                            StatusBadge {
+                                text: scriptsModel.selectedDetail.statusLabel || "未运行"
+                                tone: scriptsModel.selectedDetail.statusTone || "unknown"
+                                showDot: scriptsModel.selectedDetail.status === "running"
+                            }
 
                             Rectangle {
                                 radius: Theme.radiusSm
@@ -195,11 +201,84 @@ Item {
 
                     Text {
                         Layout.fillWidth: true
+                        text: {
+                            var detail = scriptsModel.selectedDetail
+                            var parts = ["运行方式：" + (detail.runModeLabel || "打开窗口")]
+                            if (detail.startedAt !== "")
+                                parts.push("开始：" + detail.startedAt)
+                            if (detail.finishedAt !== "")
+                                parts.push("结束：" + detail.finishedAt)
+                            if (detail.exitCode !== undefined && detail.exitCode !== null
+                                    && detail.status !== "running")
+                                parts.push("退出码：" + detail.exitCode)
+                            return parts.join("　·　")
+                        }
+                        color: Theme.textFaint
+                        font.pixelSize: Theme.fontCaption
+                        elide: Text.ElideRight
+                        visible: scriptsModel.selectedId !== ""
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
                         text: "工作目录：" + (scriptsModel.selectedDetail.workingDir || "程序目录")
                         color: Theme.textFaint
                         font.pixelSize: Theme.fontCaption
                         elide: Text.ElideMiddle
                         visible: scriptsModel.selectedId !== ""
+                    }
+
+                    // ---- captured output (background runs only) ----
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(120, page.height * 0.28)
+                        spacing: Theme.space1
+                        visible: scriptsModel.selectedId !== ""
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "运行输出"
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontCaption
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: Theme.radiusSm
+                            color: Theme.surfaceAlt
+                            border.width: Theme.borderWidth
+                            border.color: Theme.border
+
+                            Flickable {
+                                anchors.fill: parent
+                                anchors.margins: Theme.space2
+                                contentWidth: width
+                                contentHeight: outputText.implicitHeight
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                                Text {
+                                    id: outputText
+                                    width: parent.width
+                                    text: {
+                                        var detail = scriptsModel.selectedDetail
+                                        if (detail.output !== undefined && detail.output !== "")
+                                            return detail.output
+                                        if (detail.runMode === "hidden")
+                                            return detail.status === "idle"
+                                                ? "后台运行后，输出会显示在这里。"
+                                                : "（暂无输出）"
+                                        return "窗口模式不记录输出，请在弹出的窗口中查看。"
+                                    }
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fontCaption
+                                    font.family: "Consolas, monospace"
+                                    wrapMode: Text.WrapAnywhere
+                                }
+                            }
+                        }
                     }
 
                     // ---- actions ----
@@ -212,12 +291,30 @@ Item {
                             text: "运行脚本"
                             iconName: "terminal"
                             variant: "primary"
-                            enabled: !app.busy
+                            enabled: !app.busy && !scriptsModel.selectedDetail.running
                             onClicked: scriptsModel.run(scriptsModel.selectedDetail.id)
 
                             ToolTip.visible: hovered
                             ToolTip.delay: 400
-                            ToolTip.text: "在新窗口中运行，运行结束后窗口保持打开"
+                            ToolTip.text: scriptsModel.selectedDetail.running
+                                ? "脚本正在运行，同一脚本同时只允许运行一个实例"
+                                : "按脚本设置的方式运行（打开窗口或后台运行）"
+                        }
+                        AppButton {
+                            text: "停止"
+                            iconName: "close"
+                            variant: "danger"
+                            enabled: !app.busy
+                            visible: scriptsModel.selectedDetail.running === true
+                            onClicked: scriptsModel.stop(scriptsModel.selectedDetail.id)
+                        }
+                        AppButton {
+                            text: "打开日志"
+                            iconName: "log"
+                            enabled: !app.busy && scriptsModel.selectedDetail.logPath !== ""
+                            visible: scriptsModel.selectedDetail.logPath !== undefined
+                                && scriptsModel.selectedDetail.logPath !== ""
+                            onClicked: app.openLocalPath(scriptsModel.selectedDetail.logPath)
                         }
                         AppButton {
                             text: "修改"

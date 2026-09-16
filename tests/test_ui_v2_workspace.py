@@ -8,6 +8,7 @@ snapshot contracts the view models consume.
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +22,7 @@ from codex_switch.models import (
     Profile,
     ProjectRecord,
     RouteProxyRule,
+    ScriptRecord,
     SkillDefinition,
     SkillGroup,
     SkillMarketRepo,
@@ -50,6 +52,9 @@ class WorkspaceTestCase(unittest.TestCase):
         self.addCleanup(self._temp.__exit__, None, None, None)
         self.store = ProfileStore(self.root)
         self.workspace = Workspace(store=self.store, project_root=self.root)
+        # Tests that mock Popen leave a "running" script behind; closing the
+        # manager releases the log handle so Python reports no leaked file.
+        self.addCleanup(self.workspace.script_runs.shutdown)
 
     # -- helpers ---------------------------------------------------------
     def add_profile(self, name: str = "主账号", vendor: str = VENDOR_CODEX, **kwargs):
@@ -916,6 +921,8 @@ class ProjectOperationTests(WorkspaceTestCase):
             "content": "echo hello",
             "workingDir": "",
             "description": "演示",
+            "runMode": "window",
+            "closeOnFinish": False,
         }
         payload.update(overrides)
         self.workspace.save_script(payload)
@@ -973,6 +980,178 @@ class ProjectOperationTests(WorkspaceTestCase):
         reloaded = Workspace(store=self.store, project_root=self.root)
         names = [row["name"] for row in reloaded.script_rows()]
         self.assertIn("持久化脚本", names)
+
+    # -- run mode, background output, single instance --------------------
+    def test_script_form_exposes_run_mode_and_close_on_finish(self) -> None:
+        fields = {item["key"]: item for item in self.workspace.script_form_fields("")}
+        self.assertIn("runMode", fields)
+        self.assertIn("closeOnFinish", fields)
+        self.assertEqual(fields["runMode"]["type"], "choice")
+        self.assertEqual(fields["closeOnFinish"]["type"], "switch")
+        self.assertEqual(fields["runMode"]["value"], "window")
+
+    def test_run_mode_and_close_on_finish_round_trip(self) -> None:
+        script_id = self._save_script()
+        self.workspace.save_script(
+            {
+                "name": "后台脚本",
+                "kind": "shell",
+                "content": "echo hi",
+                "workingDir": "",
+                "description": "",
+                "runMode": "hidden",
+                "closeOnFinish": True,
+            },
+            script_id=script_id,
+        )
+        script = self.workspace.session.script_by_id(script_id)
+        self.assertEqual(script.run_mode, "hidden")
+        self.assertTrue(script.close_on_finish)
+
+        self.workspace.persist()
+        reloaded = Workspace(store=self.store, project_root=self.root)
+        row = reloaded.script_rows()[0]
+        self.assertEqual(row["runMode"], "hidden")
+        self.assertTrue(row["closeOnFinish"])
+        self.assertEqual(row["runModeLabel"], "后台运行（不打开窗口）")
+
+    def test_invalid_run_mode_falls_back_to_window(self) -> None:
+        script = ScriptRecord.create("x", content="echo hi", run_mode="nonsense")
+        self.assertEqual(script.run_mode, "window")
+        self.assertEqual(
+            ScriptRecord.from_dict({"id": "1", "name": "x", "run_mode": "nonsense"}).run_mode,
+            "window",
+        )
+
+    def test_hidden_run_captures_output_without_a_new_console(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            result = self.workspace.run_script(script_id)
+
+        kwargs = popen.call_args.kwargs
+        self.assertIn("后台", result.message)
+        self.assertNotIn("cmd", popen.call_args.args[0])
+        # CREATE_NO_WINDOW, never CREATE_NEW_CONSOLE: no window may appear.
+        self.assertEqual(
+            kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        self.assertNotEqual(kwargs.get("creationflags"), getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        self.assertIsNotNone(kwargs.get("stdout"), "后台运行必须捕获输出")
+        # Output goes to a log file under the store, not to a console.
+        log_path = self.workspace.script_detail(script_id)["logPath"]
+        self.assertTrue(log_path)
+        self.workspace.script_runs.shutdown()
+
+    def test_hidden_run_reports_output_and_exit_code(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            process = popen.return_value
+            process.poll.return_value = None
+            self.workspace.run_script(script_id)
+
+            log_path = self.workspace.script_detail(script_id)["logPath"]
+            Path(log_path).write_text("hello\nworld", encoding="utf-8")
+            process.poll.return_value = 0
+            process.returncode = 0
+            changed = self.workspace.poll_script_runs()
+
+        self.assertEqual(changed, [script_id])
+        detail = self.workspace.script_detail(script_id)
+        self.assertEqual(detail["status"], "success")
+        self.assertEqual(detail["statusLabel"], "已完成")
+        self.assertEqual(detail["exitCode"], 0)
+        self.assertIn("world", detail["output"])
+
+    def test_failed_run_is_reported_as_failed(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            process = popen.return_value
+            process.poll.return_value = None
+            self.workspace.run_script(script_id)
+            process.poll.return_value = 2
+            process.returncode = 2
+            self.workspace.poll_script_runs()
+
+        detail = self.workspace.script_detail(script_id)
+        self.assertEqual(detail["status"], "failed")
+        self.assertEqual(detail["exitCode"], 2)
+        self.assertEqual(detail["statusTone"], "danger")
+
+    def test_a_running_script_cannot_start_a_second_instance(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.workspace.run_script(script_id)
+            with self.assertRaises(WorkspaceError) as ctx:
+                self.workspace.run_script(script_id)
+        self.assertIn("正在运行", str(ctx.exception))
+        self.assertEqual(popen.call_count, 1, "重复启动创建了第二个进程")
+
+    def test_stopping_a_script_allows_it_to_run_again(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            process = popen.return_value
+            process.poll.return_value = None
+            self.workspace.run_script(script_id)
+            self.workspace.stop_script(script_id)
+            self.assertTrue(process.terminate.called)
+            # The process is still alive until the next poll reaps it.
+            process.poll.return_value = 1
+            process.returncode = 1
+            self.workspace.poll_script_runs()
+
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.workspace.run_script(script_id)
+        self.assertEqual(self.workspace.script_detail(script_id)["status"], "running")
+
+    def test_stopping_an_idle_script_is_refused(self) -> None:
+        script_id = self._save_script()
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.stop_script(script_id)
+        self.assertIn("没有在运行", str(ctx.exception))
+
+    def test_deleting_a_running_script_is_refused(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.workspace.run_script(script_id)
+            with self.assertRaises(WorkspaceError) as ctx:
+                self.workspace.delete_script(script_id)
+        self.assertIn("请先停止", str(ctx.exception))
+
+    def test_window_run_uses_cmd_c_only_when_close_on_finish(self) -> None:
+        from unittest.mock import patch
+
+        close = self._save_script(name="结束即关", runMode="window", closeOnFinish=True)
+        keep = self._save_script(name="保留窗口", runMode="window", closeOnFinish=False)
+
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.workspace.run_script(close)
+            argv = popen.call_args.args[0]
+        self.assertEqual(argv[0], "cmd")
+        self.assertEqual(argv[1], "/C")
+
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.workspace.run_script(keep)
+            argv = popen.call_args.args[0]
+        self.assertEqual(argv[0], "cmd")
+        self.assertEqual(argv[1], "/K")
 
     def test_opening_urls_never_launches_a_browser_during_tests(self) -> None:
         """A real browser must never open while the suite runs.

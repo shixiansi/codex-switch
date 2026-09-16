@@ -95,3 +95,7 @@ class ScriptsViewModel(SnapshotViewModel):
     @Slot(str)
     def run(self, script_id: str) -> None:
         self._controller.runScript(str(script_id))
+
+    @Slot(str)
+    def stop(self, script_id: str) -> None:
+        self._controller.stopScript(str(script_id))

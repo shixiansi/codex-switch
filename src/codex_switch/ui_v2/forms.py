@@ -24,6 +24,9 @@ from ..models import (
     ProjectRecord,
     SCRIPT_KIND_CHOICES,
     SCRIPT_KIND_LABELS,
+    SCRIPT_RUN_MODE_CHOICES,
+    SCRIPT_RUN_MODE_LABELS,
+    SCRIPT_RUN_MODE_WINDOW,
     ScriptRecord,
     SkillDefinition,
     SkillGroup,
@@ -416,6 +419,21 @@ def script_form(script: ScriptRecord | None = None) -> list[dict[str, Any]]:
         },
         _text("description", "说明", getattr(script, "description", "")),
         {
+            "key": "runMode",
+            "label": "运行方式",
+            "type": "choice",
+            **_choice(
+                [(key, SCRIPT_RUN_MODE_LABELS[key]) for key in SCRIPT_RUN_MODE_CHOICES],
+                getattr(script, "run_mode", SCRIPT_RUN_MODE_WINDOW) or SCRIPT_RUN_MODE_WINDOW,
+            ),
+        },
+        {
+            "key": "closeOnFinish",
+            "label": "窗口模式：结束后自动关闭窗口",
+            "type": "switch",
+            "value": bool(getattr(script, "close_on_finish", False)),
+        },
+        {
             "key": "workingDir",
             "label": "工作目录",
             "type": "path",
@@ -442,12 +460,17 @@ def script_payload(payload: dict[str, Any]) -> dict[str, Any]:
     kind = _payload_str(payload, "kind", "shell") or "shell"
     if kind not in SCRIPT_KIND_CHOICES:
         raise FormError("脚本类型无效。")
+    run_mode = _payload_str(payload, "runMode", SCRIPT_RUN_MODE_WINDOW) or SCRIPT_RUN_MODE_WINDOW
+    if run_mode not in SCRIPT_RUN_MODE_CHOICES:
+        raise FormError("运行方式无效。")
     return {
         "name": name,
         "kind": kind,
         "content": content,
         "working_dir": _payload_str(payload, "workingDir"),
         "description": _payload_str(payload, "description"),
+        "run_mode": run_mode,
+        "close_on_finish": _payload_bool(payload, "closeOnFinish"),
     }
 
 
