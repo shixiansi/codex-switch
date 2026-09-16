@@ -47,6 +47,8 @@ from ..models import (
     ProjectRecord,
     RouteProxyEvent,
     RouteProxySettings,
+    SCRIPT_KIND_POWERSHELL,
+    SCRIPT_KIND_PYTHON,
     SCRIPT_RUN_MODE_HIDDEN,
     ScriptRecord,
     SkillDefinition,
@@ -1990,27 +1992,54 @@ class Workspace:
         self.persist()
         return ActionResult(message=f"已删除脚本：{script.name}")
 
-    def script_command(self, script: ScriptRecord) -> tuple[list[str], str]:
-        """Build the argv to run a script, plus a human-readable summary.
+    def script_command(self, script: ScriptRecord, path: str, *, keep_open: bool) -> list[str]:
+        """Build the argv that runs ``script`` from the temp file at ``path``.
 
-        Scripts are written to a temporary file so the content stored in the
-        app can be executed directly; the suffix matters because Windows
-        refuses to run a .py file with no extension and shells reject unknown
-        extensions.
+        The kind selects the interpreter, and they are not interchangeable: a
+        batch file handed to PowerShell dies on its own `@echo off` / `goto`
+        syntax, and a .ps1 handed to cmd.exe is treated as plain text.
         """
-        suffix = ".py" if script.kind == "python" else (".ps1" if os.name == "nt" else ".sh")
+        if script.kind == SCRIPT_KIND_PYTHON:
+            inner = [sys.executable, path]
+        elif script.kind == SCRIPT_KIND_POWERSHELL:
+            inner = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
+        elif os.name == "nt":
+            # cmd runs a .cmd/.bat directly: /C exits with the batch, /K leaves
+            # the prompt open so the output stays readable.
+            return ["cmd", "/K" if keep_open else "/C", path]
+        else:
+            inner = ["bash", path]
+
+        if os.name == "nt" and keep_open:
+            # Wrapping keeps the console alive after the interpreter exits.
+            return ["cmd", "/K", *inner]
+        return inner
+
+    def script_temp_file(self, script: ScriptRecord) -> str:
+        """Write the script body to a temp file the interpreter can actually read.
+
+        Each interpreter reads source in a different encoding, so the file is
+        written to match: UTF-8 for Python, UTF-8 with a BOM for PowerShell 5.1
+        (which otherwise assumes the ANSI code page), and the Windows OEM code
+        page for batch files — cmd.exe has no way to be told otherwise.
+        """
+        if script.kind == SCRIPT_KIND_PYTHON:
+            suffix, encoding = ".py", "utf-8"
+        elif script.kind == SCRIPT_KIND_POWERSHELL:
+            suffix, encoding = ".ps1", "utf-8-sig"
+        elif os.name == "nt":
+            suffix, encoding = ".cmd", "oem"
+        else:
+            suffix, encoding = ".sh", "utf-8"
+
         handle = tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=suffix, delete=False
+            mode="w", encoding=encoding, errors="replace", suffix=suffix, delete=False
         )
         try:
             handle.write(script.content)
         finally:
             handle.close()
-        if script.kind == "python":
-            return [sys.executable, handle.name], handle.name
-        if os.name == "nt":
-            return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", handle.name], handle.name
-        return ["bash", handle.name], handle.name
+        return handle.name
 
     def run_script(self, script_id: str) -> ActionResult:
         """Launch a script, either in a console window or hidden in the background.
@@ -2032,14 +2061,27 @@ class Workspace:
             raise WorkspaceError(f"工作目录不存在：{working_dir}")
 
         hidden = script.run_mode == SCRIPT_RUN_MODE_HIDDEN
-        argv, temp_path = self.script_command(script)
-        if not hidden and os.name == "nt":
-            # /C closes the window as soon as the script ends; /K keeps it open
-            # so the output stays readable.
-            argv = ["cmd", "/C", *argv] if script.close_on_finish else ["cmd", "/K", *argv]
+        temp_path = self.script_temp_file(script)
+        # A hidden run captures output, so it never needs a surviving console;
+        # only the windowed mode trades "stay open" for a /K wrapper.
+        argv = self.script_command(script, temp_path, keep_open=not hidden and not script.close_on_finish)
+
+        env_extra: dict[str, str] = {}
+        if script.kind == SCRIPT_KIND_PYTHON:
+            # A redirected Python child otherwise formats output in the locale
+            # code page, so Chinese text would land in the log as GBK and any
+            # character outside it would raise UnicodeEncodeError in the script.
+            env_extra["PYTHONIOENCODING"] = "utf-8"
 
         try:
-            self.script_runs.start(script_id, argv, cwd=cwd, hidden=hidden, temp_path=temp_path)
+            self.script_runs.start(
+                script_id,
+                argv,
+                cwd=cwd,
+                hidden=hidden,
+                temp_path=temp_path,
+                env_extra=env_extra,
+            )
         except OSError as exc:
             raise WorkspaceError(f"运行脚本失败：{exc}") from exc
 

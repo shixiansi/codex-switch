@@ -24,6 +24,8 @@ from ..models import (
     ProjectRecord,
     SCRIPT_KIND_CHOICES,
     SCRIPT_KIND_LABELS,
+    SCRIPT_KIND_POWERSHELL,
+    SCRIPT_KIND_SHELL,
     SCRIPT_RUN_MODE_CHOICES,
     SCRIPT_RUN_MODE_LABELS,
     SCRIPT_RUN_MODE_WINDOW,
@@ -414,7 +416,7 @@ def script_form(script: ScriptRecord | None = None) -> list[dict[str, Any]]:
             "type": "choice",
             **_choice(
                 [(key, SCRIPT_KIND_LABELS[key]) for key in SCRIPT_KIND_CHOICES],
-                getattr(script, "kind", "shell") or "shell",
+                getattr(script, "kind", SCRIPT_KIND_SHELL) or SCRIPT_KIND_SHELL,
             ),
         },
         _text("description", "说明", getattr(script, "description", "")),
@@ -457,7 +459,7 @@ def script_payload(payload: dict[str, Any]) -> dict[str, Any]:
     content = str(payload.get("content", "") or "")
     if not content.strip():
         raise FormError("请填写脚本内容。")
-    kind = _payload_str(payload, "kind", "shell") or "shell"
+    kind = _payload_str(payload, "kind", SCRIPT_KIND_SHELL) or SCRIPT_KIND_SHELL
     if kind not in SCRIPT_KIND_CHOICES:
         raise FormError("脚本类型无效。")
     run_mode = _payload_str(payload, "runMode", SCRIPT_RUN_MODE_WINDOW) or SCRIPT_RUN_MODE_WINDOW

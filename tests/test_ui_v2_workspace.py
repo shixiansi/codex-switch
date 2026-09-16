@@ -1033,7 +1033,8 @@ class ProjectOperationTests(WorkspaceTestCase):
 
         kwargs = popen.call_args.kwargs
         self.assertIn("后台", result.message)
-        self.assertNotIn("cmd", popen.call_args.args[0])
+        # A batch script runs through cmd, but without a console window.
+        self.assertNotIn("/K", popen.call_args.args[0])
         # CREATE_NO_WINDOW, never CREATE_NEW_CONSOLE: no window may appear.
         self.assertEqual(
             kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -1044,6 +1045,108 @@ class ProjectOperationTests(WorkspaceTestCase):
         log_path = self.workspace.script_detail(script_id)["logPath"]
         self.assertTrue(log_path)
         self.workspace.script_runs.shutdown()
+
+    # -- interpreter selection and output encoding ----------------------
+    def test_batch_scripts_run_through_cmd_not_powershell(self) -> None:
+        """A .cmd handed to PowerShell dies on `@echo off`; it must reach cmd."""
+        script = self.workspace.session.script_by_id(self._save_script(kind="shell"))
+        argv = self.workspace.script_command(script, "C:/tmp/x.cmd", keep_open=False)
+        self.assertEqual(argv[0], "cmd")
+        self.assertNotIn("powershell", argv)
+        self.assertEqual(argv[-1], "C:/tmp/x.cmd")
+
+        keeping = self.workspace.script_command(script, "C:/tmp/x.cmd", keep_open=True)
+        self.assertEqual(keeping[:2], ["cmd", "/K"])
+
+    def test_powershell_scripts_keep_using_powershell(self) -> None:
+        script = self.workspace.session.script_by_id(self._save_script(kind="powershell"))
+        argv = self.workspace.script_command(script, "C:/tmp/x.ps1", keep_open=False)
+        self.assertEqual(argv[0], "powershell")
+        self.assertIn("-File", argv)
+
+    def test_python_scripts_use_the_interpreter(self) -> None:
+        import sys as _sys
+
+        script = self.workspace.session.script_by_id(self._save_script(kind="python"))
+        argv = self.workspace.script_command(script, "C:/tmp/x.py", keep_open=False)
+        self.assertEqual(argv, [_sys.executable, "C:/tmp/x.py"])
+
+    def test_temp_files_use_a_suffix_and_encoding_each_interpreter_reads(self) -> None:
+        """UTF-8 BOM for PowerShell 5.1, OEM code page for cmd, plain UTF-8 for Python."""
+        cases = {
+            "python": (".py", "utf-8", False),
+            "powershell": (".ps1", "utf-8-sig", True),
+            "shell": (".cmd", "oem", False),
+        }
+        for kind, (suffix, encoding, expect_bom) in cases.items():
+            with self.subTest(kind=kind):
+                script = self.workspace.session.script_by_id(self._save_script(kind=kind))
+                path = self.workspace.script_temp_file(script)
+                self.addCleanup(Path(path).unlink, missing_ok=True)
+                self.assertTrue(path.endswith(suffix), f"{kind} 后缀错误：{path}")
+                raw = Path(path).read_bytes()
+                self.assertEqual(raw.startswith(b"\xef\xbb\xbf"), expect_bom)
+                # The body must survive a round trip in the chosen encoding.
+                self.assertIn("echo hello", raw.decode(encoding))
+
+    def test_hidden_python_runs_are_told_to_emit_utf8(self) -> None:
+        """Without this, a redirected Python child writes the locale code page."""
+        from unittest.mock import patch
+
+        script_id = self._save_script(kind="python", runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.workspace.run_script(script_id)
+        env = popen.call_args.kwargs.get("env") or {}
+        self.assertEqual(env.get("PYTHONIOENCODING"), "utf-8")
+        self.workspace.script_runs.shutdown()
+
+    def test_gbk_console_output_decodes_to_chinese(self) -> None:
+        """The log stores raw bytes, so decoding must detect the code page."""
+        from codex_switch.ui_v2.script_runner import decode_output
+
+        self.assertEqual(decode_output("中文输出".encode("gbk")), "中文输出")
+        self.assertEqual(decode_output("中文输出".encode("utf-8")), "中文输出")
+        self.assertEqual(decode_output(b"plain ascii"), "plain ascii")
+        self.assertEqual(decode_output(b""), "")
+        self.assertNotIn("\ufffd", decode_output("乱码测试".encode("gbk")))
+
+    def test_gbk_log_bytes_reach_the_ui_as_chinese(self) -> None:
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            process = popen.return_value
+            process.poll.return_value = None
+            self.workspace.run_script(script_id)
+            log_path = self.workspace.script_detail(script_id)["logPath"]
+            # Exactly what a Chinese Windows console writes.
+            Path(log_path).write_bytes("中文批处理测试\n".encode("gbk"))
+            process.poll.return_value = 0
+            process.returncode = 0
+            self.workspace.poll_script_runs()
+
+        output = self.workspace.script_detail(script_id)["output"]
+        self.assertEqual(output, "中文批处理测试")
+        self.assertNotIn("\ufffd", output)
+        self.workspace.script_runs.shutdown()
+
+    def test_unknown_script_kind_falls_back_to_batch(self) -> None:
+        record = ScriptRecord.create("x", kind="nonsense", content="echo hi")
+        self.assertEqual(record.kind, "shell")
+        self.assertEqual(
+            ScriptRecord.from_dict({"id": "1", "name": "x", "kind": "weird"}).kind,
+            "shell",
+        )
+
+    def test_linux_shell_scripts_use_bash(self) -> None:
+        script = self.workspace.session.script_by_id(self._save_script(kind="shell"))
+        with patch.object(workspace_module.os, "name", "posix"):
+            argv = self.workspace.script_command(script, "/tmp/x.sh", keep_open=False)
+            path = self.workspace.script_temp_file(script)
+            self.addCleanup(Path(path).unlink, missing_ok=True)
+        self.assertEqual(argv, ["bash", "/tmp/x.sh"])
+        self.assertTrue(path.endswith(".sh"))
 
     def test_hidden_run_reports_output_and_exit_code(self) -> None:
         from unittest.mock import patch

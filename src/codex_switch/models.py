@@ -1762,8 +1762,28 @@ class SkillMarketRepo:
         return asdict(self)
 
 
-SCRIPT_KIND_CHOICES = ("shell", "python")
-SCRIPT_KIND_LABELS = {"shell": "Shell / 批处理", "python": "Python"}
+# A script's language decides both the temp-file suffix and the interpreter used
+# to run it. "shell" used to cover every Windows shell script, but it was always
+# handed to PowerShell; batch files then failed on their own syntax. Batch and
+# PowerShell are therefore separate kinds.
+SCRIPT_KIND_SHELL = "shell"
+SCRIPT_KIND_POWERSHELL = "powershell"
+SCRIPT_KIND_PYTHON = "python"
+SCRIPT_KIND_CHOICES = (SCRIPT_KIND_SHELL, SCRIPT_KIND_POWERSHELL, SCRIPT_KIND_PYTHON)
+SCRIPT_KIND_LABELS = {
+    SCRIPT_KIND_SHELL: "批处理 / CMD",
+    SCRIPT_KIND_POWERSHELL: "PowerShell",
+    SCRIPT_KIND_PYTHON: "Python",
+}
+
+
+def normalize_script_kind(value: Any) -> str:
+    kind = str(value or SCRIPT_KIND_SHELL).strip().lower()
+    if kind in SCRIPT_KIND_CHOICES:
+        return kind
+    # Older releases stored "shell" for every shell script; treat anything
+    # unrecognised as a batch file, which is what the label always promised.
+    return SCRIPT_KIND_SHELL
 
 # How a script runs: in a visible console window, or hidden in the background
 # with its output captured to a log file.
@@ -1805,7 +1825,7 @@ class ScriptRecord:
         cls,
         name: str,
         *,
-        kind: str = "shell",
+        kind: str = SCRIPT_KIND_SHELL,
         content: str = "",
         working_dir: str = "",
         description: str = "",
@@ -1813,13 +1833,10 @@ class ScriptRecord:
         close_on_finish: bool = False,
     ) -> "ScriptRecord":
         timestamp = now_iso()
-        normalized = (kind or "shell").strip().lower()
-        if normalized not in SCRIPT_KIND_CHOICES:
-            normalized = "shell"
         return cls(
             id=str(uuid.uuid4()),
             name=name.strip(),
-            kind=normalized,
+            kind=normalize_script_kind(kind),
             content=content,
             working_dir=working_dir.strip(),
             description=description.strip(),
@@ -1832,9 +1849,7 @@ class ScriptRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScriptRecord":
         timestamp = data.get("updated_at") or data.get("created_at") or now_iso()
-        kind = str(data.get("kind") or "shell").strip().lower()
-        if kind not in SCRIPT_KIND_CHOICES:
-            kind = "shell"
+        kind = normalize_script_kind(data.get("kind"))
         return cls(
             id=str(data.get("id") or uuid.uuid4()),
             name=str(data.get("name") or "未命名脚本").strip() or "未命名脚本",

@@ -26,6 +26,38 @@ STATUS_STOPPED = "stopped"
 # How much of a log the detail panel shows; the file keeps everything.
 OUTPUT_TAIL_LINES = 200
 
+# Console programs on a Chinese Windows write the OEM code page (GBK/cp936),
+# not UTF-8. The log keeps the raw bytes, so decoding has to detect which one a
+# run actually produced; guessing UTF-8 unconditionally mangled every Chinese
+# line into U+FFFD.
+_PREFERRED_ENCODINGS = ("utf-8", "mbcs", "cp936", "gbk", "big5", "utf-16")
+
+
+def decode_output(data: bytes) -> str:
+    """Decode captured console bytes, preferring a strict UTF-8 reading.
+
+    UTF-8 is tried first so modern tools (and our own ``PYTHONIOENCODING``
+    children) stay lossless. Anything that is *not* valid UTF-8 is far more
+    likely to be the local ANSI/OEM code page, so that is tried next. Only if
+    every candidate fails do we fall back to a lossy decode, which keeps
+    mojibake out of the UI while still showing something.
+    """
+    if not data:
+        return ""
+    for encoding in _PREFERRED_ENCODINGS:
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _read_log_bytes(log_path: str) -> bytes:
+    try:
+        return Path(log_path).read_bytes()
+    except OSError:
+        return b""
+
 
 @dataclass
 class ScriptRun:
@@ -47,10 +79,10 @@ class ScriptRun:
     def output_tail(self) -> str:
         if not self.log_path:
             return ""
-        try:
-            lines = Path(self.log_path).read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
+        text = decode_output(_read_log_bytes(self.log_path))
+        if not text:
             return ""
+        lines = text.splitlines()
         if len(lines) > OUTPUT_TAIL_LINES:
             lines = [f"… 仅显示最后 {OUTPUT_TAIL_LINES} 行，完整内容见日志文件。", *lines[-OUTPUT_TAIL_LINES:]]
         return "\n".join(lines)
@@ -125,19 +157,24 @@ class ScriptRunManager:
         cwd: str | None = None,
         hidden: bool = False,
         temp_path: str = "",
+        env_extra: dict[str, str] | None = None,
     ) -> ScriptRun:
         log_path = ""
         stdout = None
         if hidden:
             try:
                 log_path = self._open_log(script_id)
-                # Binary mode + errors="replace" on read: Windows consoles emit
-                # GBK, and a decode error must never lose the run's output.
+                # Raw bytes on purpose: the child writes whatever its console
+                # code page produces, and decode_output() works it out later.
                 stdout = open(log_path, "wb")  # noqa: SIM115 - closed on finish
             except OSError as exc:
                 raise OSError(f"无法创建脚本日志文件：{exc}") from exc
 
         kwargs: dict[str, Any] = {"cwd": cwd}
+        if env_extra:
+            # Inherit the parent environment rather than replacing it, so the
+            # caller only has to name the variables it wants to override.
+            kwargs["env"] = {**os.environ, **env_extra}
         if hidden:
             kwargs.update(_hidden_process_kwargs())
             kwargs.update({"stdout": stdout, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL})

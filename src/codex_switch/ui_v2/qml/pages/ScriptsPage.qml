@@ -15,7 +15,7 @@ Item {
 
         SectionHeader {
             title: "脚本中心"
-            description: "添加常用命令或 Python 脚本，可选择打开窗口或后台运行，同一脚本同时只允许一个实例。"
+            description: "支持批处理、PowerShell 与 Python，可选择打开窗口或后台运行，同一脚本同时只允许一个实例。"
 
             AppButton {
                 text: "刷新"
