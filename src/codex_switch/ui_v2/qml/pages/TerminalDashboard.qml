@@ -14,6 +14,9 @@ Page {
     property string newTitle: ""
     property string newCommand: "codex"
     property string newCwd: ""
+    // 按项目打开
+    property string newProjectId: ""
+    property string newProjectClient: "codex"
 
     RowLayout {
         anchors.fill: parent
@@ -278,7 +281,7 @@ Page {
         modal: true
         focus: true
         anchors.centerIn: parent
-        width: 520
+        width: 540
         padding: Theme.space4
         background: Rectangle { radius: Theme.radius; color: Theme.surface; border.width: Theme.borderWidth; border.color: Theme.border }
 
@@ -288,37 +291,116 @@ Page {
 
             Text { text: "新建 AI 终端会话"; color: Theme.text; font.pixelSize: Theme.fontTitle; font.weight: Font.DemiBold }
 
-            ColumnLayout {
+            // 模式切换：按项目打开 / 自定义命令
+            TabBar {
+                id: modeTabs
                 Layout.fillWidth: true
-                spacing: Theme.space1
-                Text { text: "标题（可选）"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                AppTextField {
-                    Layout.fillWidth: true
-                    placeholderText: "例如：codex 重构任务"
-                    text: newTitle
-                    onTextChanged: newTitle = text
-                }
+                TabButton { text: "按项目打开" }
+                TabButton { text: "自定义命令" }
             }
-            ColumnLayout {
+
+            StackLayout {
                 Layout.fillWidth: true
-                spacing: Theme.space1
-                Text { text: "命令"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                AppTextField {
+                currentIndex: modeTabs.currentIndex
+
+                // ---- 模式一：选择项目，自动导入环境与配置 ----
+                ColumnLayout {
                     Layout.fillWidth: true
-                    placeholderText: "codex 或 claude，可带参数"
-                    text: newCommand
-                    onTextChanged: newCommand = text
+                    spacing: Theme.space3
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "选择项目后会自动同步该项目的 Codex / Claude 配置、路由代理与运行时环境变量。"
+                        color: Theme.textFaint
+                        font.pixelSize: Theme.fontCaption
+                        wrapMode: Text.Wrap
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space1
+                        Text { text: "项目"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+                        AppComboBox {
+                            id: projectPicker
+                            Layout.fillWidth: true
+                            options: {
+                                var rows = []
+                                var list = terminalModel.projects
+                                for (var i = 0; i < list.length; i++)
+                                    rows.push({ value: list[i].id, label: list[i].name })
+                                return rows
+                            }
+                            onSelectionChanged: function (value) { newProjectId = value }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space1
+                        Text { text: "客户端"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+                        RowLayout {
+                            spacing: Theme.space2
+                            AppButton {
+                                text: "Codex"
+                                variant: newProjectClient === "codex" ? "primary" : "ghost"
+                                onClicked: newProjectClient = "codex"
+                            }
+                            AppButton {
+                                text: "Claude"
+                                variant: newProjectClient === "claude" ? "primary" : "ghost"
+                                onClicked: newProjectClient = "claude"
+                            }
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: terminalModel.projects.length === 0
+                        text: "还没有项目，请先在「项目工作区」添加项目。"
+                        color: Theme.textFaint
+                        font.pixelSize: Theme.fontCaption
+                        wrapMode: Text.Wrap
+                    }
                 }
-            }
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space1
-                Text { text: "工作目录（可选）"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                AppTextField {
+
+                // ---- 模式二：自定义命令 ----
+                ColumnLayout {
                     Layout.fillWidth: true
-                    placeholderText: "留空使用当前目录"
-                    text: newCwd
-                    onTextChanged: newCwd = text
+                    spacing: Theme.space3
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space1
+                        Text { text: "标题（可选）"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+                        AppTextField {
+                            Layout.fillWidth: true
+                            placeholderText: "例如：codex 重构任务"
+                            text: newTitle
+                            onTextChanged: newTitle = text
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space1
+                        Text { text: "命令"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+                        AppTextField {
+                            Layout.fillWidth: true
+                            placeholderText: "codex 或 claude，可带参数"
+                            text: newCommand
+                            onTextChanged: newCommand = text
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space1
+                        Text { text: "工作目录（可选）"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
+                        AppTextField {
+                            Layout.fillWidth: true
+                            placeholderText: "留空使用当前目录"
+                            text: newCwd
+                            onTextChanged: newCwd = text
+                        }
+                    }
                 }
             }
 
@@ -333,9 +415,14 @@ Page {
                 AppButton {
                     text: "启动"
                     variant: "primary"
+                    enabled: modeTabs.currentIndex === 0 ? newProjectId !== "" : newCommand !== ""
                     onClicked: {
-                        terminalModel.createSession(newTitle, newCommand, newCwd)
-                        newTitle = ""; newCommand = "codex"; newCwd = ""
+                        if (modeTabs.currentIndex === 0) {
+                            terminalModel.createProjectSession(newProjectId, newProjectClient)
+                        } else {
+                            terminalModel.createSession(newTitle, newCommand, newCwd)
+                            newTitle = ""; newCommand = "codex"; newCwd = ""
+                        }
                         createPopup.close()
                     }
                 }

@@ -112,6 +112,7 @@ from ..ui.project_logic import (
     project_claude_profile_id,
     project_bound_profile_ids,
     project_duplicate_dir_error,
+    project_root_path,
     project_vscode_launch_plan,
     resolve_selected_project_id,
 )
@@ -176,6 +177,31 @@ MANUAL_HEALTH_CHOICES = tuple(MANUAL_HEALTH_LABELS)
 # so the browser is not flooded and the machine stays responsive.
 SIGN_IN_BATCH_SIZE = 5
 SIGN_IN_BATCH_PAUSE_MS = 1000
+
+
+def _terminal_spec_from_plan(plan, *, title: str, project_root: Path) -> dict[str, Any]:
+    """把项目启动方案转换为「AI 终端」PTY 规格。
+
+    PTY 后端按整条命令行启动子进程，因此这里把 argv 还原成带引号的命令字符串；
+    ``cmd.exe /k`` 这类以交互 shell 开头的方案会保留，使 CLI 退出后仍可继续操作。
+    """
+    argv = [str(part) for part in plan.command]
+    command = " ".join(_quote_argv_part(part) for part in argv)
+    return {
+        "title": title,
+        "command": command,
+        "cwd": str(plan.cwd or project_root),
+        "env": {},
+    }
+
+
+def _quote_argv_part(part: str) -> str:
+    """按需为命令行参数加引号，避免含空格的项目路径被拆断。"""
+    if not part:
+        return '""'
+    if any(char in part for char in ' \t"'):
+        return '"' + part.replace('"', '\\"') + '"'
+    return part
 
 
 @dataclass
@@ -1230,6 +1256,74 @@ class Workspace:
         if feedback.error_message:
             raise WorkspaceError(feedback.error_message)
         return ActionResult(message=feedback.status_text or plan.success_status)
+
+    def terminal_launch_spec(self, client: str, project_id: str = "") -> dict[str, Any]:
+        """为「AI 终端」组装某个项目的启动规格（命令 / 工作目录 / 环境变量）。
+
+        与 ``launch_project`` 复用同一条准备管线：刷新路由代理规则、同步项目 API 绑定、
+        写入 Claude settings.local.json，并把 profile 派生的运行时环境变量一并带上。
+        区别只在于这里返回规格给应用内 PTY 会话，而不是弹出外部控制台窗口。
+        """
+        session = self.session
+        project = session.project_by_id(project_id) or session.selected_project()
+        if project is None:
+            raise WorkspaceError("请先选择一个项目。")
+
+        project_root = project_root_path(project)
+        if not project_root.exists():
+            raise WorkspaceError(f"项目目录不存在：{project_root}")
+
+        client = str(client or "codex").strip().lower()
+
+        if client == "claude":
+            self.refresh_route_proxy_rules(project)
+            claude_model, claude_fallback = self._claude_model_overrides(project)
+            preparation = build_project_claude_cmd_launch_preparation(
+                project,
+                profile_by_id=session.profile_by_id,
+                supports_claude=profile_supports_claude,
+                route_proxy_base_url=self.project_route_proxy_base_url(project),
+                model_override=claude_model,
+                fallback_model_override=claude_fallback,
+                runtime_env_from_profile=lambda profile, base_url, model, fallback: claude_runtime_env_from_profile(
+                    profile,
+                    route_proxy_base_url=base_url,
+                    model_override=model,
+                    fallback_model_override=fallback,
+                ),
+            )
+            if preparation.error_message:
+                raise WorkspaceError(preparation.error_message)
+            try:
+                self.template_service.sync_claude_binding(
+                    preparation.project_root,
+                    preparation.profile,
+                    route_proxy_base_url=preparation.route_proxy_base_url,
+                    model_override=preparation.model_override,
+                    fallback_model_override=preparation.fallback_model_override,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise WorkspaceError(f"同步 Claude settings.local.json 失败：{exc}") from exc
+            env = os.environ.copy()
+            env.update(preparation.env_overrides or {})
+            spec = _terminal_spec_from_plan(
+                preparation.launch_plan, title=f"{project.name} · Claude", project_root=project_root
+            )
+            spec["env"] = env
+            return spec
+
+        if client == "codex":
+            self.refresh_route_proxy_rules(project)
+            if not self._sync_project_api_binding(project, sync_claude=False):
+                raise WorkspaceError("同步项目 Codex 绑定失败。")
+            plan = project_codex_cmd_launch_plan(project)
+            if plan.required_path is not None and not plan.required_path.exists():
+                raise WorkspaceError("未找到 start-codex.cmd，请先生成项目模板。")
+            return _terminal_spec_from_plan(
+                plan, title=f"{project.name} · Codex", project_root=project_root
+            )
+
+        raise WorkspaceError(f"不支持的 AI 终端客户端：{client}")
 
     def _sync_project_api_binding(self, project: ProjectRecord, *, sync_claude: bool) -> bool:
         session = self.session

@@ -84,6 +84,20 @@ class TerminalViewModel(BaseViewModel):
     def hasSessions(self) -> bool:
         return bool(self._sessions)
 
+    @Property("QVariantList", notify=sessionsChanged)
+    def projects(self) -> list[dict[str, Any]]:
+        """可选项目列表（供"按项目打开"选择器使用）。"""
+        rows: list[dict[str, Any]] = []
+        for project in self._controller.snapshot().get("projects") or []:
+            rows.append(
+                {
+                    "id": str(project.get("id") or ""),
+                    "name": str(project.get("name") or ""),
+                    "projectDir": str(project.get("projectDir") or ""),
+                }
+            )
+        return rows
+
     # -- 动作 ----------------------------------------------------------
     @Slot(str, str, str)
     def createSession(self, title: str, command: str, cwd: str) -> None:
@@ -92,6 +106,35 @@ class TerminalViewModel(BaseViewModel):
             self.report_error("请填写要运行的命令。")
             return
         session_id = self._manager.create_session(str(title or command), command, str(cwd or ""))
+        self._refresh_sessions()
+        self.focus(session_id)
+
+    @Slot(str, str)
+    def createProjectSession(self, project_id: str, client: str) -> None:
+        """按项目打开：自动导入该项目的环境变量与 Codex/Claude 配置。
+
+        复用 Workspace 的启动准备管线（刷新代理规则、同步项目绑定、写 Claude settings），
+        再在应用内 PTY 中运行对应 CLI，而不是弹出外部控制台。
+        """
+        target = str(project_id or "")
+        if not target:
+            self.report_error("请先选择一个项目。")
+            return
+        try:
+            spec = self._controller.workspace.terminal_launch_spec(str(client or "codex"), target)
+        except Exception as exc:  # noqa: BLE001 - 统一转成可读提示
+            self.report_error(str(exc))
+            return
+        command = str(spec.get("command") or "").strip()
+        if not command:
+            self.report_error("项目启动命令为空。")
+            return
+        session_id = self._manager.create_session(
+            str(spec.get("title") or command),
+            command,
+            str(spec.get("cwd") or ""),
+            env=dict(spec.get("env") or {}),
+        )
         self._refresh_sessions()
         self.focus(session_id)
 
