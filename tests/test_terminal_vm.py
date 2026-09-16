@@ -70,6 +70,11 @@ class ViewModelTests(unittest.TestCase):
             self.assertIn("zoomed output", vm.zoomedScreen)
             # 放大视图独立输入
             vm.sendZoomInput("hello")
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if "hello" in store["last"].written():
+                    break
+                time.sleep(0.02)
             self.assertIn("hello", store["last"].written())
         finally:
             vm.dispose()

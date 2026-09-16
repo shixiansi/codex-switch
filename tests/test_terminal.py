@@ -35,6 +35,8 @@ class _FakeBackend(_Backend):
         self._alive = True
         self._pid = 4242
         self._lock = threading.Lock()
+        # 逐次记录写入，便于断言"文本与回车是两次独立写入"。
+        self._write_calls: list[str] = []
 
     def read(self) -> bytes:
         with self._lock:
@@ -45,7 +47,11 @@ class _FakeBackend(_Backend):
     def write(self, data: str) -> None:
         # 记录写入，便于断言"发送输入"生效。
         with self._lock:
-            self._written = getattr(self, "_written", "") + data
+            self._write_calls.append(data)
+
+    def write_calls(self) -> list[str]:
+        with self._lock:
+            return list(self._write_calls)
 
     def is_alive(self) -> bool:
         return self._alive
@@ -61,7 +67,9 @@ class _FakeBackend(_Backend):
             self._buf += data
 
     def written(self) -> str:
-        return getattr(self, "_written", "")
+        """所有写入按顺序拼接，便于整体断言。"""
+        with self._lock:
+            return "".join(self._write_calls)
 
 
 class ScreenTests(unittest.TestCase):
@@ -164,14 +172,33 @@ class ManagerTests(unittest.TestCase):
         finally:
             mgr.shutdown()
 
-    def test_input_writes_crlf(self) -> None:
+    def test_input_submits_with_separate_cr(self) -> None:
+        """回归：必须"文本"与"单个 CR"分两次写入。
+
+        真实 codex 开启 bracketed paste（ESC[?2004h），同一次写入里的"文本+回车"
+        会被当作粘贴而吞掉回车 —— 屏幕上看得到消息，AI 却不开始工作。
+        另外发 CRLF 会被当成两次回车，第二条空消息会顶掉请求。
+        """
         store: dict[str, _FakeBackend] = {}
         mgr = TerminalManager()
         mgr.start()
         try:
             sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
             mgr.send_input(sid, "y")
-            self.assertIn("y\r\n", store["last"].written())
+            # 输入由独立写入线程异步提交，等待其完成。
+            deadline = time.time() + 2.0
+            written = ""
+            while time.time() < deadline:
+                written = store["last"].written()
+                if "\r" in written:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(written, "y\r", f"应为文本+单独 CR，实际 {written!r}")
+            self.assertEqual(
+                store["last"].write_calls(),
+                ["y", "\r"],
+                "文本与回车必须是两次独立写入",
+            )
         finally:
             mgr.shutdown()
 

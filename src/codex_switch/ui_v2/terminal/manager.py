@@ -34,6 +34,14 @@ EVENT_OUTPUT = "output"
 EVENT_STATUS = "status"
 EVENT_CHOICE = "choice"
 
+# 文本与回车之间的写入间隔。
+#
+# 实测结论（对真实 codex 二进制扫描 0.05/0.2/0.5/1.0s）：0.05s 无法提交，0.2s 起稳定提交。
+# 原因是 codex 开启了 bracketed paste（ESC[?2004h）：同一次读取里到达的"文本+回车"
+# 会被当成**粘贴**，回车被吞进粘贴内容里，于是屏幕上能看到消息、AI 却完全不开始工作。
+# 分开写入并留出间隔，可确保回车被当作独立的按键处理。取 0.25s 留出余量。
+_ENTER_DELAY_S = 0.25
+
 EventHook = Callable[[str, str, dict[str, Any]], None]
 
 
@@ -95,6 +103,12 @@ class TerminalManager:
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # 待发送的行队列，由独立写入线程按"先文本、后回车"的顺序处理。
+        # 放在队列里而不是在调用方 sleep，是为了不阻塞 GUI 线程。
+        self._pending: list[tuple[str, str]] = []
+        self._pending_lock = threading.Lock()
+        self._pending_event = threading.Event()
+        self._writer: threading.Thread | None = None
 
     # -- 生命周期 ------------------------------------------------------
     def start(self) -> None:
@@ -103,7 +117,33 @@ class TerminalManager:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="terminal-poll")
         self._thread.start()
+        self._writer = threading.Thread(target=self._write_loop, daemon=True, name="terminal-writer")
+        self._writer.start()
         log.info("轮询线程已启动 interval=%ss", self._poll_interval)
+
+    def _write_loop(self) -> None:
+        """按序处理待发送的行：先写文本，停顿后再写回车。
+
+        停顿必须发生在这里（后台线程），不能在 UI 线程 sleep，否则界面会卡住。
+        """
+        while not self._stop.is_set():
+            if not self._pending_event.wait(0.1):
+                continue
+            while True:
+                with self._pending_lock:
+                    if not self._pending:
+                        self._pending_event.clear()
+                        break
+                    session_id, text = self._pending.pop(0)
+                backend = self._backends.get(session_id)
+                if backend is None:
+                    continue
+                try:
+                    backend.write(text)
+                    time.sleep(_ENTER_DELAY_S)
+                    backend.write("\r")
+                except Exception:  # noqa: BLE001 - 写入失败不应终止写入线程
+                    log.exception("发送输入失败 id=%s", session_id)
 
     def shutdown(self) -> None:
         """停止全部会话（整树回收）并结束轮询线程。"""
@@ -115,6 +155,12 @@ class TerminalManager:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        if self._writer is not None:
+            self._writer.join(timeout=2.0)
+            self._writer = None
+        with self._pending_lock:
+            self._pending.clear()
+        self._pending_event.clear()
 
     # -- 会话操作 ------------------------------------------------------
     def create_session(
@@ -173,11 +219,25 @@ class TerminalManager:
             self._emit(session_id, EVENT_STATUS, {"status": session.status.value})
 
     def send_input(self, session_id: str, data: str) -> None:
-        backend = self._backends.get(session_id)
-        if backend is None:
+        """把一行输入交给写入线程提交（非阻塞，不卡界面）。
+
+        提交一行的两个要点（均对真实 codex 实测确认）：
+        1) 结束符是单个 CR（0x0D），即真实终端按下 Enter 发出的字节。发 CRLF 会被
+           原始模式 TUI 当成两次回车，第二条空消息会顶掉刚输入的请求。
+        2) 文本与 CR 必须分成两次写入且留出间隔。codex 开启了 bracketed paste
+           （ESC[?2004h），同一次到达的"文本+回车"会被当作粘贴，回车被吞掉，
+           于是消息显示出来了但 AI 完全不开始工作。
+        """
+        if session_id not in self._backends:
             return
-        # 终端行规约：以 CRLF 结束一行，符合多数交互式 CLI 的约定。
-        backend.write(str(data or "") + "\r\n")
+        text = str(data or "")
+        # 多行输入统一为 CR，避免裸 \n 被当作额外回车提前提交。
+        text = text.replace("\r\n", "\r").replace("\n", "\r")
+        if not text:
+            return
+        with self._pending_lock:
+            self._pending.append((session_id, text))
+        self._pending_event.set()
         # 用户输入后，CLI 通常会清掉提示；乐观地关闭"等待选择"态。
         session = self._sessions.get(session_id)
         if session is not None and session.awaiting_choice:
