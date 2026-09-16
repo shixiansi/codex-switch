@@ -183,8 +183,7 @@ class TerminalManager:
         out: list[SessionSummary] = []
         for s in sessions:
             screen = self._screens.get(s.session_id)
-            lines = screen._lines if screen is not None else []
-            last = lines[-1] if lines else ""
+            last = screen.last_line if screen is not None else ""
             out.append(
                 SessionSummary(
                     session_id=s.session_id,
@@ -245,8 +244,16 @@ class TerminalManager:
             screen = self._screens.get(session_id)
             if backend is None or screen is None:
                 continue
-            # 读取输出增量
+            # 读取输出增量（非阻塞：没有数据立即返回）。
             data = backend.read()
+            alive = backend.is_alive()
+            # 进程已退出时把管道里剩余的输出读干净，否则最后的日志会丢失。
+            if not alive:
+                while True:
+                    tail = backend.read()
+                    if not tail:
+                        break
+                    data += tail
             if data:
                 screen.feed(data)
                 self._emit(session_id, EVENT_OUTPUT, {"text": screen.tail()})
@@ -260,17 +267,20 @@ class TerminalManager:
                         {"awaitingChoice": awaiting, "choices": list(choices)},
                     )
             # 检测退出
-            if not backend.is_alive() and not session.status.is_terminal:
+            if not alive and not session.status.is_terminal:
                 self._finish(session_id, session, backend)
 
     def _finish(self, session_id: str, session: PtySession, backend: _Backend) -> None:
-        # 退出码：ConPTY 不直接给 returncode，按"是否曾输出错误/超时才判"简化。
-        # 这里以 0 视为正常完成（PTY 自然退出），非 0 留给显式 kill 路径。
-        status = mark_finished(session, 0)
+        if session.status == SessionStatus.STOPPED:
+            # 用户主动停止：保留 STOPPED，不强改成"已完成"。
+            session.finished_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+            status = session.status
+        else:
+            exit_code = getattr(backend, "exit_code", None)
+            status = mark_finished(session, 0 if exit_code is None else exit_code)
         # 核心：整树回收，消灭 codex/claude 残留子进程。
         reap_tree(session)
         self._emit(session_id, EVENT_STATUS, {"status": status.value})
-        # 完成/失败提醒交给上层 on_event 区分；此处统一抛 status 事件。
 
     # -- 事件 ----------------------------------------------------------
     def _emit(self, session_id: str, event: str, payload: dict[str, Any]) -> None:

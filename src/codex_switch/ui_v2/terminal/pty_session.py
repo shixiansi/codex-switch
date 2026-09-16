@@ -104,19 +104,42 @@ class _WinPtyBackend(_Backend):
             env=env or None,
             dimensions=(rows, cols),
         )
+        # pywinpty 的 read() 内部是阻塞 recv()：CLI 空闲时会把轮询线程永久挂住，
+        # 导致输出既读不到、退出也检测不到（界面表现得"什么都没有"）。
+        # 这里把底层 socket 改成非阻塞，改由 select() 判断可读性。
+        self._sock = getattr(self._proc, "fileobj", None)
+        if self._sock is not None:
+            try:
+                self._sock.setblocking(False)
+            except OSError:
+                self._sock = None
 
     def read(self) -> bytes:
+        """非阻塞读取原始字节；没有数据时立即返回空字节。
+
+        直接读底层 socket 而不是 ``pywinpty.read()``：后者的实现是"按 UTF-8 解码，
+        失败就再 recv(1) 补齐"，在非阻塞 socket 上补不到字节会抛 BlockingIOError，
+        导致跨读取边界拆开的多字节字符（中文）整块丢失。这里只负责搬运字节，
+        解码交给上层的增量解码器处理。
+        """
+        if self._sock is None:
+            return b""
         try:
-            data = self._proc.read(65536)
-        except EOFError:
+            import select as _select
+
+            ready, _, _ = _select.select([self._sock], [], [], 0)
+            if not ready:
+                return b""
+            data = self._sock.recv(65536)
+        except (OSError, ValueError):
             return b""
-        except OSError:
+        if not data:
+            # 对端关闭
+            self._proc.flag_eof = True
             return b""
-        if data is None:
+        # pywinpty 用于探测存活状态的哨兵值，不应显示。
+        if data == b"0011Ignore":
             return b""
-        # 不同版本可能返回 str；统一转成字节供上层解码。
-        if isinstance(data, str):
-            return data.encode("utf-8", errors="replace")
         return bytes(data)
 
     def write(self, data: str) -> None:

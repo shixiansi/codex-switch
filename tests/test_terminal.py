@@ -78,6 +78,35 @@ class ScreenTests(unittest.TestCase):
         self.assertIn("line9", tail)
         self.assertNotIn("line0", tail)
 
+    def test_pure_control_sequences_render_nothing(self) -> None:
+        """回归：CLI 启动横幅常常只是一堆控制序列，旧实现会渲染成空/乱码。"""
+        screen = TerminalScreen()
+        screen.feed(b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h")
+        self.assertEqual(screen.text, "")
+
+    def test_cursor_addressed_repaint(self) -> None:
+        """回归：CLI 用 ESC[row;colH 重绘界面，必须按光标落字而不是顺序追加。"""
+        screen = TerminalScreen()
+        screen.feed(b"hello\r\nworld")
+        screen.feed(b"\x1b[1;1HREPLACED")
+        lines = screen.text.split("\n")
+        self.assertEqual(lines[0], "REPLACED")
+        self.assertEqual(lines[1], "world")
+
+    def test_multibyte_split_across_chunks(self) -> None:
+        """回归：PTY 读取边界会切开中文字符，不能出现 U+FFFD。"""
+        screen = TerminalScreen()
+        raw = "中文测试".encode("utf-8")
+        screen.feed(raw[:3])
+        screen.feed(raw[3:])
+        self.assertEqual(screen.text, "中文测试")
+        self.assertNotIn("\ufffd", screen.text)
+
+    def test_last_line_preview(self) -> None:
+        screen = TerminalScreen()
+        screen.feed("第一行\n第二行\n".encode())
+        self.assertEqual(screen.last_line, "第二行")
+
 
 class CompletionTests(unittest.TestCase):
     def test_confirm_prompt(self) -> None:
@@ -178,6 +207,27 @@ class WinPtyBackendContractTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertIn(b"CONTRACT_OK", data)
+        finally:
+            backend.kill()
+
+    @unittest.skipIf(os.name != "nt", "ConPTY 后端仅 Windows 可用")
+    def test_read_is_non_blocking(self) -> None:
+        """回归：pywinpty.read() 是阻塞 recv，空闲时会把轮询线程永久挂住，
+        导致输出读不到、退出也检测不到（界面表现为"什么都没有"）。"""
+        from codex_switch.ui_v2.terminal.pty_session import _WinPtyBackend
+
+        backend = _WinPtyBackend("cmd.exe /k", "", {})
+        try:
+            # 排空启动横幅
+            for _ in range(40):
+                backend.read()
+                time.sleep(0.05)
+            # CLI 空闲时 read() 必须立即返回，而不是阻塞。
+            start = time.monotonic()
+            for _ in range(30):
+                backend.read()
+            elapsed = time.monotonic() - start
+            self.assertLess(elapsed, 1.0, "空闲读取不应阻塞")
         finally:
             backend.kill()
 
