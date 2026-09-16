@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 build/
 dist/
+build-*/
+dist-*/
 *.spec
 !CodexSwitch.spec
 artifacts/
