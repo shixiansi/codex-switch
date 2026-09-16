@@ -48,14 +48,24 @@ if not errorlevel 1 (
 )
 
 rem ---- 2. run the real build, capturing everything to the log --------
+rem PYTHONUNBUFFERED makes PyInstaller emit progress immediately instead of
+rem holding it in a block buffer until exit, which is what made a running
+rem build look frozen.
+set "PYTHONUNBUFFERED=1"
+set "PYTHONIOENCODING=utf-8"
+
 echo [build] started %DATE% %TIME%
-echo [build] PyInstaller can run for several minutes with no console
-echo [build] output. Watch the log file above for live progress:
-echo [build]     powershell -Command "Get-Content '%LOG%' -Wait -Tail 20"
+echo [build] Build output is shown below and saved to the log file.
+echo [build] Long silent stretches near the end are normal.
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "& { $ErrorActionPreference='Continue'; & '%~dp0build.ps1' %* 2>&1 | Tee-Object -FilePath '%LOG%'; exit $LASTEXITCODE }"
+rem The log is written by the PowerShell side, not by redirecting cmd: this
+rem project path contains Chinese characters, and cmd's native redirection
+rem re-encodes them through the console code page, corrupting the log.
+rem scripts\build-log.ps1 sets Console.OutputEncoding to UTF-8 first so the
+rem native PyInstaller/pip output decodes correctly, then mirrors each line
+rem to this console and to the log file as UTF-8.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build-log.ps1" -Script "%~dp0build.ps1" -Log "%LOG%" %*
 set "CODE=%ERRORLEVEL%"
 
 echo.
