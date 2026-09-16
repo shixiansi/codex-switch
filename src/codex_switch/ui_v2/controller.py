@@ -34,7 +34,6 @@ from .workspace import (
     Workspace,
     WorkspaceError,
 )
-
 SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "scripts", "system")
 SECTION_TITLES = {
     "dashboard": "首页",
@@ -410,11 +409,14 @@ class AppController(QObject):
 
     @Slot(str)
     def openDrawer(self, name: str) -> None:
-        value = str(name or "")
-        if value == self._drawer:
-            return
-        self._drawer = value
-        self.drawerChanged.emit()
+        """Open a drawer in *create* mode: nothing is being edited.
+
+        Clearing the pending record id here is what makes "新增" safe after an
+        edit. Without it the drawer still pointed at the previously edited
+        record, so saving either silently overwrote that record or - once it had
+        been deleted - failed with "不存在或已被删除".
+        """
+        self._open_drawer(str(name or ""), clear_target=True)
 
     def openDrawerWithTarget(self, name: str, record_id: str) -> None:
         """Open a drawer and remember the record it edits, in one step.
@@ -424,7 +426,15 @@ class AppController(QObject):
         and a missed call silently turned "edit" into "create a duplicate".
         """
         self.setDrawerTarget(name, record_id)
-        self.openDrawer(name)
+        self._open_drawer(str(name or ""), clear_target=False)
+
+    def _open_drawer(self, value: str, *, clear_target: bool) -> None:
+        if clear_target:
+            self.setDrawerTarget(value, "")
+        if value == self._drawer:
+            return
+        self._drawer = value
+        self.drawerChanged.emit()
 
     @Slot()
     def closeDrawer(self) -> None:
@@ -1069,6 +1079,23 @@ class AppController(QObject):
         self._run_sync(lambda: self.workspace.delete_script(str(script_id)))
 
     @Slot(str)
+    def requestDeleteScript(self, script_id: str) -> None:
+        """Ask before deleting a script, blocking while it is still running."""
+        script_id = str(script_id or "")
+        script = self.workspace.session.script_by_id(script_id)
+        if script is None:
+            self.showToast("请先选择一个脚本。", "warning")
+            return
+        detail = "删除后该脚本的内容与设置都会从本机移除，已生成的日志文件会被保留。"
+        self._request_confirm(
+            title="删除脚本",
+            message=f"确定要删除脚本「{script.name}」吗？",
+            detail=detail,
+            warning="脚本正在运行，请先停止再删除。" if self.workspace.script_runs.is_running(script_id) else "",
+            action=lambda: self.workspace.delete_script(script_id),
+        )
+
+    @Slot(str)
     def runScript(self, script_id: str) -> None:
         self._run_sync(lambda: self.workspace.run_script(str(script_id)))
         self._sync_script_polling()
@@ -1092,23 +1119,25 @@ class AppController(QObject):
             self._script_timer.stop()
 
     def _poll_script_runs(self) -> None:
-        """Refresh the script list only when a run actually changed state.
+        """Poll running scripts: report finishes, and stream live log output.
 
-        Rebuilding the model on every tick would reset the ListView scroll
-        position once a second, which made the page unusable while a script ran.
+        The list is only rebuilt when a run changes state, because re-emitting
+        the rows every tick would reset the ListView scroll position. The
+        selected script's detail is refreshed every tick instead, so a running
+        script's captured output keeps appearing in the panel.
         """
         changed = self.workspace.poll_script_runs()
-        if not changed:
-            self._sync_script_polling()
-            return
-        self._refresh_models()
-        for script_id in changed:
-            row = self.workspace.script_detail(script_id)
-            name = row.get("name") or "脚本"
-            label = row.get("statusLabel") or "已结束"
-            code = row.get("exitCode")
-            suffix = f"（退出码 {code}）" if code is not None else ""
-            self._toast(f"{name}：{label}{suffix}", "success" if row.get("status") == "success" else "error")
+        if changed:
+            self._refresh_models()
+            for script_id in changed:
+                row = self.workspace.script_detail(script_id)
+                name = row.get("name") or "脚本"
+                label = row.get("statusLabel") or "已结束"
+                code = row.get("exitCode")
+                suffix = f"（退出码 {code}）" if code is not None else ""
+                self._toast(f"{name}：{label}{suffix}", "success" if row.get("status") == "success" else "error")
+        else:
+            self.scripts.refreshDetail()
         self._sync_script_polling()
 
     # =====================================================================

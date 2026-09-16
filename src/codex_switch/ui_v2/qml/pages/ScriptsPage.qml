@@ -237,8 +237,11 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: "运行输出"
-                            color: Theme.textMuted
+                            text: scriptsModel.selectedDetail.running === true
+                                ? "运行输出　·　实时刷新中"
+                                : "运行输出"
+                            color: scriptsModel.selectedDetail.running === true
+                                ? Theme.accent : Theme.textMuted
                             font.pixelSize: Theme.fontCaption
                         }
 
@@ -251,6 +254,7 @@ Item {
                             border.color: Theme.border
 
                             Flickable {
+                                id: outputFlick
                                 anchors.fill: parent
                                 anchors.margins: Theme.space2
                                 contentWidth: width
@@ -258,6 +262,17 @@ Item {
                                 clip: true
                                 boundsBehavior: Flickable.StopAtBounds
                                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                                // Follow the newest output, but stop following the
+                                // moment the user scrolls up to read history; scrolling
+                                // back to the bottom resumes it. Programmatic scrolls
+                                // land at the bottom, so they keep it pinned.
+                                property bool pinnedToBottom: true
+                                onContentYChanged: pinnedToBottom = contentY >= contentHeight - height - 2
+                                onContentHeightChanged: {
+                                    if (pinnedToBottom)
+                                        contentY = Math.max(0, contentHeight - height)
+                                }
 
                                 Text {
                                     id: outputText

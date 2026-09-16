@@ -57,6 +57,16 @@ class ScriptsViewModel(SnapshotViewModel):
             self._detail = detail
             self.detailChanged.emit()
 
+    @Slot()
+    def refreshDetail(self) -> None:
+        """Re-read only the selected script's detail.
+
+        Used by the run poll so a background script's log keeps streaming into
+        the panel. Rebuilding the whole model instead would re-emit items every
+        tick, which resets the list's scroll position.
+        """
+        self._build_detail()
+
     # -- actions ---------------------------------------------------------
     @Slot(str)
     def select(self, script_id: str) -> None:
@@ -90,7 +100,7 @@ class ScriptsViewModel(SnapshotViewModel):
 
     @Slot(str)
     def remove(self, script_id: str) -> None:
-        self._controller.deleteScript(str(script_id))
+        self._controller.requestDeleteScript(str(script_id))
 
     @Slot(str)
     def run(self, script_id: str) -> None:

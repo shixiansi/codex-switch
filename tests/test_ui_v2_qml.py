@@ -765,6 +765,130 @@ Window {
         self._wait_for_tasks()
         self.assertEqual(self.controller.script_rows(), [])
 
+    def test_creating_a_script_after_editing_does_not_overwrite(self) -> None:
+        """A create drawer must not inherit the previously edited record.
+
+        beginCreate() reused the plain openDrawer(), which left the previous
+        drawer target in place, so "新增" silently UPDATED that record instead of
+        creating one.
+        """
+        self._load()
+        self._pump()
+
+        first = {"name": "第一个", "kind": "shell", "content": "echo one",
+                 "workingDir": "", "description": "", "runMode": "window",
+                 "closeOnFinish": False}
+        self.controller.scripts.beginCreate()
+        self.controller.saveScriptForm(first)
+        self._wait_for_tasks()
+        first_id = self.controller.script_rows()[0]["id"]
+
+        # Edit the record: this is what leaves a drawer target behind.
+        self.controller.scripts.beginEdit(first_id)
+        self._pump(2)
+        self.controller.closeDrawer()
+
+        self.controller.scripts.beginCreate()
+        self._pump(2)
+        self.controller.saveScriptForm(dict(first, name="第二个", content="echo two"))
+        self._wait_for_tasks()
+
+        names = sorted(row["name"] for row in self.controller.script_rows())
+        self.assertEqual(names, ["第一个", "第二个"], "新增脚本覆盖了原有记录")
+
+    def test_creating_a_script_after_deleting_the_edited_one_succeeds(self) -> None:
+        """The reported failure: a stale target made saving fail outright."""
+        self._load()
+        self._pump()
+
+        payload = {"name": "会被删除", "kind": "shell", "content": "echo x",
+                   "workingDir": "", "description": "", "runMode": "window",
+                   "closeOnFinish": False}
+        self.controller.scripts.beginCreate()
+        self.controller.saveScriptForm(payload)
+        self._wait_for_tasks()
+        stale_id = self.controller.script_rows()[0]["id"]
+
+        self.controller.scripts.beginEdit(stale_id)
+        self._pump(2)
+        self.controller.closeDrawer()
+        self.controller.deleteScript(stale_id)
+        self._wait_for_tasks()
+
+        self.controller.scripts.beginCreate()
+        self._pump(2)
+        self.controller.saveScriptForm(dict(payload, name="新脚本"))
+        self._wait_for_tasks()
+
+        names = [row["name"] for row in self.controller.script_rows()]
+        self.assertEqual(names, ["新脚本"], f"新增失败或残留了旧记录：{names}")
+
+    def test_deleting_a_script_requires_confirmation(self) -> None:
+        """The delete button must ask first, and only delete once confirmed."""
+        self._load()
+        self._pump()
+
+        payload = {"name": "待删除", "kind": "shell", "content": "echo x",
+                   "workingDir": "", "description": "", "runMode": "window",
+                   "closeOnFinish": False}
+        self.controller.scripts.beginCreate()
+        self.controller.saveScriptForm(payload)
+        self._wait_for_tasks()
+        script_id = self.controller.script_rows()[0]["id"]
+
+        self.controller.scripts.remove(script_id)
+        self._pump(2)
+
+        self.assertTrue(self.controller.confirmOpen, "删除没有弹出确认框")
+        spec = self.controller.pendingConfirm
+        self.assertEqual(spec.get("title"), "删除脚本")
+        self.assertIn("待删除", str(spec.get("message")))
+        self.assertEqual(len(self.controller.script_rows()), 1, "确认前就已删除")
+
+        # Cancelling must leave the record untouched.
+        self.controller.cancelPending()
+        self._pump(2)
+        self.assertFalse(self.controller.confirmOpen)
+        self.assertEqual(len(self.controller.script_rows()), 1, "取消后仍然删除了")
+
+        # Confirming performs the delete.
+        self.controller.scripts.remove(script_id)
+        self._pump(2)
+        self.controller.confirmPending()
+        self._wait_for_tasks()
+        self.assertEqual(self.controller.script_rows(), [])
+
+    def test_deleting_a_running_script_is_blocked_in_the_dialog(self) -> None:
+        """A running script cannot be confirmed away; the dialog explains why."""
+        self._load()
+        self._pump()
+
+        payload = {"name": "运行中脚本", "kind": "shell", "content": "echo x",
+                   "workingDir": "", "description": "", "runMode": "hidden",
+                   "closeOnFinish": False}
+        self.controller.scripts.beginCreate()
+        self.controller.saveScriptForm(payload)
+        self._wait_for_tasks()
+        script_id = self.controller.script_rows()[0]["id"]
+
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.controller.runScript(script_id)
+            self._pump(2)
+            self.controller.scripts.remove(script_id)
+            self._pump(2)
+
+            spec = self.controller.pendingConfirm
+            self.assertIn("正在运行", str(spec.get("warning")))
+            # A warning makes ConfirmDialog hide its confirm button, but the
+            # workspace must refuse the delete even if it is forced through.
+            with self.assertRaises(Exception):
+                self.controller.workspace.delete_script(script_id)
+            self.controller.cancelPending()
+            self.controller.workspace.script_runs.shutdown()
+        self._pump(2)
+        self.assertEqual(len(self.controller.script_rows()), 1)
+
     def test_script_page_shows_run_mode_state_and_stop(self) -> None:
         """The script centre must expose run mode, live state and a stop action."""
         root = self._load()

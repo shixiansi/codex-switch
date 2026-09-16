@@ -1187,6 +1187,35 @@ class ProjectOperationTests(WorkspaceTestCase):
         self.assertEqual(detail["exitCode"], 2)
         self.assertEqual(detail["statusTone"], "danger")
 
+    def test_running_script_output_grows_between_polls(self) -> None:
+        """A running script's detail must expose output as the log grows.
+
+        The panel refreshes from script_detail() every poll tick, so the tail
+        has to be re-read from disk rather than snapshotted at launch.
+        """
+        from unittest.mock import patch
+
+        script_id = self._save_script(runMode="hidden")
+        with patch("codex_switch.ui_v2.workspace.subprocess.Popen") as popen:
+            process = popen.return_value
+            process.poll.return_value = None
+            self.workspace.run_script(script_id)
+            log_path = self.workspace.script_detail(script_id)["logPath"]
+
+            Path(log_path).write_bytes("第一行\n".encode("utf-8"))
+            first = self.workspace.script_detail(script_id)
+            self.assertEqual(first["status"], "running")
+            self.assertIn("第一行", first["output"])
+
+            Path(log_path).write_bytes("第一行\n第二行\n".encode("utf-8"))
+            second = self.workspace.script_detail(script_id)
+            self.assertIn("第二行", second["output"])
+            self.assertNotEqual(first["output"], second["output"])
+
+            # Nothing finished, so no state change is reported.
+            self.assertEqual(self.workspace.poll_script_runs(), [])
+            self.workspace.script_runs.shutdown()
+
     def test_a_running_script_cannot_start_a_second_instance(self) -> None:
         from unittest.mock import patch
 
