@@ -297,6 +297,22 @@ ApplicationWindow {
                                     font.weight: navItem.active ? Font.DemiBold : Font.Normal
                                     elide: Text.ElideRight
                                 }
+
+                                // 运行中的 AI 终端会话数红点徽标
+                                Rectangle {
+                                    width: 18
+                                    height: 18
+                                    radius: 9
+                                    color: Theme.danger
+                                    visible: navItem.modelData.key === "terminal" && terminalModel.runningCount > 0
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: terminalModel.runningCount
+                                        color: Theme.accentText
+                                        font.pixelSize: 11
+                                        font.weight: Font.Bold
+                                    }
+                                }
                             }
 
                             MouseArea {

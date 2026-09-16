@@ -74,6 +74,29 @@ APP_DATAS = collect_data_files("codex_switch", includes=["assets/*"])
 TTKBOOTSTRAP_HIDDENIMPORTS = collect_submodules("ttkbootstrap")
 TTKBOOTSTRAP_DATAS = collect_data_files("ttkbootstrap")
 
+# --- AI 终端依赖（pywinpty 的 ConPTY 后端需要打包 ptycon.dll） -------------
+# pywinpty 把架构相关的 ptycon.dll 放在包目录下，PyInstaller 不一定自动收集，
+# 这里显式把整个包目录的 dll 一并打进 bundle，避免运行期找不到 ConPTY。
+try:
+    import pywinpty
+
+    _PYWINPTY_PKG = Path(pywinpty.__file__).parent
+    TERMINAL_BINARIES = _collect_tree(_PYWINPTY_PKG, "codex_switch/ui_v2/terminal/_pywinpty")
+except Exception:  # pragma: no cover - 构建环境未装 pywinpty 时跳过
+    TERMINAL_BINARIES = []
+
+TERMINAL_HIDDENIMPORTS = [
+    "codex_switch.ui_v2.terminal",
+    "codex_switch.ui_v2.terminal.manager",
+    "codex_switch.ui_v2.terminal.pty_session",
+    "codex_switch.ui_v2.terminal.screen",
+    "codex_switch.ui_v2.terminal.completion",
+    "codex_switch.ui_v2.viewmodels.terminal",
+    "pywinpty",
+    "pyte",
+    "psutil",
+]
+
 
 a = Analysis(
     ['main.py'],
@@ -85,8 +108,9 @@ a = Analysis(
         + QML_DATAS
         + ICON_DATAS
         + TTKBOOTSTRAP_DATAS
+        + TERMINAL_BINARIES
     ),
-    hiddenimports=TKINTER_HIDDENIMPORTS + TTKBOOTSTRAP_HIDDENIMPORTS + QML_HIDDENIMPORTS,
+    hiddenimports=TKINTER_HIDDENIMPORTS + TTKBOOTSTRAP_HIDDENIMPORTS + QML_HIDDENIMPORTS + TERMINAL_HIDDENIMPORTS,
     hookspath=[str(HOOKS_ROOT)],
     hooksconfig={},
     runtime_hooks=[],

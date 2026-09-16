@@ -20,6 +20,7 @@ class TerminalViewModel(BaseViewModel):
     screenChanged = Signal()
     choiceChanged = Signal()
     runningCountChanged = Signal()
+    zoomChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
@@ -30,6 +31,10 @@ class TerminalViewModel(BaseViewModel):
         self._awaiting_choice = False
         self._choices: list[str] = []
         self._running_count = 0
+        self._zoomed_id = ""
+        self._zoomed_screen = ""
+        self._zoomed_choices: list[str] = []
+        self._zoomed_awaiting = False
         super().__init__(parent)
         self._manager.start()
 
@@ -53,6 +58,23 @@ class TerminalViewModel(BaseViewModel):
     @Property("QVariantList", notify=choiceChanged)
     def choices(self) -> list[str]:
         return list(self._choices)
+
+    # 放大浮窗使用的独立会话视图（不抢占主区 activeId）。
+    @Property(str, notify=zoomChanged)
+    def zoomedId(self) -> str:
+        return self._zoomed_id
+
+    @Property(str, notify=zoomChanged)
+    def zoomedScreen(self) -> str:
+        return self._zoomed_screen
+
+    @Property(bool, notify=zoomChanged)
+    def zoomedAwaiting(self) -> bool:
+        return self._zoomed_awaiting
+
+    @Property("QVariantList", notify=zoomChanged)
+    def zoomedChoices(self) -> list[str]:
+        return list(self._zoomed_choices)
 
     @Property(int, notify=runningCountChanged)
     def runningCount(self) -> int:
@@ -83,22 +105,60 @@ class TerminalViewModel(BaseViewModel):
         self._refresh_screen()
 
     @Slot(str)
+    def zoom(self, session_id: str) -> None:
+        """在新浮窗中放大一个会话（独立视图，不抢占主区焦点）。"""
+        value = str(session_id or "")
+        if not value:
+            return
+        self._zoomed_id = value
+        self._refresh_zoom()
+        self.zoomChanged.emit()
+
+    @Slot()
+    def closeZoom(self) -> None:
+        if not self._zoomed_id:
+            return
+        self._zoomed_id = ""
+        self.zoomChanged.emit()
+
+    @Slot(str)
     def sendInput(self, text: str) -> None:
         if not self._active_id:
             return
         # 行结束的 CRLF 由 manager 统一追加，保持业务层单一职责。
         self._manager.send_input(self._active_id, str(text or ""))
 
+    @Slot(str)
+    def sendZoomInput(self, text: str) -> None:
+        if not self._zoomed_id:
+            return
+        self._manager.send_input(self._zoomed_id, str(text or ""))
+
+    @Slot(str)
+    def stopZoom(self, session_id: str) -> None:
+        self._manager.stop_session(str(session_id), reap=True)
+        self._refresh_sessions()
+        if self._zoomed_id == str(session_id):
+            self._zoomed_id = ""
+            self.zoomChanged.emit()
+
     @Slot(int)
     def sendChoice(self, index: int) -> None:
         if not self._active_id or not self._choices:
             return
-        idx = int(index)
-        if 0 <= idx < len(self._choices):
-            # 确认型（是/否）映射为 y/n；其余原样发送。
-            label = self._choices[idx]
+        self._send_choice(self._active_id, self._choices, int(index))
+
+    @Slot(int)
+    def sendZoomChoice(self, index: int) -> None:
+        if not self._zoomed_id or not self._zoomed_choices:
+            return
+        self._send_choice(self._zoomed_id, self._zoomed_choices, int(index))
+
+    def _send_choice(self, session_id: str, choices: list[str], idx: int) -> None:
+        if 0 <= idx < len(choices):
+            label = choices[idx]
             payload = "y" if label == "是" else ("n" if label == "否" else label)
-            self._manager.send_input(self._active_id, payload)
+            self._manager.send_input(session_id, payload)
 
     @Slot(str)
     def stopSession(self, session_id: str) -> None:
@@ -157,21 +217,57 @@ class TerminalViewModel(BaseViewModel):
             self._choices = choices
             self.choiceChanged.emit()
 
-    def _on_manager_event(self, session_id: str, event: str, payload: dict[str, Any]) -> None:
-        # 跨线程事件用 QTimer 抛回主线程刷新，避免直接触碰 QML 属性。
-        from ..qt_compat import QTimer
+    def _refresh_zoom(self) -> None:
+        if not self._zoomed_id:
+            return
+        text = self._manager.screen_text(self._zoomed_id)
+        awaiting = False
+        choices: list[str] = []
+        for row in self._sessions:
+            if row["sessionId"] == self._zoomed_id:
+                awaiting = row.get("awaitingChoice", False)
+                choices = list(row.get("choices", []))
+                break
+        if text != self._zoomed_screen or awaiting != self._zoomed_awaiting or choices != self._zoomed_choices:
+            self._zoomed_screen = text
+            self._zoomed_awaiting = awaiting
+            self._zoomed_choices = choices
+            self.zoomChanged.emit()
 
-        def refresh() -> None:
-            self._refresh_sessions()
+    def _on_manager_event(self, session_id: str, event: str, payload: dict[str, Any]) -> None:
+        # 管理器的轮询在后台线程运行，必须把它派发回 GUI 线程再触碰 QML 属性。
+        # QTimer.singleShot 在"无事件循环的线程"上创建的定时器永远不会触发，
+        # 因此用 QMetaObject.invokeMethod(QueuedConnection) 显式投递到本对象所在的 GUI 线程。
+        from ..qt_compat import QT_AVAILABLE
+
+        if QT_AVAILABLE:
+            from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+
+            QMetaObject.invokeMethod(
+                self,
+                "_dispatch_manager_event",
+                Qt.QueuedConnection,
+                Q_ARG(str, session_id),
+                Q_ARG(str, event),
+                Q_ARG("QVariantMap", payload),
+            )
+        else:
+            self._dispatch_manager_event(session_id, event, payload)
+
+    @Slot(str, str, "QVariantMap")
+    def _dispatch_manager_event(self, session_id: str, event: str, payload: dict[str, Any]) -> None:
+        self._refresh_sessions()
+        if session_id == self._active_id:
+            self._refresh_screen()
+        if session_id == self._zoomed_id:
+            self._refresh_zoom()
+        if event == EVENT_STATUS:
+            self._report_status(session_id, payload)
+        elif event == EVENT_CHOICE:
             if session_id == self._active_id:
                 self._refresh_screen()
-            if event == EVENT_STATUS:
-                self._report_status(session_id, payload)
-            elif event == EVENT_CHOICE:
-                if session_id == self._active_id:
-                    self._refresh_screen()
-
-        QTimer.singleShot(0, refresh)
+            if session_id == self._zoomed_id:
+                self._refresh_zoom()
 
     def _report_status(self, session_id: str, payload: dict[str, Any]) -> None:
         status = payload.get("status")

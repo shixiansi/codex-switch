@@ -141,6 +141,13 @@ Page {
                                 onClicked: terminalModel.stopSession(modelData.sessionId)
                             }
                             AppButton {
+                                text: "放大"
+                                iconName: "expand"
+                                variant: "ghost"
+                                visible: modelData.status === "running"
+                                onClicked: terminalModel.zoom(modelData.sessionId)
+                            }
+                            AppButton {
                                 text: "移除"
                                 iconName: "trash"
                                 variant: "ghost"
@@ -330,6 +337,105 @@ Page {
                         terminalModel.createSession(newTitle, newCommand, newCwd)
                         newTitle = ""; newCommand = "codex"; newCwd = ""
                         createPopup.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // ================= 放大浮窗 =================
+    Window {
+        id: zoomWindow
+        visible: terminalModel.zoomedId !== ""
+        width: 900
+        height: 640
+        title: "AI 终端 · 放大"
+        color: Theme.bg
+        onClosing: terminalModel.closeZoom()
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            // 选项条（放大视图内的独立选择）
+            Rectangle {
+                Layout.fillWidth: true
+                visible: terminalModel.zoomedAwaiting && terminalModel.zoomedChoices.length > 0
+                implicitHeight: visible ? zChoiceRow.implicitHeight + Theme.space2 * 2 : 0
+                color: Theme.accentSoft
+                border.width: Theme.borderWidth
+                border.color: Theme.accent
+
+                RowLayout {
+                    id: zChoiceRow
+                    anchors.fill: parent
+                    anchors.margins: Theme.space2
+                    spacing: Theme.space2
+                    Text { text: "请选择："; color: Theme.text; font.pixelSize: Theme.fontBody; font.weight: Font.Medium }
+                    Repeater {
+                        model: terminalModel.zoomedChoices
+                        delegate: AppButton {
+                            required property var modelData
+                            text: modelData
+                            variant: "primary"
+                            onClicked: terminalModel.sendZoomChoice(index)
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                TextArea {
+                    text: terminalModel.zoomedScreen
+                    readOnly: true
+                    font.family: "Consolas, Menlo, Monaco, monospace"
+                    font.pixelSize: 13
+                    color: Theme.text
+                    background: Rectangle { color: Theme.bg }
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.NoWrap
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: Theme.topBarHeight
+                color: Theme.surface
+                border.width: Theme.borderWidth
+                border.color: Theme.border
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.space3
+                    anchors.rightMargin: Theme.space3
+                    spacing: Theme.space2
+
+                    TextField {
+                        id: zoomInput
+                        Layout.fillWidth: true
+                        placeholderText: "输入并回车发送给 AI CLI …"
+                        onAccepted: {
+                            terminalModel.sendZoomInput(text)
+                            text = ""
+                        }
+                    }
+                    AppButton {
+                        text: "发送"
+                        variant: "primary"
+                        enabled: zoomInput.text !== ""
+                        onClicked: {
+                            terminalModel.sendZoomInput(zoomInput.text)
+                            zoomInput.text = ""
+                        }
+                    }
+                    AppButton {
+                        text: "停止"
+                        iconName: "close"
+                        variant: "ghost"
+                        onClicked: terminalModel.stopZoom(terminalModel.zoomedId)
                     }
                 }
             }
