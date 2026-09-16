@@ -8,6 +8,7 @@ snapshot contracts the view models consume.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -1253,6 +1254,83 @@ class ProjectOperationTests(WorkspaceTestCase):
         with self.assertRaises(WorkspaceError) as ctx:
             self.workspace.stop_script(script_id)
         self.assertIn("没有在运行", str(ctx.exception))
+
+    # -- background runs outliving the app --------------------------------
+    def _second_script_manager(self):
+        from codex_switch.ui_v2.script_runner import ScriptRunManager
+
+        manager = ScriptRunManager(
+            log_dir=self.root / "script-logs",
+            state_path=self.root / "script-logs" / "background-runs.json",
+        )
+        self.addCleanup(manager.shutdown)
+        return manager
+
+    def _start_mocked_hidden_run(self, script_id: str, pid: int):
+        popen = patch("codex_switch.ui_v2.workspace.subprocess.Popen")
+        mocked = popen.start()
+        self.addCleanup(popen.stop)
+        mocked.return_value.pid = pid
+        mocked.return_value.poll.return_value = None
+        self.workspace.run_script(script_id)
+        return mocked
+
+    def test_background_run_state_is_persisted_for_the_next_launch(self) -> None:
+        script_id = self._save_script(runMode="hidden")
+        self._start_mocked_hidden_run(script_id, pid=4321)
+
+        state_path = self.root / "script-logs" / "background-runs.json"
+        entries = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual([entry["scriptId"] for entry in entries], [script_id])
+        self.assertEqual(entries[0]["pid"], 4321)
+
+    def test_background_runs_survive_shutdown_and_are_restored(self) -> None:
+        script_id = self._save_script(runMode="hidden")
+        mocked = self._start_mocked_hidden_run(script_id, pid=os.getpid())
+
+        self.workspace.script_runs.shutdown()
+        self.assertFalse(mocked.return_value.terminate.called, "后台脚本不应随软件关闭被终止")
+
+        manager = self._second_script_manager()
+        self.assertEqual(manager.restore({script_id}), [script_id])
+        self.assertTrue(manager.is_running(script_id))
+        self.assertEqual(manager.snapshot(script_id)["status"], "running")
+
+    def test_restore_drops_dead_pids(self) -> None:
+        script_id = self._save_script(runMode="hidden")
+        self._start_mocked_hidden_run(script_id, pid=0)
+
+        manager = self._second_script_manager()
+        self.assertEqual(manager.restore({script_id}), [])
+        self.assertFalse(manager.is_running(script_id))
+
+    def test_adopted_run_is_reaped_once_its_pid_disappears(self) -> None:
+        from codex_switch.ui_v2 import script_runner
+
+        script_id = self._save_script(runMode="hidden")
+        self._start_mocked_hidden_run(script_id, pid=os.getpid())
+        self.workspace.script_runs.shutdown()
+
+        manager = self._second_script_manager()
+        manager.restore({script_id})
+        self.assertTrue(manager.is_running(script_id))
+
+        with patch.object(script_runner, "pid_alive", return_value=False):
+            self.assertEqual(manager.poll(), [script_id])
+        self.assertEqual(manager.snapshot(script_id)["status"], "stopped")
+
+    def test_stopping_an_adopted_run_kills_by_pid(self) -> None:
+        from codex_switch.ui_v2 import script_runner
+
+        script_id = self._save_script(runMode="hidden")
+        self._start_mocked_hidden_run(script_id, pid=os.getpid())
+        self.workspace.script_runs.shutdown()
+
+        manager = self._second_script_manager()
+        manager.restore({script_id})
+        with patch.object(script_runner, "kill_pid", return_value=True) as kill:
+            self.assertTrue(manager.stop(script_id))
+            kill.assert_called_once_with(os.getpid())
 
     def test_deleting_a_running_script_is_refused(self) -> None:
         from unittest.mock import patch

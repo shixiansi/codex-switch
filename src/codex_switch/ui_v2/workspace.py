@@ -230,7 +230,12 @@ class Workspace:
         self.update_checker = update_checker or SoftwareUpdateChecker()
         self.account_pool_validator = AccountPoolSessionValidator(self.chat_tester)
         self.software_update_info: SoftwareUpdateInfo | None = None
-        self.script_runs = ScriptRunManager(log_dir=self.store.root_dir / "script-logs")
+        self.script_runs = ScriptRunManager(
+            log_dir=self.store.root_dir / "script-logs",
+            state_path=self.store.root_dir / "script-logs" / "background-runs.json",
+        )
+        # Background runs outlive the app; re-adopt the ones still running.
+        self.script_runs.restore({script.id for script in self.session.scripts})
 
         self._proxy_events: list[RouteProxyEvent] = []
         self._proxy_dirty = False

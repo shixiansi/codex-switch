@@ -144,6 +144,9 @@ class AppController(QObject):
         self._script_timer.timeout.connect(self._poll_script_runs)
 
         self._refresh_models()
+        # A background run adopted from the previous session may still be
+        # running, so the poll timer has to cover it from startup.
+        self._sync_script_polling()
         if self.workspace.session.route_proxy.enabled:
             # Re-arm the proxy that was running when the app last exited.
             QTimer.singleShot(300, lambda: self._runner.submit(TASK_PROXY, self._start_proxy_task, label="启动路由代理"))

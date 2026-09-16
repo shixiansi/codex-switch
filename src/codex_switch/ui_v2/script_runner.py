@@ -5,13 +5,20 @@ capturing its output to a log file, polling for completion and cleaning up the
 temporary script file. Keeping it out of ``workspace.py`` leaves that module
 with business rules only, and makes the runner testable without Qt or a real
 shell.
+
+Background (hidden) runs are meant to outlive the app: each launch records
+``{scriptId, pid, logPath, ...}`` to a state file, and the next launch adopts
+the entries whose pid is still alive so the UI shows them as running again.
 """
 
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import os
+import signal
 import subprocess
 from typing import Any
 
@@ -70,6 +77,9 @@ class ScriptRun:
     exit_code: int | None = None
     log_path: str = ""
     temp_path: str = ""
+    pid: int = 0
+    # Background runs outlive the app; windowed runs die with it.
+    background: bool = False
 
     @property
     def running(self) -> bool:
@@ -112,18 +122,85 @@ def _hidden_process_kwargs() -> dict[str, Any]:
     }
 
 
+def pid_alive(pid: int) -> bool:
+    """Whether a process with ``pid`` currently exists.
+
+    Used to re-adopt background runs after an app restart, so it must not
+    create or signal anything. A reused pid could falsely read as alive, but
+    for a desktop tool the window for that race is negligible.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_uint32()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Exists but belongs to someone else: alive is the safer answer.
+        return True
+    return True
+
+
+def kill_pid(pid: int) -> bool:
+    """Forcefully kill a process we hold no Popen handle for."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # /T takes the script's own children with it, which a plain handle
+        # kill would orphan.
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed argv
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return False
+        return completed.returncode == 0
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    return True
+
+
 class ScriptRunManager:
     """Starts, watches and stops script processes (at most one per script)."""
 
-    def __init__(self, log_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        log_dir: Path | str | None = None,
+        state_path: Path | str | None = None,
+    ) -> None:
         self.log_dir = Path(log_dir) if log_dir else None
+        self._state_path = Path(state_path) if state_path else None
         self._runs: dict[str, ScriptRun] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._streams: dict[str, Any] = {}
 
     # -- queries ---------------------------------------------------------
     def is_running(self, script_id: str) -> bool:
-        return script_id in self._processes
+        run = self._runs.get(script_id)
+        return run is not None and run.running
 
     def run(self, script_id: str) -> ScriptRun | None:
         return self._runs.get(script_id)
@@ -135,7 +212,7 @@ class ScriptRunManager:
         return run.to_dict()
 
     def running_count(self) -> int:
-        return len(self._processes)
+        return sum(1 for run in self._runs.values() if run.running)
 
     def forget(self, script_id: str) -> None:
         """Drop stored state for a deleted script (its process keeps running)."""
@@ -147,6 +224,7 @@ class ScriptRunManager:
                 stream.close()
             except OSError:
                 pass
+        self._persist_state()
 
     # -- lifecycle -------------------------------------------------------
     def start(
@@ -188,28 +266,39 @@ class ScriptRunManager:
                 stdout.close()
             raise
 
+        pid = getattr(process, "pid", 0)
         run = ScriptRun(
             script_id=script_id,
             status=STATUS_RUNNING,
             started_at=now_iso(),
             log_path=log_path,
             temp_path=temp_path,
+            pid=pid if isinstance(pid, int) else 0,
+            background=hidden,
         )
         self._runs[script_id] = run
         self._processes[script_id] = process
         if stdout is not None:
             self._streams[script_id] = stdout
+        if hidden:
+            self._persist_state()
         return run
 
     def stop(self, script_id: str) -> bool:
         """Ask a running script to terminate; returns False when none is running."""
         process = self._processes.get(script_id)
-        if process is None:
+        if process is not None:
+            try:
+                process.terminate()
+            except OSError:
+                self._finish(script_id, process, STATUS_STOPPED)
+            return True
+        run = self._runs.get(script_id)
+        if run is None or not run.running:
             return False
-        try:
-            process.terminate()
-        except OSError:
-            self._finish(script_id, process, STATUS_STOPPED)
+        # Adopted from a previous session: there is no Popen, kill by pid.
+        # The next poll notices the pid is gone and records the stop.
+        kill_pid(run.pid)
         return True
 
     def poll(self) -> list[str]:
@@ -221,13 +310,71 @@ class ScriptRunManager:
             status = STATUS_SUCCESS if process.returncode == 0 else STATUS_FAILED
             self._finish(script_id, process, status)
             changed.append(script_id)
+        # Adopted runs have no Popen object; their pid is the only lifeline.
+        for script_id, run in list(self._runs.items()):
+            if script_id in self._processes or not run.running:
+                continue
+            if pid_alive(run.pid):
+                continue
+            run.status = STATUS_STOPPED
+            run.finished_at = now_iso()
+            self._remove_temp(run.temp_path)
+            self._persist_state()
+            changed.append(script_id)
         return changed
 
+    def restore(self, known_ids: set[str] | None = None) -> list[str]:
+        """Re-adopt background runs recorded by a previous session.
+
+        Entries whose pid is gone (finished or machine-rebooted) are dropped;
+        their log files stay on disk. ``known_ids`` filters out runs whose
+        script was deleted while the app was closed. Returns adopted ids.
+        """
+        if self._state_path is None:
+            return []
+        try:
+            entries = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(entries, list):
+            return []
+        adopted: list[str] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            script_id = str(entry.get("scriptId") or "")
+            pid = entry.get("pid")
+            if not script_id or not isinstance(pid, int) or not pid_alive(pid):
+                continue
+            if known_ids is not None and script_id not in known_ids:
+                continue
+            self._runs[script_id] = ScriptRun(
+                script_id=script_id,
+                status=STATUS_RUNNING,
+                started_at=str(entry.get("startedAt") or ""),
+                log_path=str(entry.get("logPath") or ""),
+                temp_path=str(entry.get("tempPath") or ""),
+                pid=pid,
+                background=True,
+            )
+            adopted.append(script_id)
+        if entries:
+            self._persist_state()
+        return adopted
+
     def shutdown(self) -> None:
-        """Best-effort cleanup when the app closes; never raises."""
-        for script_id in list(self._processes):
+        """Best-effort cleanup when the app closes; never raises.
+
+        Background runs are left alive on purpose — they outlive the app and
+        the next launch re-adopts them from the state file. Windowed runs
+        belong to a console the app opened, so they are asked to terminate.
+        """
+        for script_id, process in list(self._processes.items()):
+            run = self._runs.get(script_id)
+            if run is not None and run.background:
+                continue
             try:
-                self._processes[script_id].terminate()
+                process.terminate()
             except OSError:
                 pass
         for stream in self._streams.values():
@@ -237,9 +384,6 @@ class ScriptRunManager:
                 pass
         self._processes.clear()
         self._streams.clear()
-        for run in self._runs.values():
-            if run.running:
-                run.status = STATUS_STOPPED
         self._runs.clear()
 
     # -- internals -------------------------------------------------------
@@ -260,6 +404,31 @@ class ScriptRunManager:
         self._processes.pop(script_id, None)
         if run is not None:
             self._remove_temp(run.temp_path)
+            self._persist_state()
+
+    def _persist_state(self) -> None:
+        """Record the background runs that are still alive, for the next launch."""
+        if self._state_path is None:
+            return
+        entries = [
+            {
+                "scriptId": run.script_id,
+                "pid": run.pid,
+                "logPath": run.log_path,
+                "tempPath": run.temp_path,
+                "startedAt": run.started_at,
+            }
+            for run in self._runs.values()
+            if run.background and run.running
+        ]
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(
+                json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            # The state file is an optimization, never a hard requirement.
+            pass
 
     def _remove_temp(self, temp_path: str) -> None:
         if not temp_path:
@@ -294,4 +463,7 @@ __all__ = [
     "STATUS_SUCCESS",
     "ScriptRun",
     "ScriptRunManager",
+    "decode_output",
+    "kill_pid",
+    "pid_alive",
 ]
