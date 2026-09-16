@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import tomllib
 import unittest
 
@@ -31,6 +32,8 @@ from codex_switch.project_template import (
     CODEX_SCRIPT_DIRNAME,
     GITIGNORE_MANAGED_BEGIN,
     GITIGNORE_MANAGED_END,
+    LOCAL_STATE_GITIGNORE_RULES,
+    SECRET_TEMPLATE_FILES,
     ProjectTemplateService,
     apply_claude_profile_env,
     claude_env_from_profile,
@@ -228,8 +231,98 @@ class ProjectTemplateServiceTests(unittest.TestCase):
             self.assertTrue(backup_gitignore.exists())
             self.assertEqual(backup_gitignore.read_text(encoding="utf-8"), "node_modules/\n")
 
+    def test_generated_secrets_and_runtime_state_stay_out_of_git(self) -> None:
+        """Nothing secret or machine-local may be committable.
+
+        The generator used to ignore only codex_scripts/. A plain `git add -A`
+        therefore staged .codex/local.env and .claude/settings.local.json — both
+        holding the live API key — plus the session transcripts, command history
+        and logs that Codex/Claude write at runtime.
+
+        Shareable config must keep being committed; only secrets and local state
+        are excluded.
+        """
+        with workspace_tempdir() as temp_dir:
+            service = ProjectTemplateService()
+            secret = "sk-LEAK-CANARY-9876543210"
+            profile = Profile.create("泄露检查", "https://gateway.example.com", secret)
+
+            service.generate(temp_dir, profile)
+
+            # Runtime state Codex / Claude create on their own.
+            runtime_files = {
+                ".codex/sessions/rollout-abc.jsonl": '{"conversation":"secret"}',
+                ".codex/history.jsonl": "user typed: hunter2",
+                ".codex/log/codex.log": f"debug {secret}",
+                ".codex/version.json": "{}",
+                ".claude/projects/transcript.jsonl": "chat transcript",
+                ".claude/todos/x.json": "[]",
+            }
+            for relative, body in runtime_files.items():
+                path = temp_dir / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+
+            gitignore_text = (temp_dir / ".gitignore").read_text(encoding="utf-8")
+            for rule in (*SECRET_TEMPLATE_FILES, *LOCAL_STATE_GITIGNORE_RULES):
+                self.assertIn(rule, gitignore_text)
+
+            # Prove it against real git rather than trusting the rule text.
+            if subprocess.run(
+                ["git", "--version"], capture_output=True, text=True
+            ).returncode != 0:
+                self.skipTest("git is not available")
+
+            def run(*args: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    ["git", *args], cwd=temp_dir, capture_output=True, text=True
+                )
+
+            run("init")
+            run("config", "user.email", "test@example.com")
+            run("config", "user.name", "test")
+            run("add", "-A")
+            staged = {
+                line for line in run("diff", "--cached", "--name-only").stdout.splitlines()
+                if line
+            }
+
+            # Nothing secret or machine-local may be staged.
+            forbidden = (*SECRET_TEMPLATE_FILES, *runtime_files, ".codex/template-backups/")
+            for name in forbidden:
+                if name.endswith("/"):
+                    hits = {item for item in staged if item.startswith(name)}
+                else:
+                    hits = {item for item in staged if item == name}
+                self.assertFalse(hits, f"{name} 不应被提交，却出现在暂存区：{sorted(hits)}")
+
+            # No staged file may contain the key at all.
+            for relative in sorted(staged):
+                candidate = temp_dir / relative
+                if not candidate.is_file():
+                    continue
+                try:
+                    text = candidate.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                self.assertNotIn(secret, text, f"{relative} 含有真实密钥，会被提交")
+
+            # Shareable config must still be committed.
+            for name in (
+                ".codex/config.toml",
+                ".codex/home/config.toml",
+                ".codex/home/AGENTS.md",
+                ".codex/local.env.example",
+                "AGENTS.md",
+                "CLAUDE.md",
+                ".mcp.json",
+            ):
+                self.assertIn(name, staged, f"{name} 应被提交，却被忽略了")
+
             status = service.inspect(temp_dir)
-            self.assertEqual(status.start_script_path, script_dir / "start-codex.ps1")
+            self.assertEqual(
+                status.start_script_path, temp_dir / CODEX_SCRIPT_DIRNAME / "start-codex.ps1"
+            )
             self.assertIn(temp_dir / ".gitignore", status.generated_paths)
             self.assertIn(temp_dir / ".codex" / "home" / "AGENTS.md", status.generated_paths)
             self.assertIn(temp_dir / "CLAUDE.md", status.generated_paths)

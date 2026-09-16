@@ -43,8 +43,29 @@ CLAUDE_DEFAULT_SONNET_MODEL_ENV_KEY = "ANTHROPIC_DEFAULT_SONNET_MODEL"
 CLAUDE_DEFAULT_SONNET_MODEL_NAME_ENV_KEY = "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
 GITIGNORE_MANAGED_BEGIN = "# >>> codex-switch managed ignores >>>"
 GITIGNORE_MANAGED_END = "# <<< codex-switch managed ignores <<<"
+# Files whose generated content carries a real API key. local.env holds the key
+# directly; settings.local.json embeds it in its env block.
+SECRET_TEMPLATE_FILES = (
+    ".codex/local.env",
+    ".claude/settings.local.json",
+)
+# Machine-local state that Codex / Claude write at runtime: session transcripts,
+# command history, logs and template backups. These are never shared and often
+# quote conversation content or the API key verbatim, so they stay out of git.
+LOCAL_STATE_GITIGNORE_RULES = (
+    # Backups hold copies of the generated files, including local.env.
+    ".codex/template-backups/",
+    ".codex/sessions/",
+    ".codex/log/",
+    ".codex/history.jsonl",
+    ".codex/version.json",
+    ".claude/",
+)
 MANAGED_GITIGNORE_RULES = (
     f"{CODEX_SCRIPT_DIRNAME}/",
+    *LOCAL_STATE_GITIGNORE_RULES,
+    # Listed after .claude/ so the ignore reasons are individually visible.
+    *SECRET_TEMPLATE_FILES,
 )
 MANAGED_TEMPLATE_FILES = (
     "AGENTS.md",
