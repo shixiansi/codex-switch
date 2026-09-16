@@ -260,6 +260,21 @@ class TerminalViewModel(BaseViewModel):
         self._manager.send_input(session_id, payload)
 
     @Slot(str)
+    def sendKey(self, key: str) -> None:
+        """向当前会话发送特殊按键（方向键 / Enter / Esc / Tab / Ctrl-C）。"""
+        if not self._active_id:
+            return
+        if self._manager.send_key(self._active_id, str(key or "")):
+            # 方向键会移动 TUI 的选中项，屏幕随后由轮询刷新。
+            log.debug("发送按键 %s -> %s", key, self._active_id)
+
+    @Slot(str)
+    def sendZoomKey(self, key: str) -> None:
+        if not self._zoomed_id:
+            return
+        self._manager.send_key(self._zoomed_id, str(key or ""))
+
+    @Slot(str)
     def stopSession(self, session_id: str) -> None:
         """停止会话并从列表中清除。
 

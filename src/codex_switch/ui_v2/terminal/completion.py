@@ -17,8 +17,12 @@ import re
 # 确认型提示，如 "Overwrite? [Y/n]" / "Continue (y/N)" / "[y/N]"
 _CONFIRM_RE = re.compile(r"\[\s*([Yy])\s*/\s*([Nn])\s*\]|\(\s*([Yy])\s*/\s*([Nn])\s*\)")
 
-# 编号选项行：可选的前导符号（› ❯ > ）+ 数字 + . 或 ) + 文本
-_OPTION_LINE_RE = re.compile(r"^\s*[›❯>»]?\s*(\d{1,2})\s*[.)、]\s*(\S.*?)\s*$")
+# 编号选项行：可选的前导符号（› ❯ > »）+ 数字 + . 或 ) + 文本
+_OPTION_LINE_RE = re.compile(r"^(\s*)([›❯>»]?)(\s*)(\d{1,2})\s*[.)、]\s*(\S.*?)\s*$")
+
+# TUI 菜单总会把"当前选中项"用符号标出来。正文里的编号列表没有这个标记，
+# 这是区分"真菜单"和"AI 回复里的 1. 2. 3."的关键。
+_SELECTION_MARKERS = "›❯>»"
 
 # 至少要有这么多条编号选项，才认为是在等待选择。
 _MIN_OPTIONS = 2
@@ -41,31 +45,46 @@ def detect_choice(text: str) -> tuple[bool, list[str]]:
     if _CONFIRM_RE.search(tail):
         return True, ["是", "否"]
 
-    # 2) 编号选项：需要连续（允许中间有空行）的多条编号行。
-    lines = tail.splitlines()
-    options: list[tuple[int, str]] = []
-    # 从末尾向上收集，遇到不匹配且已经收集到内容就停止，保证只看最后一段菜单。
-    for line in reversed(lines):
+    # 2) 编号选项。真实菜单里，选项的说明文字会换行成缩进的续行
+    #    （codex 登录菜单就是这样），所以不能"遇到非选项行就停止收集"，
+    #    否则会漏掉菜单开头带选中标记的那一项。这里改为扫描整段末尾，
+    #    再在结果里找"从 1 开始连续递增"的那一段。
+    found: list[tuple[int, str, bool]] = []
+    for line in tail.splitlines():
         match = _OPTION_LINE_RE.match(line)
-        if match:
-            options.append((int(match.group(1)), match.group(2)))
+        if not match:
             continue
-        if line.strip() == "":
-            continue
-        if options:
-            break
+        marker = match.group(2)
+        # 注意：必须写成 `if marker and ...`。空字符串是任何字符串的子串，
+        # `"" in "›❯>»"` 在 Python 里为 True，直接用 in 会让"无标记"也判为已选中。
+        selected = bool(marker) and marker in _SELECTION_MARKERS
+        found.append((int(match.group(4)), match.group(5), selected))
 
-    if len(options) < _MIN_OPTIONS:
+    if len(found) < _MIN_OPTIONS:
         return False, []
 
-    options.reverse()
-    # 编号必须从 1 开始递增，进一步排除正文里的巧合。
-    numbers = [number for number, _ in options]
-    if numbers[0] != 1 or numbers != list(range(1, len(numbers) + 1)):
+    # 取最后一段"从 1 开始、编号连续"的选项，作为当前菜单。
+    run: list[tuple[int, str, bool]] = []
+    for item in found:
+        expected = len(run) + 1
+        if item[0] == expected:
+            run.append(item)
+        elif item[0] == 1:
+            run = [item]
+        # 编号跳跃：丢弃这段，等待下一次从 1 开始。
+        elif run:
+            run = []
+
+    if len(run) < _MIN_OPTIONS:
         return False, []
 
-    labels = [label for _, label in options]
-    return True, labels
+    # 必须是真正的 TUI 菜单：至少有一项带选中标记（`›` / `>` 等）。
+    # 否则 AI 回复里的普通编号列表 "1. xxx  2. xxx" 会被误判成菜单，
+    # 弹出一条毫无意义的选项栏。
+    if not any(marked for _, _, marked in run):
+        return False, []
+
+    return True, [label for _, label, _ in run]
 
 
 __all__ = ["detect_choice"]

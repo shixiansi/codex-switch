@@ -18,6 +18,7 @@ Item {
 
     signal inputSubmitted(string text)
     signal choiceSelected(int index)
+    signal keySent(string key)
 
     ColumnLayout {
         anchors.fill: parent
@@ -28,45 +29,82 @@ Item {
             Layout.fillWidth: true
             Layout.bottomMargin: visible ? Theme.space2 : 0
             visible: root.awaitingChoice && root.choices.length > 0
-            implicitHeight: visible ? choiceRow.implicitHeight + Theme.space2 * 2 : 0
+            implicitHeight: visible ? choiceLayout.implicitHeight + Theme.space2 * 2 : 0
             radius: Theme.radiusSm
             color: Theme.accentSoft
             border.width: Theme.borderWidth
             border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
 
-            RowLayout {
-                id: choiceRow
+            ColumnLayout {
+                id: choiceLayout
+
                 anchors.fill: parent
                 anchors.margins: Theme.space2
-                spacing: Theme.space2
+                spacing: Theme.space1 + 2
 
-                AppIcon {
-                    name: "alert"
-                    color: Theme.accent
-                    size: 15
-                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space2
 
-                Text {
-                    text: "等待你的选择"
-                    color: Theme.accent
-                    font.pixelSize: Theme.fontCaption
-                    font.weight: Font.Medium
-                }
+                    AppIcon {
+                        name: "alert"
+                        color: Theme.accent
+                        size: 15
+                    }
 
-                Repeater {
-                    model: root.choices
+                    Text {
+                        Layout.fillWidth: true
+                        text: "等待你的选择（点按钮直接选定；也可用下方 ↑↓ 移动、Enter 确认）"
+                        color: Theme.accent
+                        font.pixelSize: Theme.fontCaption
+                        wrapMode: Text.WordWrap
+                    }
 
-                    delegate: AppButton {
-                        required property var modelData
-                        required property int index
-
-                        text: modelData
-                        variant: "primary"
-                        onClicked: root.choiceSelected(index)
+                    // 方向键/确认键：部分 TUI 菜单只认键盘操作
+                    AppButton {
+                        text: "↑"
+                        variant: "secondary"
+                        implicitHeight: Theme.controlHeightSm
+                        onClicked: root.keySent("up")
+                    }
+                    AppButton {
+                        text: "↓"
+                        variant: "secondary"
+                        implicitHeight: Theme.controlHeightSm
+                        onClicked: root.keySent("down")
+                    }
+                    AppButton {
+                        text: "Enter"
+                        variant: "secondary"
+                        implicitHeight: Theme.controlHeightSm
+                        onClicked: root.keySent("enter")
+                    }
+                    AppButton {
+                        text: "Esc"
+                        variant: "ghost"
+                        implicitHeight: Theme.controlHeightSm
+                        onClicked: root.keySent("esc")
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                // 选项可能很多：放进可滚动的流式布局，避免溢出容器。
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Theme.space2
+
+                    Repeater {
+                        model: root.choices
+
+                        delegate: AppButton {
+                            required property var modelData
+                            required property int index
+
+                            text: (index + 1) + ". " + modelData
+                            variant: "primary"
+                            onClicked: root.choiceSelected(index)
+                        }
+                    }
+                }
             }
         }
 

@@ -34,6 +34,20 @@ EVENT_OUTPUT = "output"
 EVENT_STATUS = "status"
 EVENT_CHOICE = "choice"
 
+# 特殊按键 → 终端字节序列。TUI 菜单多靠方向键移动、回车确认、Esc 取消，
+# 而普通输入框只能发文本，因此需要单独提供这些控制键。
+SPECIAL_KEYS: dict[str, str] = {
+    "up": "\x1b[A",
+    "down": "\x1b[B",
+    "right": "\x1b[C",
+    "left": "\x1b[D",
+    "enter": "\r",
+    "esc": "\x1b",
+    "tab": "\t",
+    "backspace": "\x7f",
+    "ctrl-c": "\x03",
+}
+
 # 文本与回车之间的写入间隔。
 #
 # 实测结论（对真实 codex 二进制扫描 0.05/0.2/0.5/1.0s）：0.05s 无法提交，0.2s 起稳定提交。
@@ -244,6 +258,26 @@ class TerminalManager:
             session.awaiting_choice = False
             session.choices = []
             self._emit(session_id, EVENT_CHOICE, {"awaitingChoice": False, "choices": []})
+
+    def send_key(self, session_id: str, key: str) -> bool:
+        """发送一个特殊按键（方向键 / Enter / Esc / Tab / Ctrl-C）。
+
+        与 send_input 不同，控制键要**立即单次写入**：它们本身就是终端的按键序列，
+        没有"文本 + 回车被当成粘贴"的问题。返回是否识别并发送了该键。
+        用于在 TUI 菜单里上下移动、确认或取消。
+        """
+        sequence = SPECIAL_KEYS.get(str(key or "").lower())
+        if sequence is None:
+            return False
+        backend = self._backends.get(session_id)
+        if backend is None:
+            return False
+        try:
+            backend.write(sequence)
+        except Exception:  # noqa: BLE001 - 发送失败不应影响上层
+            log.exception("发送按键失败 id=%s key=%s", session_id, key)
+            return False
+        return True
 
     def remove_session(self, session_id: str) -> None:
         """从登记表移除（进程若仍在则先回收）。"""

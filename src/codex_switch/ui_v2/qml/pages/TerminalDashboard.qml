@@ -298,6 +298,7 @@ Item {
                         inputEnabled: terminalModel.activeId !== ""
                         onInputSubmitted: function (text) { terminalModel.sendInput(text) }
                         onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
+                        onKeySent: function (key) { terminalModel.sendKey(key) }
                     }
                 }
             }
@@ -691,6 +692,7 @@ Item {
                 inputEnabled: terminalModel.zoomedId !== ""
                 onInputSubmitted: function (text) { terminalModel.sendZoomInput(text) }
                 onChoiceSelected: function (index) { terminalModel.sendZoomChoice(index) }
+                onKeySent: function (key) { terminalModel.sendZoomKey(key) }
             }
         }
     }

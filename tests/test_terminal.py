@@ -127,6 +127,40 @@ class CompletionTests(unittest.TestCase):
         self.assertTrue(awaiting)
         self.assertEqual(choices, ["Yes", "No", "Cancel"])
 
+    def test_real_codex_menu_with_wrapped_description(self) -> None:
+        """回归：codex 登录菜单的选项说明会换行成缩进续行。
+
+        早期实现遇到非选项行就停止收集，导致开头带 `>` 标记的那一项被漏掉，
+        整个菜单识别失败（用户看到菜单却弹不出选项条）。
+        """
+        menu = (
+            "> 1. Sign in with ChatGPT\n"
+            "     Usage included with Plus, Pro plans\n"
+            "  2. Sign in with Device Code\n"
+            "     Sign in from another device\n"
+            "  3. Provide your own API key\n"
+            "     Pay for what you use\n"
+            "\n  Press enter to continue"
+        )
+        awaiting, choices = detect_choice(menu)
+        self.assertTrue(awaiting)
+        self.assertEqual(
+            choices,
+            ["Sign in with ChatGPT", "Sign in with Device Code", "Provide your own API key"],
+        )
+
+    def test_wrapped_reply_list_is_not_a_menu(self) -> None:
+        """回归：AI 回复里的普通编号列表不应被判成菜单（无选中标记）。"""
+        reply = (
+            "你需要做三件事：\n"
+            "1. 添加收藏按钮\n"
+            "2. 添加本地收藏\n"
+            "3. 区分长短视频"
+        )
+        awaiting, choices = detect_choice(reply)
+        self.assertFalse(awaiting, "正文编号列表不是菜单")
+        self.assertEqual(choices, [])
+
     def test_no_prompt(self) -> None:
         awaiting, choices = detect_choice("Normal output line")
         self.assertFalse(awaiting)
@@ -199,6 +233,36 @@ class ManagerTests(unittest.TestCase):
                 ["y", "\r"],
                 "文本与回车必须是两次独立写入",
             )
+        finally:
+            mgr.shutdown()
+
+    def test_send_key_emits_control_sequences(self) -> None:
+        """TUI 菜单靠方向键移动、回车确认、Esc 取消，必须支持这些控制键。"""
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            expected = {
+                "up": "\x1b[A",
+                "down": "\x1b[B",
+                "left": "\x1b[D",
+                "right": "\x1b[C",
+                "enter": "\r",
+                "esc": "\x1b",
+                "tab": "\t",
+                "backspace": "\x7f",
+                "ctrl-c": "\x03",
+            }
+            for key, sequence in expected.items():
+                before = len(store["last"].write_calls())
+                self.assertTrue(mgr.send_key(sid, key), f"{key} 应被识别")
+                calls = store["last"].write_calls()
+                self.assertEqual(calls[before:], [sequence], f"{key} 应单次写入正确序列")
+            # 未知按键不应写入任何东西
+            before = len(store["last"].write_calls())
+            self.assertFalse(mgr.send_key(sid, "f13"))
+            self.assertEqual(len(store["last"].write_calls()), before)
         finally:
             mgr.shutdown()
 
