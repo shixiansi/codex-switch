@@ -241,6 +241,23 @@ class WinPtyBackendContractTests(unittest.TestCase):
             except ImportError:
                 self.skipTest("pywinpty 未安装")
 
+    @unittest.skipIf(os.name != "nt", "ConPTY 后端仅 Windows 可用")
+    def test_backend_health_check_detects_missing_native_files(self) -> None:
+        """回归：冻结包曾缺少 winpty 原生文件，却只在空白界面里体现。
+
+        check_pty_backend 必须能报出具体缺了什么，供界面直接提示。
+        """
+        from unittest.mock import patch
+
+        from codex_switch.ui_v2.terminal.pty_session import check_pty_backend
+
+        # 正常环境下应为空
+        self.assertEqual(check_pty_backend(), "")
+        # 模拟原生文件缺失
+        with patch("pathlib.Path.exists", lambda self: False):
+            issue = check_pty_backend()
+        self.assertIn("winpty", issue)
+
 
 if __name__ == "__main__":
     unittest.main()
