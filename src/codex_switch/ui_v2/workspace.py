@@ -53,6 +53,7 @@ from ..models import (
     parse_env_text,
     profile_supports_claude,
     profile_supports_codex,
+    proxy_env_pairs,
     today_iso,
 )
 from ..project_template import (
@@ -926,14 +927,14 @@ class Workspace:
         if duplicate_error:
             raise WorkspaceError(duplicate_error)
 
-        # Captured before the record is replaced: deleted variables are dropped
-        # from local.env by comparing against this.
-        previous_env_text = ""
+        # A snapshot of the previous state: variables deleted or disabled in
+        # this save are dropped from local.env by comparing against it.
+        previous_pairs: dict[str, str] = {}
         project = session.project_by_id(project_id) if project_id else None
         if project_id and project is None:
             raise WorkspaceError("项目不存在或已被删除。")
         if project is not None:
-            previous_env_text = getattr(project, "env_text", "")
+            previous_pairs = self._project_env_pairs(project)
 
         if project_id:
             plan = build_project_edit_execution_plan(
@@ -956,12 +957,18 @@ class Workspace:
         self.persist()
         # Both plan objects expose the saved record, so the env text is read
         # from it regardless of whether this was a create or an edit.
-        saved = getattr(plan, "project", None)
         self._write_project_env(
-            saved or session.selected_project() or None,
-            previous_pairs=parse_env_text(previous_env_text)[0],
+            getattr(plan, "project", None) or session.selected_project() or None,
+            previous_pairs=previous_pairs,
         )
         return ActionResult(message=message)
+
+    def _project_env_pairs(self, project: ProjectRecord) -> dict[str, str]:
+        """Custom variables plus the proxy block, when the proxy is enabled."""
+        pairs = parse_env_text(getattr(project, "env_text", ""))[0]
+        if getattr(project, "proxy_enabled", False):
+            pairs.update(proxy_env_pairs(getattr(project, "proxy_url", "")))
+        return pairs
 
     def _write_project_env(
         self,
@@ -969,14 +976,23 @@ class Workspace:
         *,
         previous_pairs: dict[str, str] | None = None,
     ) -> None:
-        """Write the project's custom variables into <project>/.codex/local.env."""
+        """Write the project's variables into <project>/.codex/local.env.
+
+        ``previous_pairs`` must include everything that may already be in the
+        file from an earlier save, otherwise turning the proxy off would leave
+        HTTP_PROXY behind: it would no longer be a current pair, but with no
+        record of it ever having been managed it would be treated as a
+        hand-written line and kept.
+        """
         if project is None:
             return
-        env_pairs, _errors = parse_env_text(getattr(project, "env_text", ""))
-        if not env_pairs and not previous_pairs:
+        env_pairs = self._project_env_pairs(project)
+        previous = dict(previous_pairs or {})
+        previous.update(proxy_env_pairs(getattr(project, "proxy_url", "")))
+        if not env_pairs and not previous:
             return
         self.template_service.sync_project_env(
-            Path(project.project_dir), env_pairs, previous_pairs=previous_pairs
+            Path(project.project_dir), env_pairs, previous_pairs=previous
         )
 
     def delete_project(self, project_id: str) -> ActionResult:

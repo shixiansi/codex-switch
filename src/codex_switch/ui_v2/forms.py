@@ -259,12 +259,21 @@ def project_form(
         _text("githubRef", "Git 引用", getattr(project, "github_ref", "HEAD")),
         {"key": "githubAutoUpdate", "label": "自动更新", "type": "switch",
          "value": bool(getattr(project, "github_auto_update", False))},
+        {"key": "proxyEnabled", "label": "开启代理", "type": "switch",
+         "value": bool(getattr(project, "proxy_enabled", False))},
+        _text("proxyUrl", "代理地址", getattr(project, "proxy_url", ""),
+              placeholder="http://127.0.0.1:7890"),
+        {
+            "key": "proxyHint",
+            "type": "info",
+            "value": "开启后自动写入 HTTP_PROXY / HTTPS_PROXY / NO_PROXY，保存项目时生效",
+        },
         {
             "key": "envText",
             "label": "环境变量",
             "type": "textarea",
             "value": getattr(project, "env_text", ""),
-            "hint": "一行一个，格式 KEY=VALUE，保存后写入 .codex/local.env",
+            "placeholder": "KEY=VALUE，一行一个",
         },
     ]
 
@@ -296,6 +305,13 @@ def project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if reserved:
         raise FormError(f"{PROJECT_ENV_KEY} 由程序管理（写 API Key），请勿在此填写。")
 
+    proxy_enabled = _payload_bool(payload, "proxyEnabled")
+    proxy_url = _payload_str(payload, "proxyUrl")
+    if proxy_enabled and not proxy_url:
+        raise FormError("开启代理后需要填写代理地址。")
+    if proxy_url and not proxy_url.startswith(("http://", "https://", "socks5://")):
+        raise FormError("代理地址必须以 http://、https:// 或 socks5:// 开头。")
+
     return {
         "name": _payload_str(payload, "name"),
         "project_dir": project_dir,
@@ -311,6 +327,8 @@ def project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "skill_group_ids": _payload_list(payload, "skillGroupIds"),
         "skills": [],
         "env_text": env_text,
+        "proxy_enabled": proxy_enabled,
+        "proxy_url": proxy_url if proxy_enabled else "",
     }
 
 

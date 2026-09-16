@@ -517,6 +517,8 @@ def project_from_dialog_result(result: dict) -> ProjectRecord:
         codex_profile_id=result["codex_profile_id"],
         claude_profile_id=result["claude_profile_id"],
         env_text=result.get("env_text", ""),
+        proxy_enabled=result.get("proxy_enabled", False),
+        proxy_url=result.get("proxy_url", ""),
     )
 
 
@@ -781,6 +783,8 @@ def updated_project_from_dialog(project: ProjectRecord, result: dict, *, updated
         ),
         github_auto_update=result["github_auto_update"],
         env_text=result.get("env_text", getattr(project, "env_text", "")),
+        proxy_enabled=result.get("proxy_enabled", getattr(project, "proxy_enabled", False)),
+        proxy_url=result.get("proxy_url", getattr(project, "proxy_url", "")),
         updated_at=updated_at,
     )
     return ProjectEditUpdate(

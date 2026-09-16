@@ -337,6 +337,30 @@ def parse_env_text(text: str) -> tuple[dict[str, str], list[str]]:
     return pairs, errors
 
 
+# Loopback and link-local traffic must not go through the proxy: a proxy that
+# cannot reach localhost would break local servers and MCP stdio transport.
+DEFAULT_NO_PROXY = "localhost,127.0.0.1,::1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+
+def proxy_env_pairs(proxy_url: str) -> dict[str, str]:
+    """Build the proxy variables written into a project's local.env.
+
+    Both cases are emitted because tools disagree on which one they read:
+    some Unix tools only honour the lowercase names, others only the uppercase.
+    """
+    url = (proxy_url or "").strip()
+    if not url:
+        return {}
+    return {
+        "HTTP_PROXY": url,
+        "HTTPS_PROXY": url,
+        "http_proxy": url,
+        "https_proxy": url,
+        "NO_PROXY": DEFAULT_NO_PROXY,
+        "no_proxy": DEFAULT_NO_PROXY,
+    }
+
+
 def env_text_to_text(pairs: dict[str, str] | None) -> str:
     """Render stored pairs back into the one-per-line editor text."""
     return "\n".join(f"{name}={value}" for name, value in (pairs or {}).items())
@@ -1759,6 +1783,8 @@ class ProjectRecord:
     github_last_sync_commit: str = ""
     github_auto_update: bool = False
     env_text: str = ""
+    proxy_enabled: bool = False
+    proxy_url: str = ""
 
     @classmethod
     def create(
@@ -1778,6 +1804,8 @@ class ProjectRecord:
         codex_profile_id: str | None = None,
         claude_profile_id: str | None = None,
         env_text: str = "",
+        proxy_enabled: bool = False,
+        proxy_url: str = "",
     ) -> "ProjectRecord":
         normalized_dir = normalize_project_dir(project_dir)
         default_name = name.strip() if name else ""
@@ -1804,6 +1832,8 @@ class ProjectRecord:
             github_last_sync_commit=github_last_sync_commit.strip(),
             github_auto_update=bool(github_auto_update),
             env_text=env_text.strip(),
+            proxy_enabled=bool(proxy_enabled),
+            proxy_url=proxy_url.strip(),
         )
 
     @classmethod
@@ -1863,6 +1893,8 @@ class ProjectRecord:
             github_last_sync_commit=str(data.get("github_last_sync_commit", "") or "").strip(),
             github_auto_update=bool(data.get("github_auto_update", False)),
             env_text=str(data.get("env_text", "") or "").strip(),
+            proxy_enabled=bool(data.get("proxy_enabled", False)),
+            proxy_url=str(data.get("proxy_url", "") or "").strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:

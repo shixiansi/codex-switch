@@ -797,6 +797,120 @@ class ProjectOperationTests(WorkspaceTestCase):
         fields = {item["key"]: item for item in self.workspace.project_form_fields(project_id)}
         self.assertEqual(fields["envText"]["value"], "A=1\nB=2")
 
+    def test_enabling_proxy_writes_proxy_variables(self) -> None:
+        project_dir, project_id = self._make_project()
+        profile_id = self.workspace.session.profiles[0].id
+        self.workspace.save_project(
+            {
+                "name": "x", "projectDir": str(project_dir),
+                "codexProfileId": profile_id, "claudeProfileId": profile_id,
+                "proxyEnabled": True, "proxyUrl": "http://127.0.0.1:7890",
+            },
+            project_id=project_id,
+        )
+        content = (project_dir / ".codex" / "local.env").read_text(encoding="utf-8")
+        # Both cases: some tools read only the lowercase names.
+        self.assertIn("HTTP_PROXY=http://127.0.0.1:7890", content)
+        self.assertIn("HTTPS_PROXY=http://127.0.0.1:7890", content)
+        self.assertIn("http_proxy=http://127.0.0.1:7890", content)
+        self.assertIn("https_proxy=http://127.0.0.1:7890", content)
+        self.assertIn("NO_PROXY=", content)
+        self.assertIn("no_proxy=", content)
+        # Loopback must bypass the proxy or local servers break.
+        self.assertIn("127.0.0.1", content.split("NO_PROXY=", 1)[1].splitlines()[0])
+        # Existing content survives.
+        self.assertIn("PROJECT_API_KEY=sk-existing", content)
+
+    def test_disabling_proxy_removes_its_variables(self) -> None:
+        """Turning the switch off must delete the vars, not just stop adding."""
+        project_dir, project_id = self._make_project()
+        profile_id = self.workspace.session.profiles[0].id
+        base_payload = {
+            "name": "x", "projectDir": str(project_dir),
+            "codexProfileId": profile_id, "claudeProfileId": profile_id,
+        }
+        self.workspace.save_project(
+            {**base_payload, "proxyEnabled": True,
+             "proxyUrl": "http://127.0.0.1:7890", "envText": "MINE=1"},
+            project_id=project_id,
+        )
+        self.assertIn("HTTP_PROXY", (project_dir / ".codex" / "local.env").read_text(encoding="utf-8"))
+
+        self.workspace.save_project(
+            {**base_payload, "proxyEnabled": False, "proxyUrl": "", "envText": "MINE=1"},
+            project_id=project_id,
+        )
+        content = (project_dir / ".codex" / "local.env").read_text(encoding="utf-8")
+        self.assertNotIn("HTTP_PROXY", content)
+        self.assertNotIn("http_proxy", content)
+        self.assertNotIn("NO_PROXY", content)
+        # Custom variables and the API key are untouched.
+        self.assertIn("MINE=1", content)
+        self.assertIn("PROJECT_API_KEY=sk-existing", content)
+
+    def test_changing_proxy_url_updates_without_duplicating(self) -> None:
+        project_dir, project_id = self._make_project()
+        profile_id = self.workspace.session.profiles[0].id
+        base_payload = {
+            "name": "x", "projectDir": str(project_dir),
+            "codexProfileId": profile_id, "claudeProfileId": profile_id,
+            "proxyEnabled": True,
+        }
+        self.workspace.save_project(
+            {**base_payload, "proxyUrl": "http://127.0.0.1:7890"},
+            project_id=project_id,
+        )
+        self.workspace.save_project(
+            {**base_payload, "proxyUrl": "http://127.0.0.1:8888"},
+            project_id=project_id,
+        )
+        content = (project_dir / ".codex" / "local.env").read_text(encoding="utf-8")
+        self.assertEqual(content.count("HTTP_PROXY="), 1)
+        self.assertIn("HTTP_PROXY=http://127.0.0.1:8888", content)
+        self.assertNotIn("7890", content)
+
+    def test_proxy_enabled_without_url_is_rejected(self) -> None:
+        profile = self.add_profile()
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.save_project(
+                {
+                    "name": "x", "projectDir": str(self.root / "pu"),
+                    "codexProfileId": profile.id, "claudeProfileId": profile.id,
+                    "proxyEnabled": True, "proxyUrl": "",
+                }
+            )
+        self.assertIn("代理地址", str(ctx.exception))
+
+    def test_invalid_proxy_url_is_rejected(self) -> None:
+        profile = self.add_profile()
+        with self.assertRaises(WorkspaceError) as ctx:
+            self.workspace.save_project(
+                {
+                    "name": "x", "projectDir": str(self.root / "pi"),
+                    "codexProfileId": profile.id, "claudeProfileId": profile.id,
+                    "proxyEnabled": True, "proxyUrl": "127.0.0.1:7890",
+                }
+            )
+        self.assertIn("http://", str(ctx.exception))
+
+    def test_proxy_settings_are_persisted_and_shown_in_form(self) -> None:
+        project_dir, project_id = self._make_project()
+        profile_id = self.workspace.session.profiles[0].id
+        self.workspace.save_project(
+            {
+                "name": "x", "projectDir": str(project_dir),
+                "codexProfileId": profile_id, "claudeProfileId": profile_id,
+                "proxyEnabled": True, "proxyUrl": "http://127.0.0.1:7890",
+            },
+            project_id=project_id,
+        )
+        project = self.workspace.session.project_by_id(project_id)
+        self.assertTrue(project.proxy_enabled)
+        self.assertEqual(project.proxy_url, "http://127.0.0.1:7890")
+        fields = {item["key"]: item for item in self.workspace.project_form_fields(project_id)}
+        self.assertTrue(fields["proxyEnabled"]["value"])
+        self.assertEqual(fields["proxyUrl"]["value"], "http://127.0.0.1:7890")
+
     def test_project_requires_a_profile(self) -> None:
         with self.assertRaises(WorkspaceError):
             self.workspace.save_project({"name": "x", "projectDir": str(self.root / "p")})
