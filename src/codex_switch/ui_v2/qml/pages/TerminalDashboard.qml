@@ -251,27 +251,34 @@ Item {
                             Layout.fillWidth: true
                             spacing: 1
 
+                            // 标题行：标题 + 运行时长徽标紧挨在一起，右侧留白。
+                            // 先前把徽标放在"占满宽度"的标题之后，导致徽标被推到
+                            // 最右、与标题之间出现一大段空白，排版显得断裂。
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: Theme.space2
 
                                 Text {
-                                    Layout.fillWidth: true
                                     text: page.activeSession().title || ""
                                     color: Theme.text
                                     font.pixelSize: Theme.fontTitle
                                     font.weight: Font.DemiBold
                                     elide: Text.ElideRight
+                                    // 给徽标留出空间，同时避免超长标题挤压它。
+                                    Layout.maximumWidth: Math.max(
+                                        80, parent.width - elapsedBadge.width - Theme.space4)
                                 }
 
-                                // 运行时长：随轮询实时更新
                                 StatusBadge {
+                                    id: elapsedBadge
                                     Layout.alignment: Qt.AlignVCenter
                                     text: (page.activeSession().status === "running" ? "已运行 " : "耗时 ")
                                         + (page.activeSession().elapsedLabel || "0s")
                                     tone: page.activeSession().status === "running" ? "accent" : "unknown"
                                     showDot: page.activeSession().status === "running"
                                 }
+
+                                Item { Layout.fillWidth: true }
                             }
 
                             Text {

@@ -206,8 +206,8 @@ class ElapsedTests(_ManagerBackedTest):
 
 
 class AutoAnswerTests(_ManagerBackedTest):
-    def test_auto_answer_selects_first_option_once(self) -> None:
-        """开启自动应答后，菜单出现即自动选第一项，且同一菜单只答一次。"""
+    def test_auto_answer_selects_first_option(self) -> None:
+        """开启自动应答后，菜单出现即自动选第一项。"""
         store: dict[str, _FakeBackend] = {}
         mgr = TerminalManager()
         mgr.auto_answer = True
@@ -223,13 +223,55 @@ class AutoAnswerTests(_ManagerBackedTest):
             self.assertEqual(
                 store["last"].written(), "1\r", "应自动选择第 1 项（单 CR 提交）"
             )
-            # 同一菜单不应重复应答
-            calls_after_first = len(store["last"].write_calls())
-            time.sleep(0.8)
-            self.assertEqual(
-                len(store["last"].write_calls()),
-                calls_after_first,
-                "同一菜单不应被反复自动选择",
+        finally:
+            mgr.shutdown()
+
+    def test_auto_answer_retries_while_menu_persists(self) -> None:
+        """回归：菜单仍在时必须重试。
+
+        真实情形是菜单刚出现时 TUI 还没开始读输入，第一次应答会被丢弃；
+        旧实现只发一次就把该菜单标记为"已答过"，于是日志显示已自动应答、
+        菜单却一直停在那里等用户手动点击。
+        """
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.auto_answer = True
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            # 持续输出让菜单一直被检测到
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                store["last"].push("› 1. Yes, continue\n  2. No, quit\n".encode())
+                time.sleep(0.15)
+            calls = store["last"].write_calls()
+            # 至少出现过两次"1"的提交，说明重试确实发生
+            submissions = [c for c in calls if c == "1"]
+            self.assertGreaterEqual(
+                len(submissions), 2, f"菜单持续存在时应重试，实际写入 {calls}"
+            )
+        finally:
+            mgr.shutdown()
+
+    def test_auto_answer_stops_after_max_attempts(self) -> None:
+        """重试必须有上限，避免无限刷键。"""
+        from codex_switch.ui_v2.terminal import manager as manager_module
+
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.auto_answer = True
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            end = time.time() + 4.0
+            while time.time() < end:
+                store["last"].push("› 1. Yes\n  2. No\n".encode())
+                time.sleep(0.2)
+            submissions = [c for c in store["last"].write_calls() if c == "1"]
+            self.assertLessEqual(
+                len(submissions),
+                manager_module._AUTO_ANSWER_MAX_ATTEMPTS,
+                "重试次数不应超过上限",
             )
         finally:
             mgr.shutdown()
@@ -280,6 +322,25 @@ class CompletionTests(unittest.TestCase):
             choices,
             ["Sign in with ChatGPT", "Sign in with Device Code", "Provide your own API key"],
         )
+
+    def test_two_column_menu_labels_are_cleaned(self) -> None:
+        """回归：codex 授权菜单是两列布局，标签里夹着大段对齐空格。
+
+        直接显示会让按钮文字变成
+        ``Allow                   Run the tool and continue.``。
+        """
+        menu = (
+            "› 1. Allow                   Run the tool and continue.\n"
+            "  2. Allow for this session  Run the tool and remember this choice.\n"
+            "  3. Cancel                  Cancel this tool call"
+        )
+        awaiting, choices = detect_choice(menu)
+        self.assertTrue(awaiting)
+        self.assertEqual(choices[0], "Allow  Run the tool and continue.")
+        # 不应残留用于对齐的长串空格
+        for label in choices:
+            self.assertNotIn("   " + "  ", label)
+            self.assertNotIn("     ", label)
 
     def test_wrapped_reply_list_is_not_a_menu(self) -> None:
         """回归：AI 回复里的普通编号列表不应被判成菜单（无选中标记）。"""

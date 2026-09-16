@@ -84,7 +84,18 @@ def detect_choice(text: str) -> tuple[bool, list[str]]:
     if not any(marked for _, _, marked in run):
         return False, []
 
-    return True, [label for _, label, _ in run]
+    return True, [_clean_label(label) for _, label, _ in run]
+
+
+def _clean_label(label: str) -> str:
+    """清理选项标签里的对齐填充空格。
+
+    codex 的授权菜单是两列布局（选项名左对齐、说明另起一列），导出后选项名与
+    说明之间会留下一长串用于对齐的空格，例如
+    ``Allow                   Run the tool and continue.``。
+    这里把连续空格压成单个分隔符，让界面上显示的按钮文字可读。
+    """
+    return re.sub(r"\s{2,}", "  ", label).strip()
 
 
 __all__ = ["detect_choice"]

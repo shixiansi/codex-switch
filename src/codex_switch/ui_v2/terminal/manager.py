@@ -58,6 +58,13 @@ SPECIAL_KEYS: dict[str, str] = {
 # 分开写入并留出间隔，可确保回车被当作独立的按键处理。取 0.25s 留出余量。
 _ENTER_DELAY_S = 0.25
 
+# 自动应答的重试策略：菜单刚出现时 TUI 可能还没开始读输入，单次发送会被丢弃，
+# 因此按间隔重试若干次，直到菜单消失。
+_AUTO_ANSWER_RETRY_S = 1.5
+_AUTO_ANSWER_MAX_ATTEMPTS = 6
+# 菜单持续消失多久才认为"真的结束了"，用于避免重绘闪烁导致重复应答。
+_MENU_GONE_RESET_S = 2.0
+
 EventHook = Callable[[str, str, dict[str, Any]], None]
 
 
@@ -459,33 +466,58 @@ class TerminalManager:
                     )
             # 自动应答：检测到菜单且用户开启了自动处理时，按策略直接应答。
             if session.awaiting_choice and session.choices:
+                session.menu_absent_since = 0.0
                 self._maybe_auto_answer(session)
+            elif session.auto_answered:
+                # 菜单消失后延迟清空状态：TUI 重绘时菜单可能短暂"消失"一两帧，
+                # 立刻清空会导致同一菜单被重复应答（多发一次键 = 误操作）。
+                # 因此要求菜单持续消失一段时间，才认为是真的结束了。
+                if not session.menu_absent_since:
+                    session.menu_absent_since = time.monotonic()
+                elif time.monotonic() - session.menu_absent_since >= _MENU_GONE_RESET_S:
+                    session.auto_answered = ()
+                    session.auto_answer_attempts = 0
+                    session.auto_answer_last_at = 0.0
+                    session.menu_absent_since = 0.0
             # 检测退出
             if not alive and not session.status.is_terminal:
                 self._finish(session_id, session, backend)
 
     def _maybe_auto_answer(self, session: PtySession) -> None:
-        """按预设策略自动回应选择菜单（默认选第 1 项）。
+        """按预设策略自动回应选择菜单。
 
-        只在选项内容变化时回答一次，避免同一菜单被反复自动选择；用户仍可在
-        界面上手动点选，自动应答只是省掉一次点击（例如 codex 的"信任目录"）。
+        关键：菜单出现到 CLI 真正开始读标准输入之间有短暂间隙（TUI 还在重绘），
+        此时写入的应答可能被丢弃。因此这里**持续重试**，直到菜单消失或达到
+        次数上限——只试一次会出现"日志显示已自动应答、菜单却还在"的情况。
         """
         if not self.auto_answer:
             return
         signature = tuple(session.choices)
-        if signature == session.auto_answered:
+        now = time.monotonic()
+        if signature != session.auto_answered:
+            # 换了一个菜单：重置尝试计数。
+            session.auto_answered = signature
+            session.auto_answer_attempts = 0
+        if session.auto_answer_attempts >= _AUTO_ANSWER_MAX_ATTEMPTS:
             return
-        session.auto_answered = signature
-        # 策略：选第一项。codex/claude 的确认菜单首项通常是"Yes, continue"这类
-        # "继续/默认"语义，最符合"自动放行"的预期。
-        find_choice = _auto_choice_index(session.choices)
+        # 每次尝试之间留出冷却时间，避免把按键刷爆。
+        if now - session.auto_answer_last_at < _AUTO_ANSWER_RETRY_S:
+            return
+        session.auto_answer_last_at = now
+        session.auto_answer_attempts += 1
+        index = _auto_choice_index(session.choices)
+        payload = str(index + 1)
         log.info(
-            "自动应答会话 id=%s 选项=%s -> 第 %d 项",
+            "自动应答会话 id=%s 第 %d/%d 次尝试 -> 发送 %r（选项=%s）",
             session.session_id,
-            list(session.choices),
-            find_choice + 1,
+            session.auto_answer_attempts,
+            _AUTO_ANSWER_MAX_ATTEMPTS,
+            payload,
+            [c.strip()[:24] for c in session.choices],
         )
-        self._queue_input(session.session_id, str(find_choice + 1))
+        # 重试发送同一个编号：只有"菜单仍被检测到"时才会走到这里，
+        # 因此不会在菜单已关闭后误把编号打进输入框。
+        self._queue_input(session.session_id, payload)
 
     def _finish(self, session_id: str, session: PtySession, backend: _Backend) -> None:
         if session.status == SessionStatus.STOPPED:

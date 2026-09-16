@@ -67,6 +67,12 @@ class PtySession:
     received_output: bool = False
     # 上一次已自动应答过的选项签名，避免同一菜单被反复自动选择。
     auto_answered: tuple[str, ...] = ()
+    # 自动应答的重试状态：菜单刚出现时 TUI 可能尚未开始读输入，
+    # 需要按间隔重试，直到菜单消失。
+    auto_answer_attempts: int = 0
+    auto_answer_last_at: float = 0.0
+    # 菜单开始"消失"的时刻，用于区分真结束与重绘闪烁。
+    menu_absent_since: float = 0.0
 
     def __post_init__(self) -> None:
         if self.child_pids is None:
