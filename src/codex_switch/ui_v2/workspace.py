@@ -10,6 +10,7 @@ Every method returns a small result object; user-facing failures are raised as
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import os
@@ -2353,8 +2354,53 @@ def _open_path(path: Path) -> None:
     os.startfile(str(path))  # type: ignore[attr-defined]  # Windows-only target
 
 
+def _urls_disabled_by_env() -> bool:
+    """Tests opt out once by environment, so no call site can forget."""
+    flag = os.environ.get("CODEX_SWITCH_DISABLE_OPEN_URL", "").strip().lower()
+    return flag in ("1", "true", "yes", "on")
+
+
+# Set to False in tests so a forgotten patch can never launch a real browser:
+# the open becomes a recorded no-op instead of an OS-level side effect.
+OPEN_URLS_ENABLED = not _urls_disabled_by_env()
+_opened_urls: list[str] = []
+
+
 def _open_url(url: str) -> None:
-    os.startfile(str(url))  # type: ignore[attr-defined]
+    """Open a URL in the user's browser, or record it when disabled.
+
+    Every open goes through here, so tests can disable it once and be sure no
+    browser is launched, regardless of how many call sites exist.
+    """
+    target = str(url)
+    if not OPEN_URLS_ENABLED:
+        _opened_urls.append(target)
+        return
+    os.startfile(target)  # type: ignore[attr-defined]
+
+
+@contextmanager
+def open_urls_disabled():
+    """Context manager that records opens instead of launching a browser.
+
+    Yields the list of URLs that were requested, so tests can assert on them
+    without patching individual call sites.
+    """
+    global OPEN_URLS_ENABLED, _opened_urls
+    previous_enabled = OPEN_URLS_ENABLED
+    previous_urls = _opened_urls
+    OPEN_URLS_ENABLED = False
+    _opened_urls = []
+    try:
+        yield _opened_urls
+    finally:
+        OPEN_URLS_ENABLED = previous_enabled
+        _opened_urls = previous_urls
+
+
+def opened_urls() -> list[str]:
+    """URLs recorded while opening was disabled."""
+    return list(_opened_urls)
 
 
 __all__ = [

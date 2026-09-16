@@ -31,11 +31,13 @@ from codex_switch.models import (
 from codex_switch.storage import ProfileStore
 from codex_switch.ui_v2 import forms, snapshots
 from codex_switch.ui_v2.session import AppSession
+from codex_switch.ui_v2 import workspace as workspace_module
 from codex_switch.ui_v2.workspace import (
     SIGN_IN_BATCH_PAUSE_MS,
     SIGN_IN_BATCH_SIZE,
     Workspace,
     WorkspaceError,
+    open_urls_disabled,
 )
 
 
@@ -368,8 +370,7 @@ class BatchSignInTests(WorkspaceTestCase):
 
     def test_open_sign_in_batch_opens_only_the_given_profiles(self) -> None:
         profiles = self._add_sign_in_profiles(7)
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        with open_urls_disabled() as opened:
             names, failed = self.workspace.open_sign_in_batch(profiles[:5])
 
         self.assertEqual(len(names), 5)
@@ -410,13 +411,11 @@ class BatchSignInTests(WorkspaceTestCase):
 
     def test_open_all_opens_pending_and_marks_them(self) -> None:
         profiles = self._add_sign_in_profiles(3)
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        with open_urls_disabled():
             result = self.workspace.open_all_sign_in_urls()
 
         self.assertIn("3", result.message)
         self.assertEqual(result.level, "success")
-        self.assertEqual(len(opened), 3)
         # Every profile is now recorded as signed today.
         for profile in profiles:
             self.assertEqual(profile.last_signed_date, today_iso())
@@ -427,8 +426,7 @@ class BatchSignInTests(WorkspaceTestCase):
         profiles[0].last_signed_date = today_iso()
         self.workspace.persist()
 
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        with open_urls_disabled() as opened:
             result = self.workspace.open_all_sign_in_urls()
 
         # Only the second profile still needed signing in.
@@ -438,7 +436,7 @@ class BatchSignInTests(WorkspaceTestCase):
 
     def test_repeat_call_reports_nothing_to_do(self) -> None:
         self._add_sign_in_profiles(2)
-        with patch("codex_switch.ui_v2.workspace._open_url"):
+        with open_urls_disabled():
             self.workspace.open_all_sign_in_urls()
             again = self.workspace.open_all_sign_in_urls()
 
@@ -457,8 +455,7 @@ class BatchSignInTests(WorkspaceTestCase):
         )
         self.add_profile(name="缺地址", requires_sign_in=True, sign_in_url="")
 
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        with open_urls_disabled() as opened:
             result = self.workspace.open_all_sign_in_urls()
 
         self.assertEqual(opened, [good.sign_in_url])
@@ -976,6 +973,44 @@ class ProjectOperationTests(WorkspaceTestCase):
         reloaded = Workspace(store=self.store, project_root=self.root)
         names = [row["name"] for row in reloaded.script_rows()]
         self.assertIn("持久化脚本", names)
+
+    def test_opening_urls_never_launches_a_browser_during_tests(self) -> None:
+        """A real browser must never open while the suite runs.
+
+        Sign-in tests used to rely on every call site remembering to patch
+        _open_url; one missed site (or a drain loop left outside the patch)
+        silently launched a browser per profile and never closed it. Opening is
+        now disabled for tests by default and recorded instead.
+        """
+        import os
+
+        self.assertFalse(
+            workspace_module.OPEN_URLS_ENABLED,
+            "tests must run with URL opening disabled",
+        )
+
+        profile = self.add_profile(
+            name="浏览器守卫", requires_sign_in=True,
+            sign_in_url="https://guard.example.com/signin",
+        )
+        # Even with no patch at all, this must not touch os.startfile.
+        result = self.workspace.open_sign_in_url(profile.id)
+        self.assertIn("已在浏览器打开", result.message)
+        self.assertIn("https://guard.example.com/signin", workspace_module.opened_urls())
+
+    def test_open_urls_disabled_records_and_restores(self) -> None:
+        """The context manager records opens and restores the previous state."""
+        profile = self.add_profile(
+            name="记录", requires_sign_in=True,
+            sign_in_url="https://rec.example.com/signin",
+        )
+        with open_urls_disabled() as opened:
+            self.workspace.open_sign_in_url(profile.id)
+            self.assertEqual(opened, ["https://rec.example.com/signin"])
+        # Nested use is safe and does not leak state.
+        with open_urls_disabled() as opened2:
+            self.assertEqual(opened2, [])
+        self.assertEqual(workspace_module.opened_urls(), [])
 
     def test_project_requires_a_profile(self) -> None:
         with self.assertRaises(WorkspaceError):

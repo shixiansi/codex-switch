@@ -3,10 +3,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import os
 import shutil
 import sys
 import threading
 import uuid
+
+# Tests must never launch a real browser. Set before importing src so the
+# workspace module picks it up at import time; individual tests can still patch
+# or use open_urls_disabled() to assert on what would have been opened.
+os.environ.setdefault("CODEX_SWITCH_DISABLE_OPEN_URL", "1")
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -38,7 +38,7 @@ try:  # pragma: no cover - depends on the environment
 
     from codex_switch.ui_v2.app import QML_ENTRYPOINT, build_engine, configure_style, load_qml
     from codex_switch.ui_v2.controller import AppController
-    from codex_switch.ui_v2.workspace import Workspace
+    from codex_switch.ui_v2.workspace import Workspace, open_urls_disabled
 
     QT_AVAILABLE = True
 except ImportError:  # pragma: no cover
@@ -284,11 +284,16 @@ class QmlSmokeTests(unittest.TestCase):
         self.assertEqual(sign_in["pending"], 2)
         self.assertTrue(self.controller.profiles.hasPendingSignIn)
 
-        # Opening is delegated to the workspace; stub it so no browser opens.
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        # Opening is recorded, never launched, so no browser appears.
+        with open_urls_disabled() as opened:
             self.controller.profiles.signInAll()
-        self._pump()
+            self._pump()
+            # Drain the paced queue; this stays inside so nothing really opens.
+            for _ in range(200):
+                if not self.controller.signInRunning:
+                    break
+                self.controller._open_next_sign_in_batch()
+                self._pump(1)
 
         self.assertEqual(len(opened), 2)
         self.assertEqual(self.controller.profiles.signIn["pending"], 0)
@@ -797,8 +802,7 @@ Window {
 
         self._load()
         self._pump()
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        with open_urls_disabled() as opened:
             self.controller.profiles.signInAll()
             self._pump(3)
             # Only the first batch opens immediately; the rest wait on the timer.
@@ -843,8 +847,7 @@ Window {
         self._load()
         self._pump()
 
-        opened: list[str] = []
-        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+        with open_urls_disabled() as opened:
             self.controller.profiles.signInAll()
             self._pump(2)
             self.assertTrue(self.controller.signInRunning, "queue should still be draining")
@@ -854,12 +857,13 @@ Window {
             self._pump(2)
             self.assertEqual(len(opened), first_batch, "second click opened more pages")
 
-        # Drain so the controller is left clean.
-        for _ in range(200):
-            if not self.controller.signInRunning:
-                break
-            self.controller._open_next_sign_in_batch()
-            self._pump(1)
+            # Drain so the controller is left clean. This stays inside the
+            # recording block: draining outside it would really open browsers.
+            for _ in range(200):
+                if not self.controller.signInRunning:
+                    break
+                self.controller._open_next_sign_in_batch()
+                self._pump(1)
         self.assertFalse(self.controller.signInRunning)
 
     def test_editing_a_profile_updates_it_instead_of_duplicating(self) -> None:
