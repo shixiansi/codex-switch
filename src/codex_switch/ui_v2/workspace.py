@@ -162,6 +162,11 @@ MANUAL_HEALTH_LABELS = {
 }
 MANUAL_HEALTH_CHOICES = tuple(MANUAL_HEALTH_LABELS)
 
+# Batch sign-in pacing: open this many pages, then pause before the next batch
+# so the browser is not flooded and the machine stays responsive.
+SIGN_IN_BATCH_SIZE = 5
+SIGN_IN_BATCH_PAUSE_MS = 1000
+
 
 @dataclass
 class ActionResult:
@@ -782,31 +787,25 @@ class Workspace:
             "urls": [profile.sign_in_url.strip() for profile in with_url],
         }
 
-    def open_all_sign_in_urls(self) -> ActionResult:
-        """Open every pending sign-in page and mark those profiles as signed.
-
-        Already-signed profiles are skipped so repeated clicks do not reopen the
-        same tabs. Opening a browser tab is the only verification available, so
-        a profile is marked signed once its page is handed to the browser.
-        """
-        session = self.session
-        pending = self.sign_in_pending()
-        missing_url = [
-            profile
-            for profile in session.profiles
+    def sign_in_missing_url(self) -> list[str]:
+        """Names of profiles that need signing in but have no URL configured."""
+        return [
+            profile.name
+            for profile in self.session.profiles
             if profile.requires_sign_in and not profile.sign_in_url.strip()
         ]
 
-        if not pending and not missing_url:
-            return ActionResult(
-                message="所有需要签到的配置今天都已签到。",
-                level="info",
-            )
+    def open_sign_in_batch(self, profiles: Iterable[Profile]) -> tuple[list[str], list[str]]:
+        """Open one batch of sign-in pages, marking each as signed today.
 
+        Returns ``(opened_names, failure_messages)``. A profile is marked signed
+        as soon as its page is handed to the browser: opening the tab is the only
+        verification available. Failures never abort the batch.
+        """
         today = today_iso()
         opened: list[str] = []
         failed: list[str] = []
-        for profile in pending:
+        for profile in profiles:
             try:
                 _open_url(profile.sign_in_url)
             except Exception as exc:  # noqa: BLE001 - keep going for the rest
@@ -817,10 +816,19 @@ class Workspace:
 
         if opened:
             self.persist()
+        return opened, failed
 
+    def sign_in_result(
+        self,
+        opened: list[str],
+        failed: list[str],
+        missing_names: list[str] | None = None,
+    ) -> ActionResult:
+        """Assemble the user-facing outcome of a batched sign-in run."""
+        missing_names = list(missing_names or [])
         detail_parts: list[str] = []
-        if missing_url:
-            detail_parts.append("缺少签到地址：" + "、".join(item.name for item in missing_url))
+        if missing_names:
+            detail_parts.append("缺少签到地址：" + "、".join(missing_names))
         if failed:
             detail_parts.append("打开失败：" + "；".join(failed))
         detail = "\n".join(detail_parts)
@@ -833,13 +841,32 @@ class Workspace:
             )
 
         message = f"已打开 {len(opened)} 个签到页面并标记为今日已签到。"
-        if missing_url:
-            message += f" {len(missing_url)} 个配置缺少签到地址。"
+        if missing_names:
+            message += f" {len(missing_names)} 个配置缺少签到地址。"
         return ActionResult(
             message=message,
-            level="warning" if (missing_url or failed) else "success",
+            level="warning" if (missing_names or failed) else "success",
             detail=detail,
         )
+
+    def open_all_sign_in_urls(self) -> ActionResult:
+        """Open every pending sign-in page at once and mark those profiles signed.
+
+        Used by tests and by callers that do not need the paced UI behaviour;
+        the interface batches through ``open_sign_in_batch`` instead so the
+        browser is not flooded.
+        """
+        pending = self.sign_in_pending()
+        missing_names = self.sign_in_missing_url()
+
+        if not pending and not missing_names:
+            return ActionResult(
+                message="所有需要签到的配置今天都已签到。",
+                level="info",
+            )
+
+        opened, failed = self.open_sign_in_batch(pending)
+        return self.sign_in_result(opened, failed, missing_names)
 
     # =====================================================================
     # Health checks

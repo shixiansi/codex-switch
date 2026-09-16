@@ -26,7 +26,13 @@ from .viewmodels import (
     ToolsViewModel,
 )
 from .workers import TaskContext, TaskResult, TaskRunner, TaskState
-from .workspace import ActionResult, Workspace, WorkspaceError
+from .workspace import (
+    ActionResult,
+    SIGN_IN_BATCH_PAUSE_MS,
+    SIGN_IN_BATCH_SIZE,
+    Workspace,
+    WorkspaceError,
+)
 
 SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "system")
 SECTION_TITLES = {
@@ -65,6 +71,7 @@ class AppController(QObject):
     taskStateChanged = Signal()
     stateChanged = Signal()
     themeChanged = Signal()
+    signInRunningChanged = Signal()
 
     def __init__(self, workspace: Workspace | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -85,6 +92,15 @@ class AppController(QObject):
         self._mcp_selected = ""
         self._confirm_spec: dict[str, Any] = {}
         self._confirm_action: Callable[[], None] | None = None
+        # Batched one-click sign-in state.
+        self._sign_in_queue: list[str] = []
+        self._sign_in_opened: list[str] = []
+        self._sign_in_failed: list[str] = []
+        self._sign_in_missing: list[str] = []
+        self._sign_in_running = False
+        self._sign_in_timer = QTimer(self)
+        self._sign_in_timer.setSingleShot(True)
+        self._sign_in_timer.timeout.connect(self._open_next_sign_in_batch)
         self._runner = TaskRunner(self)
         self._runner.taskStarted.connect(self._on_task_started)
         self._runner.taskProgress.connect(self._on_task_progress)
@@ -576,12 +592,84 @@ class AppController(QObject):
 
     @Slot()
     def signInAll(self) -> None:
-        """One-click sign-in for every pending profile.
+        """Open every pending sign-in page in paced batches.
 
-        Opening browser tabs is fast (no network is awaited), so this runs on
-        the UI thread and reports a single aggregated toast.
+        Browsers struggle when dozens of tabs are requested at once, so pages
+        open ``SIGN_IN_BATCH_SIZE`` at a time with a short pause in between. The
+        queue advances on a timer rather than by sleeping, so the window keeps
+        repainting and the user can still see progress.
         """
-        self._run_sync(self.workspace.open_all_sign_in_urls)
+        if self._sign_in_running:
+            self.showToast("一键签到正在进行中。", "info")
+            return
+
+        pending = self.workspace.sign_in_pending()
+        missing_url = self.workspace.sign_in_missing_url()
+        if not pending and not missing_url:
+            self._toast("所有需要签到的配置今天都已签到。", "info")
+            return
+
+        self._sign_in_queue = [profile.id for profile in pending]
+        self._sign_in_opened = []
+        self._sign_in_failed = []
+        self._sign_in_missing = list(missing_url)
+        self._sign_in_running = True
+        self.signInRunningChanged.emit()
+
+        if not self._sign_in_queue:
+            # Nothing to open, but missing URLs still deserve a report.
+            self._finish_sign_in()
+            return
+        self._open_next_sign_in_batch()
+
+    def _open_next_sign_in_batch(self) -> None:
+        """Open up to one batch, then schedule the next one."""
+        batch_size = max(1, int(SIGN_IN_BATCH_SIZE))
+        batch_ids = self._sign_in_queue[:batch_size]
+        self._sign_in_queue = self._sign_in_queue[batch_size:]
+
+        profiles = [
+            profile
+            for profile in (self.workspace.session.profile_by_id(item) for item in batch_ids)
+            if profile is not None
+        ]
+        try:
+            opened, failed = self.workspace.open_sign_in_batch(profiles)
+        except Exception as exc:  # noqa: BLE001 - report and stop cleanly
+            self._sign_in_failed.append(str(exc))
+            self._finish_sign_in()
+            return
+
+        self._sign_in_opened.extend(opened)
+        self._sign_in_failed.extend(failed)
+        self._refresh_models()
+
+        if self._sign_in_queue:
+            self._status_text = (
+                f"签到进行中：已打开 {len(self._sign_in_opened)} 个"
+                f"，剩余 {len(self._sign_in_queue)} 个 …"
+            )
+            self.taskStateChanged.emit()
+            self._sign_in_timer.start(max(0, int(SIGN_IN_BATCH_PAUSE_MS)))
+            return
+
+        self._finish_sign_in()
+
+    def _finish_sign_in(self) -> None:
+        self._sign_in_running = False
+        self.signInRunningChanged.emit()
+        result = self.workspace.sign_in_result(
+            self._sign_in_opened, self._sign_in_failed, self._sign_in_missing
+        )
+        self._sign_in_opened = []
+        self._sign_in_failed = []
+        self._sign_in_missing = []
+        self._report_action(result)
+
+    @Property(bool, notify=signInRunningChanged)
+    def signInRunning(self) -> bool:
+        """True while the paced one-click sign-in queue is still draining."""
+        return self._sign_in_running
 
     # =====================================================================
     # Manual health status / library filter

@@ -31,7 +31,12 @@ from codex_switch.models import (
 from codex_switch.storage import ProfileStore
 from codex_switch.ui_v2 import forms, snapshots
 from codex_switch.ui_v2.session import AppSession
-from codex_switch.ui_v2.workspace import Workspace, WorkspaceError
+from codex_switch.ui_v2.workspace import (
+    SIGN_IN_BATCH_PAUSE_MS,
+    SIGN_IN_BATCH_SIZE,
+    Workspace,
+    WorkspaceError,
+)
 
 
 class WorkspaceTestCase(unittest.TestCase):
@@ -355,6 +360,53 @@ class BatchSignInTests(WorkspaceTestCase):
         self.assertEqual(summary["pending"], 1)
         self.assertEqual(summary["missingUrl"], 1)
         self.assertEqual(len(summary["urls"]), 2)
+
+    def test_sign_in_batch_constants_match_the_agreed_pacing(self) -> None:
+        """Five pages per batch, one second between batches."""
+        self.assertEqual(SIGN_IN_BATCH_SIZE, 5)
+        self.assertEqual(SIGN_IN_BATCH_PAUSE_MS, 1000)
+
+    def test_open_sign_in_batch_opens_only_the_given_profiles(self) -> None:
+        profiles = self._add_sign_in_profiles(7)
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            names, failed = self.workspace.open_sign_in_batch(profiles[:5])
+
+        self.assertEqual(len(names), 5)
+        self.assertEqual(failed, [])
+        self.assertEqual(len(opened), 5)
+        # Only the first batch is marked; the rest stay pending.
+        self.assertEqual(self.workspace.sign_in_summary()["pending"], 2)
+
+    def test_batch_failures_do_not_abort_the_batch(self) -> None:
+        profiles = self._add_sign_in_profiles(3)
+
+        def flaky(url: str) -> None:
+            if "signin1." in url:
+                raise OSError("no browser")
+
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=flaky):
+            names, failed = self.workspace.open_sign_in_batch(profiles)
+
+        self.assertEqual(len(names), 2, "the other profiles should still open")
+        self.assertEqual(len(failed), 1)
+        self.assertIn("打开失败", self.workspace.sign_in_result(names, failed).detail)
+
+    def test_sign_in_result_reports_missing_urls(self) -> None:
+        result = self.workspace.sign_in_result(["甲"], [], ["无地址"])
+        self.assertEqual(result.level, "warning")
+        self.assertIn("缺少签到地址", result.detail)
+        self.assertIn("1 个配置缺少签到地址", result.message)
+
+    def test_sign_in_result_all_failed_is_an_error(self) -> None:
+        result = self.workspace.sign_in_result([], ["甲：boom"])
+        self.assertEqual(result.level, "error")
+        self.assertIn("未能打开", result.message)
+
+    def test_sign_in_missing_url_returns_names(self) -> None:
+        self.add_profile(name="缺地址", requires_sign_in=True, sign_in_url="")
+        self.add_profile(name="有地址", requires_sign_in=True, sign_in_url="https://a.example.com/s")
+        self.assertEqual(self.workspace.sign_in_missing_url(), ["缺地址"])
 
     def test_open_all_opens_pending_and_marks_them(self) -> None:
         profiles = self._add_sign_in_profiles(3)

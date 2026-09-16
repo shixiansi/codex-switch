@@ -676,6 +676,108 @@ Window {
         self._pump(3)
         self.assertEqual(self.controller.profiles.selectedId, target)
 
+    def test_one_click_sign_in_is_paced_in_batches(self) -> None:
+        """The batch action must open pages 5 at a time with a pause between.
+
+        Opening every tab at once floods the browser, and sleeping on the UI
+        thread would freeze the window. The queue therefore advances on a timer:
+        only the first batch opens synchronously, and the rest arrive later
+        while the event loop keeps running.
+        """
+        from unittest.mock import patch
+
+        # Seed extra sign-in profiles. The fixture already has two pending
+        # sign-in profiles, so the totals below account for them.
+        existing_pending = len(self.workspace.sign_in_pending())
+        extra = [
+            Profile.create(
+                name=f"批量签到{index:02d}",
+                base_url=f"https://batch{index}.example.com",
+                api_key=f"sk-batch-{index}",
+                vendor="通用",
+                codex_model="gpt-5",
+                requires_sign_in=True,
+                sign_in_url=f"https://batch{index}.example.com/console/personal",
+            )
+            for index in range(12)
+        ]
+        self.store.save(
+            list(self.workspace.session.profiles) + extra,
+            self.workspace.session.selected_profile_id,
+            list(self.workspace.session.projects),
+            self.workspace.session.selected_project_id,
+        )
+        self.workspace.reload()
+        total_pending = len(self.workspace.sign_in_pending())
+        self.assertEqual(total_pending, existing_pending + 12)
+
+        self._load()
+        self._pump()
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            self.controller.profiles.signInAll()
+            self._pump(3)
+            # Only the first batch opens immediately; the rest wait on the timer.
+            self.assertEqual(len(opened), 5, "first batch should be exactly 5")
+
+            # Drain the queue without waiting the real second between batches.
+            for _ in range(200):
+                if not self.controller.signInRunning:
+                    break
+                self.controller._open_next_sign_in_batch()
+                self._pump(2)
+
+        self.assertEqual(len(opened), total_pending, "every pending page should open")
+        self.assertFalse(self.controller.signInRunning, "running flag must reset")
+        signed = [p for p in self.workspace.session.profiles if p.last_signed_date]
+        self.assertEqual(len(signed), total_pending)
+
+    def test_second_sign_in_click_is_refused_while_running(self) -> None:
+        """Clicking twice must not start a second overlapping queue."""
+        from unittest.mock import patch
+
+        # Enough profiles that the queue cannot drain in a single batch.
+        extra = [
+            Profile.create(
+                name=f"并发签到{index:02d}",
+                base_url=f"https://dup{index}.example.com",
+                api_key=f"sk-dup-{index}",
+                vendor="通用",
+                codex_model="gpt-5",
+                requires_sign_in=True,
+                sign_in_url=f"https://dup{index}.example.com/console/personal",
+            )
+            for index in range(12)
+        ]
+        self.store.save(
+            list(self.workspace.session.profiles) + extra,
+            self.workspace.session.selected_profile_id,
+            list(self.workspace.session.projects),
+            self.workspace.session.selected_project_id,
+        )
+        self.workspace.reload()
+        self._load()
+        self._pump()
+
+        opened: list[str] = []
+        with patch("codex_switch.ui_v2.workspace._open_url", side_effect=opened.append):
+            self.controller.profiles.signInAll()
+            self._pump(2)
+            self.assertTrue(self.controller.signInRunning, "queue should still be draining")
+            first_batch = len(opened)
+            # A second click while running must be a no-op.
+            self.controller.profiles.signInAll()
+            self._pump(2)
+            self.assertEqual(len(opened), first_batch, "second click opened more pages")
+
+        # Drain so the controller is left clean.
+        for _ in range(200):
+            if not self.controller.signInRunning:
+                break
+            self.controller._open_next_sign_in_batch()
+            self._pump(1)
+        self.assertFalse(self.controller.signInRunning)
+
     def test_sign_in_button_exists_in_loaded_qml(self) -> None:
         """The one-click button must be present in the real QML object tree."""
         from PySide6.QtQuick import QQuickItem

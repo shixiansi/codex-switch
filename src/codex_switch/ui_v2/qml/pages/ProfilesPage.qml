@@ -36,21 +36,26 @@ Item {
             }
             AppButton {
                 id: signInAllButton
-                text: profilesModel.signIn.pending > 0
-                    ? "一键签到 (" + profilesModel.signIn.pending + ")"
-                    : "一键签到"
+                text: app.signInRunning
+                    ? "签到中 …"
+                    : (profilesModel.signIn.pending > 0
+                        ? "一键签到 (" + profilesModel.signIn.pending + ")"
+                        : "一键签到")
                 iconName: "check"
-                enabled: profilesModel.hasPendingSignIn && !app.busy
+                enabled: profilesModel.hasPendingSignIn
+                    && !app.busy && !app.signInRunning
                 onClicked: profilesModel.signInAll()
 
                 ToolTip.visible: hovered
                 ToolTip.delay: 400
-                ToolTip.text: profilesModel.signIn.required > 0
-                    ? "今日待签到 " + profilesModel.signIn.pending
-                        + " 个 · 已签到 " + profilesModel.signIn.signedToday
-                        + " 个" + (profilesModel.signIn.missingUrl > 0
-                            ? " · " + profilesModel.signIn.missingUrl + " 个缺地址" : "")
-                    : "没有需要签到的配置"
+                ToolTip.text: app.signInRunning
+                    ? "正在分批打开签到页面，每 5 个暂停 1 秒"
+                    : (profilesModel.signIn.required > 0
+                        ? "今日待签到 " + profilesModel.signIn.pending
+                            + " 个 · 已签到 " + profilesModel.signIn.signedToday
+                            + " 个" + (profilesModel.signIn.missingUrl > 0
+                                ? " · " + profilesModel.signIn.missingUrl + " 个缺地址" : "")
+                        : "没有需要签到的配置")
             }
             AppButton {
                 text: "新增配置"
