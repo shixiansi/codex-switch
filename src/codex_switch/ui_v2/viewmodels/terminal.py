@@ -216,11 +216,22 @@ class TerminalViewModel(BaseViewModel):
 
     @Slot(str)
     def stopZoom(self, session_id: str) -> None:
-        self._manager.stop_session(str(session_id), reap=True)
-        self._refresh_sessions()
-        if self._zoomed_id == str(session_id):
+        """停止并清除放大视图中的会话，同时关闭浮窗。"""
+        target = str(session_id or "")
+        if not target:
+            return
+        name = self._title_for(target)
+        self._manager.remove_session(target)
+        if self._zoomed_id == target:
             self._zoomed_id = ""
             self.zoomChanged.emit()
+        if self._active_id == target:
+            self._active_id = ""
+            self.activeIdChanged.emit()
+            self._refresh_screen()
+        self._refresh_sessions()
+        if name:
+            self._controller.showToast(f"已停止并清除「{name}」。", "info")
 
     @Slot(int)
     def sendChoice(self, index: int) -> None:
@@ -235,24 +246,76 @@ class TerminalViewModel(BaseViewModel):
         self._send_choice(self._zoomed_id, self._zoomed_choices, int(index))
 
     def _send_choice(self, session_id: str, choices: list[str], idx: int) -> None:
-        if 0 <= idx < len(choices):
-            label = choices[idx]
-            payload = "y" if label == "是" else ("n" if label == "否" else label)
-            self._manager.send_input(session_id, payload)
+        if not (0 <= idx < len(choices)):
+            return
+        label = choices[idx]
+        if label == "是":
+            payload = "y"
+        elif label == "否":
+            payload = "n"
+        else:
+            # 编号选项：发送对应编号（1 起），这是 TUI 选择菜单的通用约定；
+            # 发送标签文本往往不会被识别。
+            payload = str(idx + 1)
+        self._manager.send_input(session_id, payload)
 
     @Slot(str)
     def stopSession(self, session_id: str) -> None:
-        self._manager.stop_session(str(session_id), reap=True)
-        self._refresh_sessions()
+        """停止会话并从列表中清除。
+
+        "停止"是终结操作：进程回收之后会话不应继续占着列表，
+        否则已结束的会话会永远堆在那里无法清理（之前的表现就是"停不掉"）。
+        """
+        target = str(session_id or "")
+        if not target:
+            return
+        name = self._title_for(target)
+        # manager.remove_session 内部会先停止并整树回收，再摘除登记。
+        self.removeSession(target)
+        if name:
+            self._controller.showToast(f"已停止并清除「{name}」。", "info")
 
     @Slot(str)
     def removeSession(self, session_id: str) -> None:
-        self._manager.remove_session(str(session_id))
-        if self._active_id == session_id:
+        target = str(session_id or "")
+        self._manager.remove_session(target)
+        if self._active_id == target:
             self._active_id = ""
             self.activeIdChanged.emit()
             self._refresh_screen()
+        if self._zoomed_id == target:
+            self._zoomed_id = ""
+            self.zoomChanged.emit()
         self._refresh_sessions()
+
+    @Slot()
+    def clearFinished(self) -> None:
+        """清除所有已结束（非运行中）的会话。"""
+        finished = [
+            row["sessionId"]
+            for row in self._sessions
+            if row.get("status") != "running"
+        ]
+        if not finished:
+            self._controller.showToast("没有已结束的会话需要清除。", "info")
+            return
+        for session_id in finished:
+            self._manager.remove_session(session_id)
+        if self._active_id in finished:
+            self._active_id = ""
+            self.activeIdChanged.emit()
+            self._refresh_screen()
+        if self._zoomed_id in finished:
+            self._zoomed_id = ""
+            self.zoomChanged.emit()
+        self._refresh_sessions()
+        self._controller.showToast(f"已清除 {len(finished)} 个已结束的会话。", "success")
+
+    def _title_for(self, session_id: str) -> str:
+        for row in self._sessions:
+            if row.get("sessionId") == session_id:
+                return str(row.get("title") or "")
+        return ""
 
     @Slot()
     def cleanupOrphans(self) -> None:
@@ -352,7 +415,11 @@ class TerminalViewModel(BaseViewModel):
     def _report_status(self, session_id: str, payload: dict[str, Any]) -> None:
         status = payload.get("status")
         row = next((r for r in self._sessions if r["sessionId"] == session_id), None)
-        name = row.get("title", "会话") if row else "会话"
+        if row is None:
+            # 会话已被用户清除；迟到的轮询事件不应再弹出提示，
+            # 否则"停止并清除"之后还会冒出一条"已完成"。
+            return
+        name = row.get("title") or "会话"
         if status == "completed":
             self._controller.showToast(f"「{name}」已完成。", "success")
         elif status == "failed":

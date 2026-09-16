@@ -15,6 +15,30 @@ Item {
         createDialog.open()
     }
 
+    // 取某个会话的展示行；找不到时返回空对象，便于 QML 安全取值。
+    function rowFor(sessionId) {
+        var list = terminalModel.sessions
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].sessionId === sessionId)
+                return list[i]
+        }
+        return ({})
+    }
+
+    function activeSession() {
+        return rowFor(terminalModel.activeId)
+    }
+
+    function finishedCount() {
+        var list = terminalModel.sessions
+        var count = 0
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].status !== "running")
+                count++
+        }
+        return count
+    }
+
     // 新建会话：按项目打开 / 自定义命令
     property string newProjectId: ""
     property string newProjectClient: "codex"
@@ -135,6 +159,15 @@ Item {
                             showDot: terminalModel.runningCount > 0
                             visible: terminalModel.sessions.length > 0
                         }
+
+                        AppButton {
+                            text: "清除已结束"
+                            iconName: "close"
+                            variant: "ghost"
+                            implicitHeight: Theme.controlHeightSm
+                            visible: page.finishedCount() > 0
+                            onClicked: terminalModel.clearFinished()
+                        }
                     }
 
                     EmptyState {
@@ -206,14 +239,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true
-                                text: {
-                                    var list = terminalModel.sessions
-                                    for (var i = 0; i < list.length; i++) {
-                                        if (list[i].sessionId === terminalModel.activeId)
-                                            return list[i].title
-                                    }
-                                    return ""
-                                }
+                                text: page.activeSession().title || ""
                                 color: Theme.text
                                 font.pixelSize: Theme.fontTitle
                                 font.weight: Font.DemiBold
@@ -222,14 +248,7 @@ Item {
 
                             Text {
                                 Layout.fillWidth: true
-                                text: {
-                                    var list = terminalModel.sessions
-                                    for (var i = 0; i < list.length; i++) {
-                                        if (list[i].sessionId === terminalModel.activeId)
-                                            return list[i].cwd
-                                    }
-                                    return ""
-                                }
+                                text: page.activeSession().cwd || ""
                                 color: Theme.textFaint
                                 font.pixelSize: Theme.fontCaption
                                 elide: Text.ElideMiddle
@@ -240,13 +259,23 @@ Item {
                             text: "放大"
                             iconName: "search"
                             variant: "ghost"
+                            visible: page.activeSession().status === "running"
                             onClicked: terminalModel.zoom(terminalModel.activeId)
                         }
+                        // 运行中可"停止"；已结束则只提供"清除"，避免按钮点了没反应。
                         AppButton {
                             text: "停止"
                             iconName: "close"
                             variant: "danger"
+                            visible: page.activeSession().status === "running"
                             onClicked: terminalModel.stopSession(terminalModel.activeId)
+                        }
+                        AppButton {
+                            text: "清除"
+                            iconName: "close"
+                            variant: "secondary"
+                            visible: page.activeSession().status !== "running"
+                            onClicked: terminalModel.removeSession(terminalModel.activeId)
                         }
                     }
 

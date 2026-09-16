@@ -120,6 +120,67 @@ class ViewModelTests(unittest.TestCase):
         finally:
             vm.dispose()
 
+    def test_stop_session_removes_it_from_list(self) -> None:
+        """回归：旧实现只杀进程不摘除登记，会话永远留在列表里清不掉。"""
+        store: dict[str, _FakeBackend] = {}
+        ctrl = _StubController()
+        vm = TerminalViewModel(ctrl)
+        try:
+            sid = vm._manager.create_session("t", "codex", "", backend_factory=self._factory(store))
+            vm._refresh_sessions()
+            vm.focus(sid)
+            self.assertEqual(len(vm.sessions), 1)
+
+            vm.stopSession(sid)
+
+            self.assertEqual(vm.sessions, [], "停止后会话必须从列表移除")
+            self.assertEqual(vm.activeId, "", "停止当前会话后应清空选中")
+            self.assertTrue(any("已停止" in m for m, _ in ctrl.toasts))
+        finally:
+            vm.dispose()
+
+    def test_remove_session_clears_zoom_view(self) -> None:
+        store: dict[str, _FakeBackend] = {}
+        ctrl = _StubController()
+        vm = TerminalViewModel(ctrl)
+        try:
+            sid = vm._manager.create_session("t", "codex", "", backend_factory=self._factory(store))
+            vm._refresh_sessions()
+            vm.zoom(sid)
+            self.assertEqual(vm.zoomedId, sid)
+
+            vm.removeSession(sid)
+
+            self.assertEqual(vm.zoomedId, "", "清除会话时放大视图也要关闭")
+            self.assertEqual(vm.sessions, [])
+        finally:
+            vm.dispose()
+
+    def test_clear_finished_only_removes_non_running(self) -> None:
+        store: dict[str, _FakeBackend] = {}
+        ctrl = _StubController()
+        vm = TerminalViewModel(ctrl)
+        try:
+            from codex_switch.ui_v2.terminal.pty_session import PtySession, SessionStatus
+
+            running_id = vm._manager.create_session(
+                "running", "codex", "", backend_factory=self._factory(store)
+            )
+            done = PtySession(
+                session_id="done", title="done", command="codex", cwd="", env={},
+                status=SessionStatus.COMPLETED,
+            )
+            vm._manager._sessions["done"] = done
+            vm._refresh_sessions()
+            self.assertEqual(len(vm.sessions), 2)
+
+            vm.clearFinished()
+
+            remaining = [row["sessionId"] for row in vm.sessions]
+            self.assertEqual(remaining, [running_id], "只应清除已结束的会话")
+        finally:
+            vm.dispose()
+
 
 if __name__ == "__main__":
     unittest.main()

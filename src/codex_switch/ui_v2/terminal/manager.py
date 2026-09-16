@@ -250,7 +250,12 @@ class TerminalManager:
     # -- 轮询 ----------------------------------------------------------
     def _loop(self) -> None:
         while not self._stop.is_set():
-            self._poll_once()
+            try:
+                self._poll_once()
+            except Exception:  # noqa: BLE001
+                # 轮询线程一旦因异常退出，界面就再也不会更新（表现为"发消息后
+                # 界面不动了"）。这里吞掉单次异常并继续，保证长时间运行稳定。
+                log.exception("轮询单次失败，已跳过本轮继续运行")
             self._stop.wait(self._poll_interval)
 
     def _poll_once(self) -> None:

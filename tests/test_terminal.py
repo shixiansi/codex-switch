@@ -114,13 +114,30 @@ class CompletionTests(unittest.TestCase):
         self.assertTrue(awaiting)
         self.assertEqual(choices, ["是", "否"])
 
-    def test_choice_prompt(self) -> None:
-        awaiting, choices = detect_choice("? Which model › gpt-4o\n  claude")
+    def test_numbered_options(self) -> None:
+        awaiting, choices = detect_choice("请选择：\n› 1. Yes\n  2. No\n  3. Cancel")
         self.assertTrue(awaiting)
-        self.assertTrue(choices)
+        self.assertEqual(choices, ["Yes", "No", "Cancel"])
 
     def test_no_prompt(self) -> None:
         awaiting, choices = detect_choice("Normal output line")
+        self.assertFalse(awaiting)
+        self.assertEqual(choices, [])
+
+    def test_input_prompt_is_not_a_choice(self) -> None:
+        """回归：Codex 的输入提示符 `›` 曾被误判成选项，弹出无意义的选项条。"""
+        awaiting, choices = detect_choice("› Ask Codex to do anything")
+        self.assertFalse(awaiting, "输入提示符不是选项")
+        self.assertEqual(choices, [])
+
+    def test_echoed_user_input_is_not_a_choice(self) -> None:
+        awaiting, choices = detect_choice("› 你好\n\n› 添加本地收藏，现在收藏夹是账号上的")
+        self.assertFalse(awaiting, "用户回显不是选项")
+        self.assertEqual(choices, [])
+
+    def test_paragraph_numbers_are_not_a_choice(self) -> None:
+        """正文里的编号（不从 1 连续递增）不应被当成菜单。"""
+        awaiting, choices = detect_choice("步骤\n1. 先做 A\n3. 再做 B\n7. 最后 C")
         self.assertFalse(awaiting)
         self.assertEqual(choices, [])
 
