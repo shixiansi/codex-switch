@@ -402,6 +402,16 @@ class AppController(QObject):
         self._drawer = value
         self.drawerChanged.emit()
 
+    def openDrawerWithTarget(self, name: str, record_id: str) -> None:
+        """Open a drawer and remember the record it edits, in one step.
+
+        Every editing drawer must go through this; the former two-step flow
+        relied on each caller remembering to call setDrawerTarget separately,
+        and a missed call silently turned "edit" into "create a duplicate".
+        """
+        self.setDrawerTarget(name, record_id)
+        self.openDrawer(name)
+
     @Slot()
     def closeDrawer(self) -> None:
         if self._drawer:

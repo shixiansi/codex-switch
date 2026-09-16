@@ -121,7 +121,7 @@ class ProjectsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑项目"
         self.formChanged.emit()
-        self._controller.openDrawer("project-form")
+        self._controller.openDrawerWithTarget("project-form", str(project_id))
 
     @Slot("QVariantMap")
     def submitForm(self, payload) -> None:

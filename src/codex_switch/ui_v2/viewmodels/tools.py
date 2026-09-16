@@ -179,7 +179,7 @@ class ToolsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑号池组"
         self.formChanged.emit()
-        self._controller.openDrawer("pool-group-form")
+        self._controller.openDrawerWithTarget("pool-group-form", str(group_id))
 
     @Slot("QVariantMap")
     def submitPoolGroupForm(self, payload) -> None:
@@ -204,7 +204,7 @@ class ToolsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑号池渠道"
         self.formChanged.emit()
-        self._controller.openDrawer("pool-channel-form")
+        self._controller.openDrawerWithTarget("pool-channel-form", str(channel_id))
 
     @Slot("QVariantMap")
     def submitPoolChannelForm(self, payload) -> None:
@@ -242,7 +242,7 @@ class ToolsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑 MCP 服务"
         self.formChanged.emit()
-        self._controller.openDrawer("mcp-form")
+        self._controller.openDrawerWithTarget("mcp-form", str(name))
 
     @Slot("QVariantMap")
     def submitMcpForm(self, payload) -> None:
@@ -272,7 +272,7 @@ class ToolsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑 Skills 组"
         self.formChanged.emit()
-        self._controller.openDrawer("skill-group-form")
+        self._controller.openDrawerWithTarget("skill-group-form", str(group_id))
 
     @Slot("QVariantMap")
     def submitSkillGroupForm(self, payload) -> None:
@@ -297,7 +297,7 @@ class ToolsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑 Skill"
         self.formChanged.emit()
-        self._controller.openDrawer("skill-form")
+        self._controller.openDrawerWithTarget("skill-form", f"{group_id}|{skill_id}")
 
     @Slot("QVariantMap")
     def submitSkillForm(self, payload) -> None:
@@ -322,7 +322,7 @@ class ToolsViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑 Skills 仓库"
         self.formChanged.emit()
-        self._controller.openDrawer("skill-repo-form")
+        self._controller.openDrawerWithTarget("skill-repo-form", str(repo_id))
 
     @Slot("QVariantMap")
     def submitSkillRepoForm(self, payload) -> None:

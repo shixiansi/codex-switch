@@ -204,7 +204,9 @@ class ProfilesViewModel(SnapshotViewModel):
             return
         self._formTitle = "编辑配置"
         self.formChanged.emit()
-        self._controller.openDrawer("profile-form")
+        # Carry the record id with the drawer; without it the save would be
+        # treated as "create" and duplicate the profile.
+        self._controller.openDrawerWithTarget("profile-form", str(profile_id))
 
     @Slot("QVariantMap")
     def submitForm(self, payload) -> None:
