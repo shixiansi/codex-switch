@@ -10,6 +10,10 @@ dist-*/
 artifacts/
 .test-temp/
 .tmp/
+# 临时诊断脚本与临时 CODEX_HOME（调试 AI 终端时产生）
+scripts/diag_*.py
+.diag-codexhome/
+.diag-tui.cmd
 ._app_restore.tmp
 ._app_tail.patch
 ._check_env.py
