@@ -126,6 +126,75 @@ class PluginViewModelQtTests(unittest.TestCase):
         self.assertEqual(detail, {})
 
 
+class OpenPluginFolderTests(unittest.TestCase):
+    """「打开插件目录」不能静默失败。
+
+    这个按钮曾经点了没反应：底层 ``QDesktopServices.openUrl`` 在没有注册
+    处理程序的环境下会**直接返回 False 且不抛异常**，而当时的实现忽略了
+    返回值，于是既没打开目录、也没有任何提示。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtGui import QGuiApplication
+
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+
+    def test_reveal_directory_reports_success_or_failure(self) -> None:
+        """_reveal_directory 必须有明确的布尔返回，不能"失败了也说不出话"。"""
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        scratch = PROJECT_ROOT / ".tmp"
+        scratch.mkdir(parents=True, exist_ok=True)
+        target = Path(tempfile.mkdtemp(prefix="reveal-", dir=str(scratch)))
+        self.addCleanup(lambda: shutil.rmtree(target, ignore_errors=True))
+
+        result = controller._reveal_directory(target)
+        self.assertIsInstance(result, bool)
+
+    def test_open_failure_surfaces_a_toast_not_silence(self) -> None:
+        """打不开目录时必须给出提示，并且提示里带上路径供用户手动访问。
+
+        用不存在的盘符路径逼出失败分支——真实环境下这个分支就是
+        "没有任何文件管理器能处理" 的情形。
+        """
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        toasts: list[tuple] = []
+        controller.toastRequested.connect(lambda *args: toasts.append(args))
+
+        # 让 mkdir 之后的 reveal 一定失败
+        controller._reveal_directory = lambda path: False
+        controller.openPluginFolder()
+
+        self.assertTrue(toasts, "打不开目录时没有任何提示（就是当初的 bug）")
+        # toastRequested 的签名是 (message, level, detail)
+        message = toasts[0][0]
+        self.assertIn(str(controller.plugin_root()), message,
+                      "提示里必须带路径，否则用户仍然不知道去哪")
+
+    def test_slot_is_callable_from_qml_metacall(self) -> None:
+        """槽必须注册进元对象，否则 QML 调用会静默无效。"""
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        meta = controller.metaObject()
+        names = {
+            bytes(meta.method(i).name()).decode()
+            for i in range(meta.methodCount())
+        }
+        self.assertIn("openPluginFolder", names)
+
+
 class PluginsPageQmlTests(unittest.TestCase):
     """插件中心页面本身的静态检查。"""
 

@@ -1248,15 +1248,52 @@ class AppController(QObject):
 
     @Slot()
     def openPluginFolder(self) -> None:
-        """打开插件目录；不存在时先建出来，避免用户面对一个空对话框。"""
+        """打开插件目录；不存在时先建出来，避免用户面对一个空对话框。
+
+        ``QDesktopServices.openUrl`` 在部分环境下会直接返回 ``False``
+        （没有注册处理程序、远程会话、精简系统等），而它**不抛异常**——
+        早期实现忽略了返回值，于是点击后毫无反应、也没有任何提示。
+        这里改成逐级回退，并且每一级失败都要让用户看到原因。
+        """
         root = self.plugin_root()
         try:
             root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             self.showToast(f"无法创建插件目录：{exc}", "error")
             return
+
+        if self._reveal_directory(root):
+            return
+        # 打不开就至少让用户能把路径复制走，而不是点了没反应。
+        self.showToast(f"无法自动打开文件夹，请手动访问：{root}", "error")
+
+    def _reveal_directory(self, path: Path) -> bool:
+        """把目录交给系统文件管理器打开，成功返回 True。
+
+        Windows 上以 ``explorer`` 为主：它比 ``QDesktopServices`` 可靠，
+        且不受 Qt 平台插件/COM 注册状态影响。注意 ``explorer`` 成功打开
+        目录时**返回码是 1**，所以这里不能按"非零即失败"判断。
+        """
+        import subprocess
+        import sys as _sys
+
+        if _sys.platform == "win32":
+            try:
+                subprocess.Popen(
+                    ["explorer", str(path)],
+                    # 不让子进程继承控制台输出，避免 GUI 程序里冒出黑框。
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                return True
+            except OSError:
+                pass
+
         from .qt_compat import QDesktopServices, QUrl
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+        try:
+            return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+        except Exception:  # noqa: BLE001 - 兜底路径失败不应冒泡
+            return False
 
     def load_plugins(self) -> list[str]:
         """扫描并加载已启用的插件。启动时调用；返回加载成功的 id 列表。"""
