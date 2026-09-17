@@ -721,6 +721,9 @@ ApplicationWindow {
 
     // ================= destructive-action confirmation =================
     // One instance serves every page; the pending action lives in Python.
+    // The terminal risk-review prompt reuses this same dialog (the project
+    // deliberately keeps a single shared instance), which is why it also
+    // reports the optional third button back to the controller.
     ConfirmDialog {
         id: confirmDialog
         confirm: app.pendingConfirm
@@ -728,6 +731,7 @@ ApplicationWindow {
         // controller owns both the spec and the pending action.
         onConfirmed: app.confirmPending()
         onCancelled: app.cancelPending()
+        onExtraConfirmed: app.extraPending()
     }
 
     Connections {
@@ -752,6 +756,11 @@ ApplicationWindow {
 
         function onErrorRaised(message) {
             toastHost.push(message, "error", "")
+        }
+
+        // 需要用户注意（任务栏闪烁）。即使窗口在后台，也能看出"有事在等"。
+        function onAttentionRequested() {
+            shell.alert(3000)
         }
     }
 }

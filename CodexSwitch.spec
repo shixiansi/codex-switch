@@ -145,6 +145,13 @@ TERMINAL_HIDDENIMPORTS = [
     "codex_switch.ui_v2.terminal.screen",
     "codex_switch.ui_v2.terminal.completion",
     "codex_switch.ui_v2.terminal.logging_setup",
+    # 风险审查层：策略判定、策略持久化、系统通知与提示音。
+    # 这几个模块不一定被静态导入链覆盖（通知与提示音只在运行期按需导入），
+    # 因此显式登记，避免打包后"通知静默失效"。
+    "codex_switch.ui_v2.terminal.review",
+    "codex_switch.ui_v2.terminal.policy_store",
+    "codex_switch.ui_v2.terminal.notifier",
+    "codex_switch.ui_v2.terminal.sound",
     "codex_switch.ui_v2.viewmodels.terminal",
     # pywinpty 3.x 的真实模块名；旧名一并列出以兼容 2.x 环境。
     "winpty",

@@ -11,7 +11,15 @@ import os
 import sys
 
 from .controller import AppController
-from .qt_compat import QT_AVAILABLE, QGuiApplication, QQmlApplicationEngine, QQuickStyle, QTimer, QUrl
+from .qt_compat import (
+    QT_AVAILABLE,
+    QApplication,
+    QGuiApplication,
+    QQmlApplicationEngine,
+    QQuickStyle,
+    QTimer,
+    QUrl,
+)
 from .single_instance import acquire_single_instance, release_single_instance
 
 QML_ROOT = Path(__file__).with_name("qml")
@@ -22,6 +30,30 @@ QML_IMPORT_PATHS = (QML_ROOT, QML_ROOT.parent)
 # The native Windows style refuses QML customisation of background/contentItem,
 # so the cross-platform Basic style is required for a fully themed UI.
 QML_STYLE = "Basic"
+
+
+def build_application(argv: list[str]):
+    """Create the application object, preferring ``QApplication``.
+
+    Why not ``QGuiApplication``: ``QSystemTrayIcon.showMessage`` — used for the
+    terminal's risk-review notifications — is a QtWidgets API. Under a plain
+    ``QGuiApplication`` it does not raise, it **crashes the process** with an
+    access violation on Windows. Since system notifications are a product
+    requirement, the app is created as a ``QApplication`` (a strict subclass of
+    ``QGuiApplication``, so nothing else changes).
+
+    Falls back to ``QGuiApplication`` when QtWidgets is unavailable; the
+    notifier detects that case and degrades to in-app toasts.
+    """
+    if QApplication is not None:
+        existing = QApplication.instance()
+        if existing is not None:
+            return existing
+        try:
+            return QApplication(argv)
+        except Exception:  # noqa: BLE001 - fall back to the GUI-only base class
+            pass
+    return QGuiApplication.instance() or QGuiApplication(argv)
 
 
 def configure_style() -> None:
@@ -80,7 +112,7 @@ def run_app(argv: list[str] | None = None, *, workspace=None, entrypoint: Path |
 
     try:
         _configure_environment()
-        app = QGuiApplication.instance() or QGuiApplication(argv if argv is not None else sys.argv)
+        app = build_application(argv if argv is not None else sys.argv)
         configure_style()
         app.setOrganizationName("Codex Switch")
         app.setApplicationName("Codex Switch")
@@ -102,6 +134,7 @@ def run_app(argv: list[str] | None = None, *, workspace=None, entrypoint: Path |
         QTimer.singleShot(0, controller.load_plugins)
 
         app.aboutToQuit.connect(controller.shutdownPlugins)
+        app.aboutToQuit.connect(controller.shutdownNotifier)
         app.aboutToQuit.connect(controller.shutdown)
         return app.exec()
     finally:
@@ -112,6 +145,7 @@ __all__ = [
     "QML_ENTRYPOINT",
     "QML_IMPORT_PATHS",
     "QML_ROOT",
+    "build_application",
     "build_engine",
     "configure_style",
     "load_qml",

@@ -26,6 +26,9 @@ Item {
     property var hintItems: []
     property int hintSelected: -1
 
+    // 风险审查的展示不在这里：主窗口由共享的 ConfirmDialog 弹窗承担，
+    // 放大窗口由页面直接内嵌 ReviewBar（见 TerminalDashboard.qml）。
+
     signal inputSubmitted(string text)
     signal choiceSelected(int index)
     signal keySent(string key)

@@ -29,6 +29,46 @@ Item {
         return rowFor(terminalModel.activeId)
     }
 
+    // 切到第一个等待授权的会话，让审查提示条出现在用户眼前。
+    function focusFirstReview() {
+        var list = terminalModel.pendingReviews
+        if (list.length > 0)
+            terminalModel.focus(list[0].sessionId)
+    }
+
+    // 某个会话待授权项的剩余秒数（供倒计时显示）。
+    //
+    // 超时由 Python 侧按同一份策略计时并最终按"拒绝"处理；这里只是把剩余
+    // 时间显示出来。两者都以 review 里的 createdAt/timeoutSeconds 为准，
+    // 因此界面显示的倒计时与后台真实行为一致。
+    function reviewRemaining(sessionId) {
+        if (sessionId === "")
+            return 0
+        var list = terminalModel.pendingReviews
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].sessionId !== sessionId)
+                continue
+            var created = Number(list[i].createdAt || 0)
+            var timeout = Number(list[i].timeoutSeconds || 0)
+            if (created <= 0 || timeout <= 0)
+                return 0
+            var elapsed = (Date.now() / 1000) - created
+            return Math.max(0, Math.ceil(timeout - elapsed))
+        }
+        return 0
+    }
+
+    // 倒计时每秒重算一次：没有这个心跳，剩余秒数会一直停在初始值。
+    Timer {
+        interval: 1000
+        repeat: true
+        running: terminalModel.reviewPendingCount > 0
+        onTriggered: page.reviewTick++
+    }
+
+    // 供上面的倒计时函数绑定刷新用（值本身无意义）。
+    property int reviewTick: 0
+
     function finishedCount() {
         var list = terminalModel.sessions
         var count = 0
@@ -43,6 +83,8 @@ Item {
     property string newProjectId: ""
     // 是否显示带时间戳的时间线面板
     property bool showTimeline: false
+    // 等待二次确认的模式（目前只有"完全放行"）
+    property string pendingMode: ""
     property string newProjectClient: "codex"
     property string newTitle: ""
     property string newCommand: "codex"
@@ -107,24 +149,36 @@ Item {
                 ToolTip.text: "查看终端日志（启动命令、输出、退出与回收记录）"
             }
             AppButton {
-                text: terminalModel.autoAnswer ? "自动选择：开" : "自动选择：关"
-                iconName: terminalModel.autoAnswer ? "check" : "close"
-                variant: terminalModel.autoAnswer ? "primary" : "ghost"
-                onClicked: terminalModel.setAutoAnswer(!terminalModel.autoAnswer)
+                text: "自动应答：" + terminalModel.reviewModeLabel
+                iconName: terminalModel.reviewMode === "full" ? "alert"
+                    : terminalModel.reviewMode === "off" ? "close" : "check"
+                variant: terminalModel.reviewMode === "full" ? "danger"
+                    : terminalModel.reviewMode === "off" ? "ghost" : "primary"
+                onClicked: modeDialog.open()
 
                 ToolTip.visible: hovered
                 ToolTip.delay: 400
-                ToolTip.text: "开启后，检测到选择菜单会自动选第一项（如 codex 的信任目录确认）"
+                ToolTip.text: "选择自动应答的风险策略：关闭 / 严格 / 平衡 / 只通知 / 完全放行"
             }
             AppButton {
-                text: "载入项目历史"
-                iconName: "refresh"
-                enabled: terminalModel.activeId !== ""
-                onClicked: terminalModel.reloadProjectHistory()
+                text: terminalModel.reviewPendingCount > 0
+                    ? "待授权 (" + terminalModel.reviewPendingCount + ")" : "载入项目历史"
+                iconName: terminalModel.reviewPendingCount > 0 ? "alert" : "refresh"
+                variant: terminalModel.reviewPendingCount > 0 ? "danger" : "ghost"
+                enabled: terminalModel.reviewPendingCount > 0 || terminalModel.activeId !== ""
+                onClicked: {
+                    if (terminalModel.reviewPendingCount > 0) {
+                        focusFirstReview()
+                    } else {
+                        terminalModel.reloadProjectHistory()
+                    }
+                }
 
                 ToolTip.visible: hovered
                 ToolTip.delay: 400
-                ToolTip.text: "读取该项目以前的提示词，之后可用 ↑ 翻出来（当前支持 codex）"
+                ToolTip.text: terminalModel.reviewPendingCount > 0
+                    ? "有菜单等待你的授权，点击查看"
+                    : "读取该项目以前的提示词，之后可用 ↑ 翻出来（当前支持 codex）"
             }
             AppButton {
                 text: "清理残留"
@@ -224,8 +278,10 @@ Item {
                             title: modelData.title
                             subtitle: modelData.lastLine !== ""
                                 ? modelData.lastLine : modelData.cwd
-                            badgeText: modelData.statusLabel
-                            badgeTone: modelData.status === "running" ? "accent"
+                            badgeText: modelData.reviewPending
+                                ? "待授权" : modelData.statusLabel
+                            badgeTone: modelData.reviewPending ? "danger"
+                                : modelData.status === "running" ? "accent"
                                 : modelData.status === "completed" ? "success"
                                 : modelData.status === "failed" ? "danger" : "unknown"
                             // 运行时长作为尾部提示，便于同时多开时对照进度。
@@ -781,6 +837,198 @@ Item {
         }
     }
 
+    // ================= 自动应答模式选择 =================
+    Popup {
+        id: modeDialog
+
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - Theme.space6 * 2)
+        modal: true
+        focus: true
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle {
+            radius: Theme.radius
+            color: Theme.surface
+            border.width: Theme.borderWidth
+            border.color: Theme.border
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: modeHeader.implicitHeight + Theme.space4 * 2
+                color: "transparent"
+
+                RowLayout {
+                    id: modeHeader
+
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.space4
+                    anchors.rightMargin: Theme.space4
+                    spacing: Theme.space2
+
+                    Rectangle {
+                        width: 30
+                        height: 30
+                        radius: Theme.radiusSm
+                        color: Theme.accentSoft
+
+                        AppIcon {
+                            anchors.centerIn: parent
+                            name: "alert"
+                            color: Theme.accent
+                            size: 16
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+
+                        Text {
+                            text: "自动应答与风险审查"
+                            color: Theme.text
+                            font.pixelSize: Theme.fontTitle
+                            font.weight: Font.DemiBold
+                        }
+
+                        Text {
+                            text: "决定检测到选择菜单时，本工具能替你按到什么程度。"
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.fontCaption
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.border
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: Theme.space4
+                spacing: Theme.space2
+
+                Repeater {
+                    model: terminalModel.reviewModes
+
+                    delegate: Rectangle {
+                        required property var modelData
+
+                        Layout.fillWidth: true
+                        implicitHeight: modeRow.implicitHeight + Theme.space2 * 2 + 6
+                        radius: Theme.radiusSm
+                        color: terminalModel.reviewMode === modelData.value
+                            ? Theme.accentSoft : "transparent"
+                        border.width: terminalModel.reviewMode === modelData.value
+                            ? Theme.borderWidth : 0
+                        border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
+
+                        RowLayout {
+                            id: modeRow
+
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.space3
+                            anchors.rightMargin: Theme.space3
+                            spacing: Theme.space2
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+
+                                Text {
+                                    text: modelData.label
+                                    color: terminalModel.reviewMode === modelData.value
+                                        ? Theme.accent : Theme.text
+                                    font.pixelSize: Theme.fontBody
+                                    font.weight: Font.DemiBold
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.description
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fontCaption
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            StatusBadge {
+                                visible: terminalModel.reviewMode === modelData.value
+                                text: "当前"
+                                tone: "accent"
+                                showDot: true
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                // "完全放行"要二次确认：它会关掉风险提示，
+                                // 属于用户应当显式承担后果的选择。
+                                if (modelData.value === "full"
+                                        && terminalModel.reviewMode !== "full") {
+                                    page.pendingMode = "full"
+                                    modeDialog.close()
+                                    app.requestTerminalFullMode()
+                                } else {
+                                    terminalModel.setReviewMode(modelData.value)
+                                    modeDialog.close()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 列表菜单是硬底线：任何模式下都不会被自动应答。
+                Text {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.space1
+                    text: "注：会话列表类菜单（如 codex 的 resume 选择器）在任何模式下都不会被自动应答——它的第一项是某个历史会话，替你选没有意义。"
+                    color: Theme.textFaint
+                    font.pixelSize: Theme.fontCaption
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.border
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.margins: Theme.space4
+                spacing: Theme.space2
+
+                AppButton {
+                    text: "打开终端日志"
+                    iconName: "log"
+                    variant: "ghost"
+                    onClicked: app.openLocalPath(terminalModel.logPath)
+                }
+
+                Item { Layout.fillWidth: true }
+
+                AppButton {
+                    text: "关闭"
+                    variant: "secondary"
+                    onClicked: modeDialog.close()
+                }
+            }
+        }
+    }
+
     // ================= 放大浮窗 =================
     Window {
         id: zoomWindow
@@ -843,6 +1091,21 @@ Item {
                     variant: "danger"
                     onClicked: terminalModel.stopZoom(terminalModel.zoomedId)
                 }
+            }
+
+            // 放大窗口是独立的顶层 Window，主窗口的模态授权弹窗覆盖不到它；
+            // 因此在放大视图里内嵌一条审查提示，避免用户在这里看不到请求。
+            ReviewBar {
+                Layout.fillWidth: true
+                visible: Object.keys(terminalModel.zoomedReview).length > 0
+                review: terminalModel.zoomedReview
+                remainingSeconds: {
+                    page.reviewTick
+                    return page.reviewRemaining(terminalModel.zoomedId)
+                }
+                onApproveRequested: terminalModel.approveReview(terminalModel.zoomedId)
+                onAllowKindRequested: terminalModel.allowReviewKind(terminalModel.zoomedId)
+                onDenyRequested: terminalModel.denyReview(terminalModel.zoomedId)
             }
 
             TerminalView {

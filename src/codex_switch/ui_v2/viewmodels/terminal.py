@@ -1,23 +1,40 @@
 """AI 终端视图模型：把 TerminalManager 的状态/事件适配给 QML。
 
 遵循现有 view model 风格：只读属性 + Slot 动作，业务规则全在 manager 里。
+审查策略（模式、预算、通知与提示音开关）从 ``terminal_policy.json`` 读出后
+注入 manager——视图模型只做接线，不参与判定。
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ..qt_compat import Property, Signal, Slot
 from ..terminal import (
     EVENT_CHOICE,
+    EVENT_REVIEW,
     EVENT_STATUS,
     EVENT_TIMELINE,
+    MODE_DESCRIPTIONS,
+    MODE_LABELS,
+    MODE_OFF,
+    MODES,
+    REVIEW_DENIED,
+    REVIEW_DISMISSED,
+    REVIEW_EXPIRED,
+    REVIEW_PENDING,
     InputHistory,
+    PolicyConfig,
     PromptHistoryReader,
+    ReviewPolicy,
     TerminalManager,
     check_pty_backend,
     command_hints,
     detect_cli,
+    load_config,
+    normalize_mode,
+    save_config,
 )
 from ..terminal.logging_setup import get_logger, log_path
 from .base import BaseViewModel
@@ -26,7 +43,7 @@ log = get_logger()
 
 
 class TerminalViewModel(BaseViewModel):
-    """AI 终端多开：会话总览 + 输入 + 选项选择 + 清理残留。"""
+    """AI 终端多开：会话总览 + 输入 + 选项选择 + 清理残留 + 风险审查。"""
 
     sessionsChanged = Signal()
     activeIdChanged = Signal()
@@ -37,10 +54,17 @@ class TerminalViewModel(BaseViewModel):
     timelineChanged = Signal()
     autoAnswerChanged = Signal()
     inputAssistChanged = Signal()
+    reviewChanged = Signal()
+    reviewModeChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
-        self._manager = TerminalManager(on_event=self._on_manager_event)
+        # 审查策略必须先于 manager 建好：manager 需要注入策略才能判定。
+        self._policy_config = self._load_policy_config()
+        self._manager = TerminalManager(
+            on_event=self._on_manager_event,
+            policy=ReviewPolicy(self._policy_config),
+        )
         self._sessions: list[dict[str, Any]] = []
         self._active_id = ""
         self._screen = ""
@@ -55,10 +79,15 @@ class TerminalViewModel(BaseViewModel):
         self._zoomed_awaiting = False
         self._zoomed_selected_index = -1
         self._zoomed_choice_kind = "numbered"
-        # 自动应答开关：默认开启，检测到选择菜单时自动选第一项。
-        self._auto_answer = True
-        self._manager.auto_answer = True
+        # 自动应答开关由审查模式决定：关闭模式下完全不自动应答。
+        enabled = self._policy_config.mode != MODE_OFF
+        self._auto_answer = enabled
+        self._manager.auto_answer = enabled
         self._active_timeline = ""
+        # 待授权项：按会话 id 索引当前等待用户决定的菜单。
+        self._reviews: dict[str, dict[str, Any]] = {}
+        # 最近一次"仅通知"的审查结果，供界面提示条展示。
+        self._last_notice: dict[str, Any] = {}
         # 输入历史与指令提示（纯逻辑，见 terminal/input_assist.py）。
         self._history = InputHistory()
         # 项目级历史读取器：从 CLI 自己的会话记录里取以前发过的提示词。
@@ -68,6 +97,34 @@ class TerminalViewModel(BaseViewModel):
         self._hint_selected = -1
         super().__init__(parent)
         self._manager.start()
+
+    # -- 策略加载 ------------------------------------------------------
+    def _storage_root(self) -> Path | None:
+        """应用数据目录；取不到时返回 None（策略持久化会被跳过）。"""
+        workspace = getattr(self._controller, "workspace", None)
+        store = getattr(workspace, "store", None)
+        root = getattr(store, "root_dir", None)
+        return Path(root) if root else None
+
+    def _load_policy_config(self) -> PolicyConfig:
+        """读取审查策略；读不到就用默认（balanced）。"""
+        root = self._storage_root()
+        if root is None:
+            return PolicyConfig()
+        try:
+            return load_config(root)
+        except Exception:  # noqa: BLE001 - 策略读取失败不该让终端不可用
+            log.exception("读取审查策略失败，使用默认策略")
+            return PolicyConfig()
+
+    def _persist_policy(self) -> None:
+        root = self._storage_root()
+        if root is None:
+            return
+        try:
+            save_config(root, self._policy_config)
+        except Exception:  # noqa: BLE001 - 保存失败不该影响当前会话
+            log.exception("保存审查策略失败")
 
     # -- 属性 ----------------------------------------------------------
     @Property("QVariantList", notify=sessionsChanged)
@@ -89,12 +146,68 @@ class TerminalViewModel(BaseViewModel):
 
     @Property(bool, notify=autoAnswerChanged)
     def autoAnswer(self) -> bool:
-        """是否自动应答选择菜单。"""
+        """是否自动应答选择菜单（由审查模式决定，不再单独切换）。"""
         return self._auto_answer
 
     @autoAnswer.setter
     def autoAnswer(self, value: bool) -> None:
         self.setAutoAnswer(bool(value))
+
+    # -- 风险审查 ------------------------------------------------------
+    @Property(str, notify=reviewModeChanged)
+    def reviewMode(self) -> str:
+        """当前审查模式：off / strict / balanced / observe / full。"""
+        return self._policy_config.mode
+
+    @Property(str, notify=reviewModeChanged)
+    def reviewModeLabel(self) -> str:
+        return MODE_LABELS.get(self._policy_config.mode, self._policy_config.mode)
+
+    @Property("QVariantList", notify=reviewModeChanged)
+    def reviewModes(self) -> list[dict[str, str]]:
+        """全部可选模式（含说明），供界面渲染分段控件。"""
+        return [
+            {
+                "value": mode,
+                "label": MODE_LABELS.get(mode, mode),
+                "description": MODE_DESCRIPTIONS.get(mode, ""),
+            }
+            for mode in MODES
+        ]
+
+    @Property("QVariantMap", notify=reviewModeChanged)
+    def reviewPolicySummary(self) -> dict[str, Any]:
+        """策略摘要：供界面展示超时、预算、声音等当前生效值。"""
+        return dict(self._manager.policy.describe())
+
+    @Property("QVariantList", notify=reviewChanged)
+    def pendingReviews(self) -> list[dict[str, Any]]:
+        """全部等待授权的项（可能来自多个会话）。"""
+        return [dict(item) for item in self._reviews.values()]
+
+    @Property(int, notify=reviewChanged)
+    def reviewPendingCount(self) -> int:
+        return len(self._reviews)
+
+    @Property(bool, notify=reviewChanged)
+    def reviewPending(self) -> bool:
+        return bool(self._reviews)
+
+    @Property("QVariantMap", notify=reviewChanged)
+    def activeReview(self) -> dict[str, Any]:
+        """当前选中会话的待授权项；没有则为空对象。"""
+        item = self._reviews.get(self._active_id)
+        return dict(item) if item else {}
+
+    @Property("QVariantMap", notify=reviewChanged)
+    def zoomedReview(self) -> dict[str, Any]:
+        item = self._reviews.get(self._zoomed_id)
+        return dict(item) if item else {}
+
+    @Property("QVariantMap", notify=reviewChanged)
+    def lastReviewNotice(self) -> dict[str, Any]:
+        """最近一次"仅通知"的自动应答，供提示条展示。"""
+        return dict(self._last_notice)
 
     @Property(bool, notify=choiceChanged)
     def awaitingChoice(self) -> bool:
@@ -200,19 +313,15 @@ class TerminalViewModel(BaseViewModel):
     # -- 动作 ----------------------------------------------------------
     @Slot(bool)
     def setAutoAnswer(self, value: bool) -> None:
-        """开启/关闭选择菜单的自动应答。"""
+        """开启/关闭选择菜单的自动应答。
+
+        兼容旧界面的一键开关："关闭"等价于把模式切到 off，重新开启则回到
+        默认的 balanced——而不是简单地置一个布尔量绕过审查。
+        """
         enabled = bool(value)
         if enabled == self._auto_answer:
             return
-        self._auto_answer = enabled
-        self._manager.auto_answer = enabled
-        self.autoAnswerChanged.emit()
-        log.info("自动应答选择菜单：%s", "开启" if enabled else "关闭")
-        self._controller.showToast(
-            "已开启自动应答：检测到选择菜单会自动选第一项。" if enabled
-            else "已关闭自动应答：选择菜单需手动处理。",
-            "info",
-        )
+        self._apply_mode("balanced" if enabled else MODE_OFF)
 
     @Slot()
     def toggleAutoAnswer(self) -> None:
@@ -222,6 +331,93 @@ class TerminalViewModel(BaseViewModel):
         因为匹配不到签名而静默失效。
         """
         self.setAutoAnswer(not self._auto_answer)
+
+    @Slot(str)
+    def setReviewMode(self, mode: str) -> None:
+        """切换审查模式（关闭 / 严格 / 平衡 / 只通知 / 完全放行）。"""
+        self._apply_mode(mode)
+
+    def _apply_mode(self, mode: str) -> None:
+        """应用新模式：热更新策略、持久化，并把变化告知界面。
+
+        切到"关闭"时如果还有等待授权的菜单，一并清掉——那些请求是在旧模式下
+        产生的，留着会弹出一个已经不该存在的授权框。
+        """
+        target = normalize_mode(mode)
+        changed_mode = target != self._policy_config.mode
+        if changed_mode:
+            self._policy_config.mode = target
+            self._manager.set_policy(ReviewPolicy(self._policy_config))
+            self._persist_policy()
+        self._sync_auto_answer()
+        self._on_policy_changed()
+        if changed_mode:
+            self.reviewModeChanged.emit()
+            description = MODE_DESCRIPTIONS.get(target, "")
+            self._controller.showToast(
+                f"自动应答模式：{MODE_LABELS.get(target, target)}。{description}",
+                "warning" if target == "full" else "info",
+            )
+            log.info("审查模式切换为 %s", target)
+
+    def _sync_auto_answer(self) -> None:
+        """把"是否自动应答"映射成 manager 的开关，并在关闭时清空待审项。"""
+        enabled = self._policy_config.mode != MODE_OFF
+        if enabled != self._auto_answer:
+            self._auto_answer = enabled
+            self.autoAnswerChanged.emit()
+        self._manager.auto_answer = enabled
+        if not enabled:
+            # 关闭后不该再有任何东西冒出来问用户。
+            for session_id in list(self._reviews.keys()):
+                self._manager.dismiss_review(session_id, "自动应答已关闭")
+            if self._reviews:
+                self._reviews.clear()
+                self.reviewChanged.emit()
+
+    # -- 授权 ----------------------------------------------------------
+    @Slot(str)
+    def approveReview(self, session_id: str) -> None:
+        """允许本次：只发这一次按键。"""
+        self.resolveReview(session_id, "approve")
+
+    @Slot(str)
+    def allowReviewKind(self, session_id: str) -> None:
+        """本会话允许此类：本会话内同签名菜单不再询问（不落盘）。"""
+        self.resolveReview(session_id, "allow_kind")
+
+    @Slot(str)
+    def denyReview(self, session_id: str) -> None:
+        """拒绝：不发送，且同一菜单不再重复提示。"""
+        self.resolveReview(session_id, "deny")
+
+    @Slot(str, str)
+    def resolveReview(self, session_id: str, decision: str) -> None:
+        """处理一个待授权项；``decision`` 取 approve / allow_kind / deny。
+
+        这是**唯一**的授权入口：controller 的授权弹窗与 QML 的按钮都走这里，
+        保证"清空待授权项 + 推进队列"这两件事不会被某条路径漏掉。
+        """
+        target = str(session_id or "")
+        if not target:
+            return
+        approve = decision != "deny"
+        self._manager.resolve_review(
+            target, approve, allow_kind=decision == "allow_kind"
+        )
+        # 事件会经 _dispatch_manager_event 回到这里刷新状态；
+        # 这里再同步一次，避免没有事件时界面停在旧状态。
+        self._reviews.pop(target, None)
+        self._sync_review_prompt()
+        self.reviewChanged.emit()
+
+    @Slot()
+    def clearReviewNotice(self) -> None:
+        """关闭"仅通知"提示条。"""
+        if not self._last_notice:
+            return
+        self._last_notice = {}
+        self.reviewChanged.emit()
 
     @Slot(str, str, str)
     def createSession(self, title: str, command: str, cwd: str) -> None:
@@ -601,6 +797,26 @@ class TerminalViewModel(BaseViewModel):
         if rc != self._running_count:
             self._running_count = rc
             self.runningCountChanged.emit()
+        self._sync_reviews()
+
+    def _sync_reviews(self) -> None:
+        """用 manager 的权威状态校正本地待审集合。
+
+        本地集合是事件驱动的，可能因为会话被清除等原因落后于 manager；
+        这里以 manager 为准，避免界面显示一个已经不存在的授权请求。
+        """
+        authoritative = {
+            str(item.get("sessionId") or ""): item for item in self._manager.pending_reviews()
+        }
+        # 会话已消失的待审项直接丢弃。
+        alive = {row["sessionId"] for row in self._sessions}
+        authoritative = {key: item for key, item in authoritative.items() if key in alive}
+        if authoritative != self._reviews:
+            self._reviews = authoritative
+            self.reviewChanged.emit()
+        # 会话可能被清除而连带丢掉待审项：队列也要跟着推进，
+        # 否则弹窗会一直停在那个已经不存在的请求上。
+        self._sync_review_prompt()
 
     def _refresh_screen(self) -> None:
         text = self._manager.screen_text(self._active_id) if self._active_id else ""
@@ -706,6 +922,96 @@ class TerminalViewModel(BaseViewModel):
             # 时间线新增了一段：立即刷新，否则面板会慢一拍。
             if session_id == self._active_id:
                 self._refresh_timeline()
+        elif event == EVENT_REVIEW:
+            self._handle_review_event(session_id, payload)
+
+    def _handle_review_event(self, session_id: str, payload: dict[str, Any]) -> None:
+        """处理审查事件：维护待授权集合、提示条、系统通知与提示音。
+
+        通知/提示音是**尽力而为**的旁路：失败只记日志，授权本身照常工作。
+        """
+        state = str(payload.get("state") or "")
+        review = dict(payload.get("review") or {})
+        if state == REVIEW_PENDING:
+            self._reviews[session_id] = review
+            self._notify_review(review, urgent=True)
+            self._sync_review_prompt()
+        elif state in (REVIEW_DENIED, REVIEW_EXPIRED, REVIEW_DISMISSED):
+            self._reviews.pop(session_id, None)
+            self._sync_review_prompt()
+            reason = str(payload.get("reason") or "")
+            if state == REVIEW_EXPIRED and reason:
+                self._controller.showToast(reason, "warning")
+        elif state == "notice":
+            self._last_notice = review
+            # "只通知"模式：照常按键，但让用户知道发生了什么。
+            self._notify_review(review, urgent=False)
+        self.reviewChanged.emit()
+
+    def _notify_review(self, review: dict[str, Any], *, urgent: bool) -> None:
+        """把一次审查推给系统通知与提示音（由 controller 持有 Qt 通道）。"""
+        notify = getattr(self._controller, "notifyTerminalReview", None)
+        if notify is None:
+            return
+        title = str(review.get("title") or "AI 终端")
+        label = str(review.get("label") or review.get("payload") or "")
+        reason = str(review.get("reason") or "")
+        risk = str(review.get("riskLabel") or "")
+        if urgent:
+            body = f"需要授权：将自动发送 “{label}”"
+        else:
+            body = f"已自动应答 “{label}”"
+        if reason:
+            body += f"（{reason}）"
+        elif risk:
+            body += f"（{risk}）"
+        try:
+            notify(f"Codex Switch · {title}", body, urgent)
+        except Exception:  # noqa: BLE001 - 通知失败不该影响审查流程
+            log.exception("发送终端审查通知失败")
+
+    def _sync_review_prompt(self) -> None:
+        """把"最该展示的那一项"交给 controller 弹出授权框（一次一个）。
+
+        多开会话时可能同时有多个待授权项，而弹窗只有一个：按会话顺序依次
+        展示，先入先出。若让后来者直接覆盖，先出现的那个请求就会被无声地
+        丢掉——用户永远等不到它的授权框。
+        """
+        pending = getattr(self._controller, "pendingTerminalReview", None)
+        present = getattr(self._controller, "presentTerminalReview", None)
+        clear = getattr(self._controller, "clearTerminalReview", None)
+        if present is None or clear is None:
+            return
+        current = dict(pending() or {}) if callable(pending) else {}
+        current_id = str(current.get("sessionId") or "")
+        if current_id and current_id in self._reviews:
+            # 已经在展示的那一项仍然有效，不要重复推送（否则每轮轮询都会重建弹窗）。
+            return
+        if not self._reviews:
+            clear()
+            return
+        # 先入先出：_reviews 保持插入顺序。
+        first = next(iter(self._reviews.values()))
+        present(first)
+
+    def _on_policy_changed(self) -> None:
+        """把策略中只有界面层能处理的项推给 controller（提示音、抢焦点）。"""
+        apply_policy = getattr(self._controller, "applyTerminalAudioPolicy", None)
+        if apply_policy is None:
+            return
+        config = self._policy_config
+        try:
+            apply_policy(
+                {
+                    "soundEnabled": config.sound_enabled,
+                    "soundStrong": config.sound_strong,
+                    "soundCooldownSeconds": config.sound_cooldown_seconds,
+                    "notifySystem": config.notify_system,
+                    "stealFocus": config.steal_focus,
+                }
+            )
+        except Exception:  # noqa: BLE001 - 同步失败不该影响终端
+            log.exception("同步终端通知策略失败")
 
     def _report_status(self, session_id: str, payload: dict[str, Any]) -> None:
         status = payload.get("status")

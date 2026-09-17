@@ -89,6 +89,10 @@ class AppController(QObject):
     stateChanged = Signal()
     themeChanged = Signal()
     signInRunningChanged = Signal()
+    #: 终端审查需要用户注意（任务栏闪烁 / 可选抢焦点）。
+    attentionRequested = Signal()
+    #: 终端风险审查状态变化（待授权项出现 / 解决 / 过期）。
+    reviewChanged = Signal()
 
     def __init__(self, workspace: Workspace | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -113,6 +117,18 @@ class AppController(QObject):
         self._mcp_selected = ""
         self._confirm_spec: dict[str, Any] = {}
         self._confirm_action: Callable[[], None] | None = None
+        self._confirm_extra_action: Callable[[], None] | None = None
+        self._confirm_on_cancel: Callable[[], None] | None = None
+        # Terminal review channels. The view model owns review state; the
+        # controller owns the Qt-facing channels (tray, sound, window).
+        from .terminal import SystemNotifier, SoundPlayer
+
+        self._notifier = SystemNotifier()
+        self._sound = SoundPlayer()
+        self._terminal_policy: dict[str, Any] = {}
+        self._steal_focus_on_review = False
+        self._terminal_review: dict[str, Any] = {}
+        self.attentionRequested.connect(self._on_terminal_review_attention)
         # Batched one-click sign-in state.
         self._sign_in_queue: list[str] = []
         self._sign_in_opened: list[str] = []
@@ -265,6 +281,151 @@ class AppController(QObject):
         ]
 
     # =====================================================================
+    # Terminal review presentation (notification / sound / window attention)
+    # =====================================================================
+    # The view model owns the review *state*; the controller owns the *three
+    # outbound channels* (tray notification, sound, window attention) because
+    # those are the only parts that touch Qt's windowing system.
+    #
+    # Everything here is deliberately best-effort: if the tray is missing or
+    # the sound device refuses to play, the authorisation prompt inside the
+    # app must still work. The user can always answer it there.
+    @Slot()
+    def requestTerminalFullMode(self) -> None:
+        """Ask before switching the terminal to "release everything".
+
+        Risk review exists to catch irreversible actions. Turning it off is a
+        legitimate choice, but it must be an explicit one that states the
+        consequence, not a silent toggle.
+
+        Note: ``warning`` is deliberately NOT set here. In ConfirmDialog a
+        non-empty ``warning`` *blocks* the action (the confirm button is
+        hidden), which is how delete-guards explain themselves. This dialog
+        must remain confirmable, so the caveat goes in ``detail`` instead.
+
+        The action calls the view model directly rather than going through
+        ``_run_sync``: that helper expects an ``ActionResult`` from the
+        workspace layer, while this is pure UI state.
+        """
+        self._request_confirm(
+            title="开启完全放行？",
+            message="自动应答将不再提示风险，也不再要求你授权。",
+            detail=(
+                "高风险菜单（删除、覆盖、强制推送等）会被直接确认。"
+                "会话列表菜单仍不会被自动应答。仅在完全信任当前会话的工作内容时开启。"
+            ),
+            confirm_text="开启完全放行",
+            action=lambda: self.terminal.setReviewMode("full"),
+        )
+
+    @Property("QVariantMap", notify=reviewChanged)
+    def pendingTerminalReview(self) -> dict[str, Any]:
+        """The review currently being asked about (empty when none)."""
+        return dict(self._terminal_review or {})
+
+    @Property(bool, notify=reviewChanged)
+    def terminalReviewOpen(self) -> bool:
+        return bool(self._terminal_review)
+
+    def presentTerminalReview(self, review: dict[str, Any]) -> None:
+        """Show the authorisation prompt for one review.
+
+        Rendered by the ONE shared ConfirmDialog in AppShell — the project
+        deliberately keeps a single instance (the QML smoke test asserts it),
+        so a review fills that same dialog's spec and wires its optional third
+        button through ``extra_action``.
+
+        Reviews are queued in the view model: several sessions can hit a risky
+        menu at once and there is only one dialog. Presenting them one at a
+        time (rather than letting the newest overwrite the oldest) is what
+        keeps an earlier request from being silently orphaned.
+        """
+        data = dict(review or {})
+        if not data:
+            return
+        self._terminal_review = data
+        self.reviewChanged.emit()
+        session_id = str(data.get("sessionId") or "")
+        self._request_confirm(
+            title="AI 终端授权 · " + str(data.get("title") or "会话"),
+            message="将自动发送：" + str(data.get("label") or data.get("payload") or ""),
+            detail=self._review_detail(data),
+            confirm_text="允许本次",
+            extra_text="本会话允许此类",
+            danger=str(data.get("risk") or "") == "risky",
+            action=lambda: self._resolve_terminal_review(session_id, "approve"),
+            extra_action=lambda: self._resolve_terminal_review(session_id, "allow_kind"),
+            # 关闭弹窗（Esc / 点外部）== 拒绝，绝不能读成放行。
+            on_cancel=lambda: self._resolve_terminal_review(session_id, "deny"),
+        )
+        self.attentionRequested.emit()
+
+    @staticmethod
+    def _review_detail(data: dict[str, Any]) -> str:
+        """凑出弹窗的说明文字：原始提示 + 判定理由 + 风险等级。"""
+        parts: list[str] = []
+        prompt = str(data.get("prompt") or "")
+        if prompt:
+            parts.append(f"屏幕提示：{prompt}")
+        reason = str(data.get("reason") or "")
+        if reason:
+            parts.append(f"判定理由：{reason}")
+        risk = str(data.get("riskLabel") or "")
+        if risk:
+            parts.append(f"风险等级：{risk}")
+        return "\n".join(parts)
+
+    def clearTerminalReview(self) -> None:
+        """Drop the current prompt (its review is gone or no longer relevant)."""
+        if not self._terminal_review:
+            return
+        self._terminal_review = {}
+        self.reviewChanged.emit()
+        self._clear_confirm()
+
+    def _resolve_terminal_review(self, session_id: str, decision: str) -> None:
+        """Answer one review, then let the view model advance its queue."""
+        self._terminal_review = {}
+        self.reviewChanged.emit()
+        self.terminal.resolveReview(str(session_id or ""), str(decision))
+
+    @Slot(str, str, bool)
+    def notifyTerminalReview(self, title: str, body: str, urgent: bool) -> None:
+        """Push one review through the system-notification + sound channels."""
+        if self._terminal_policy.get("notifySystem", True):
+            self._notifier.notify(str(title), str(body), urgent=bool(urgent))
+        if self._terminal_policy.get("soundEnabled", True):
+            self._sound.play(urgent=bool(urgent))
+
+    @Slot("QVariantMap")
+    def applyTerminalAudioPolicy(self, payload) -> None:
+        """Apply policy values that only the controller can act on."""
+        data = dict(payload or {})
+        self._terminal_policy.update(data)
+        self._sound.configure(
+            enabled=bool(data.get("soundEnabled", self._sound.enabled)),
+            cooldown_seconds=data.get("soundCooldownSeconds"),
+            strong=data.get("soundStrong"),
+        )
+        if data.get("stealFocus"):
+            self._steal_focus_on_review = True
+        elif "stealFocus" in data:
+            self._steal_focus_on_review = False
+
+    def _on_terminal_review_attention(self) -> None:
+        """Raise the window when the user asked for focus stealing.
+
+        Default is OFF: grabbing focus is disruptive and can interrupt real
+        work. When enabled we still only *activate*, never resize or reorder.
+        """
+        if not self._steal_focus_on_review:
+            return
+        self.requestActivate()
+
+    def shutdownNotifier(self) -> None:
+        self._notifier.hide()
+
+    # =====================================================================
     # Destructive-action confirmation
     # =====================================================================
     # The pending action is a Python callable, not a QML closure: callables
@@ -288,8 +449,13 @@ class AppController(QObject):
         warning: str = "",
         confirm_text: str = "删除",
         danger: bool = True,
+        extra_text: str = "",
+        extra_action: Callable[[], None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
     ) -> None:
         self._confirm_action = action
+        self._confirm_extra_action = extra_action
+        self._confirm_on_cancel = on_cancel
         self._confirm_spec = {
             "title": str(title),
             "message": str(message),
@@ -297,6 +463,9 @@ class AppController(QObject):
             "warning": str(warning),
             "confirmText": str(confirm_text),
             "danger": bool(danger),
+            # 可选的第三个按钮。只有终端风险审查用它（"本会话允许此类"）；
+            # 其余调用方留空，按钮不显示，行为与之前完全一致。
+            "extraText": str(extra_text),
         }
         self.confirmChanged.emit()
 
@@ -310,15 +479,40 @@ class AppController(QObject):
         self._run_sync(action)
 
     @Slot()
-    def cancelPending(self) -> None:
-        """Discard the pending action (called on cancel / dismiss)."""
+    def extraPending(self) -> None:
+        """Run the optional third-button action ("allow this kind")."""
+        action = self._confirm_extra_action
         self._clear_confirm()
+        if action is None:
+            return
+        self._run_sync(action)
+
+    @Slot()
+    def cancelPending(self) -> None:
+        """Discard the pending action (called on cancel / dismiss).
+
+        ``on_cancel`` exists so a caller can attach meaning to dismissal. The
+        terminal review uses it to treat closing the dialog as a denial —
+        dismissing must never be read as approval.
+        """
+        on_cancel = self._confirm_on_cancel
+        self._clear_confirm()
+        if on_cancel is None:
+            return
+        self._run_sync(on_cancel)
 
     def _clear_confirm(self) -> None:
-        if not self._confirm_spec and self._confirm_action is None:
+        if (
+            not self._confirm_spec
+            and self._confirm_action is None
+            and self._confirm_extra_action is None
+            and self._confirm_on_cancel is None
+        ):
             return
         self._confirm_spec = {}
         self._confirm_action = None
+        self._confirm_extra_action = None
+        self._confirm_on_cancel = None
         self.confirmChanged.emit()
 
     @Slot(str)
@@ -1521,7 +1715,11 @@ class AppController(QObject):
             self._toast(f"操作失败：{exc}", "error")
             return
         self._refresh_models()
-        self._report_action(result)
+        # Some actions are pure UI-state changes and return nothing (for example
+        # switching the terminal review mode). Only workspace actions produce an
+        # ActionResult worth reporting, so tolerate None instead of crashing.
+        if result is not None:
+            self._report_action(result)
 
     def _run_action(self, task_id: str, body: Callable[[TaskContext], Any], *, label: str = "") -> None:
         """Run a slow operation on the thread pool."""

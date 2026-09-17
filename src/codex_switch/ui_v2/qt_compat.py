@@ -7,7 +7,23 @@ try:  # pragma: no cover - exercised only when PySide6 is installed
     from PySide6.QtCore import Property, QObject, QRunnable, QThreadPool, QTimer, Qt, QUrl, Signal, Slot  # type: ignore
     from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon  # type: ignore
     from PySide6.QtQml import QQmlApplicationEngine  # type: ignore
-    from PySide6.QtWidgets import QApplication, QFileDialog  # type: ignore
+
+    # QApplication is imported eagerly and deliberately: the terminal's system
+    # notifications go through QSystemTrayIcon (a QtWidgets class) which crashes
+    # the process under a plain QGuiApplication. See ui_v2/app.py.
+    try:
+        from PySide6.QtWidgets import QApplication, QFileDialog  # type: ignore
+    except ImportError:  # pragma: no cover - widgets-less Qt build
+        QApplication = None  # type: ignore[assignment]
+
+        class QFileDialog:  # type: ignore[no-redef]
+            @staticmethod
+            def getExistingDirectory(*args, **kwargs):
+                return ""
+
+            @staticmethod
+            def getOpenFileName(*args, **kwargs):
+                return "", ""
 
     try:
         from PySide6.QtQuickControls2 import QQuickStyle  # type: ignore
@@ -114,8 +130,12 @@ except ImportError:  # pragma: no cover - deterministic fallback
         def aboutToQuit(self):
             return Signal()
 
-    class QApplication(QGuiApplication):
+    class QApplicationFallback(QGuiApplication):
         pass
+
+    # When QtWidgets is missing there is no usable QApplication; expose a
+    # QGuiApplication subclass so callers can keep a single code path.
+    QApplication = QApplicationFallback  # type: ignore[assignment]
 
     class QQmlApplicationEngine:
         def __init__(self):
