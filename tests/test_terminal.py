@@ -170,6 +170,95 @@ class TimelineTests(_ManagerBackedTest):
         time.sleep(0.2)
         self.assertGreater(screen.idle_seconds, 0.1)
 
+
+class AltScreenTests(unittest.TestCase):
+    """备用屏幕（ESC[?1049h / l）的换屏处理。
+
+    codex 的选择器（resume / 审批菜单）跑在备用屏幕里。pyte 虽然把 1049
+    记进模式集合，却**不做任何切换**——实测退出后选择器内容赖在屏幕上、
+    主屏内容反而不见了。用户看到的正是"第二次输入的内容看不见了"。
+    """
+
+    ALT_ON = "\x1b[?1049h"
+    ALT_OFF = "\x1b[?1049l"
+
+    def test_main_screen_is_restored_after_leaving_alt(self) -> None:
+        """这条是本次缺陷的直接回归。"""
+        screen = TerminalScreen()
+        screen.feed(b"\x1b[2J\x1b[H")
+        screen.feed("MAIN CONTENT\r\n".encode())
+        self.assertIn("MAIN CONTENT", screen.tail())
+
+        screen.feed(self.ALT_ON.encode())
+        screen.feed(b"\x1b[2J\x1b[H")
+        screen.feed("ALT CONTENT\r\n".encode())
+        self.assertIn("ALT CONTENT", screen.tail())
+        self.assertNotIn("MAIN CONTENT", screen.tail(), "备用屏幕应是干净的一屏")
+
+        screen.feed(self.ALT_OFF.encode())
+        self.assertIn("MAIN CONTENT", screen.tail(), "退出后主屏内容没有恢复")
+        self.assertNotIn("ALT CONTENT", screen.tail(), "备用屏内容没有清掉")
+
+    def test_alt_screen_starts_clean(self) -> None:
+        screen = TerminalScreen()
+        screen.feed("主屏内容\r\n".encode())
+        screen.feed(self.ALT_ON.encode())
+        self.assertNotIn("主屏内容", screen.tail(), "备用屏幕应清空后使用")
+
+    def test_nested_enter_is_ignored(self) -> None:
+        """重复进入不应把备用屏内容当成主屏存起来。"""
+        screen = TerminalScreen()
+        screen.feed("主屏\r\n".encode())
+        screen.feed(self.ALT_ON.encode())
+        screen.feed(self.ALT_ON.encode())
+        screen.feed("备用屏\r\n".encode())
+        screen.feed(self.ALT_OFF.encode())
+        self.assertIn("主屏", screen.tail(), "重复进入导致主屏丢失")
+
+    def test_leave_without_enter_is_harmless(self) -> None:
+        screen = TerminalScreen()
+        screen.feed("内容\r\n".encode())
+        screen.feed(self.ALT_OFF.encode())
+        self.assertIn("内容", screen.tail())
+
+    def test_output_after_leaving_alt_still_works(self) -> None:
+        """退出选择器后必须还能正常接收输出（用户抱怨的正是这一点）。"""
+        screen = TerminalScreen()
+        screen.feed("主屏\r\n".encode())
+        screen.feed(self.ALT_ON.encode())
+        screen.feed("选择器\r\n".encode())
+        screen.feed(self.ALT_OFF.encode())
+        screen.feed("退出后继续输出\r\n".encode())
+        tail = screen.tail()
+        self.assertIn("退出后继续输出", tail)
+        self.assertIn("主屏", tail)
+
+    def test_alt_sequence_split_across_reads(self) -> None:
+        """PTY 读取边界可能把序列切开，两半都得能认出。"""
+        screen = TerminalScreen()
+        screen.feed("主屏\r\n".encode())
+        screen.feed(b"\x1b[?10")
+        screen.feed(b"49h")
+        screen.feed("备用\r\n".encode())
+        self.assertIn("备用", screen.tail())
+        self.assertNotIn("主屏", screen.tail())
+
+    def test_alt_period_is_kept_in_timeline(self) -> None:
+        """选择器里发生的事也有价值，不该从时间线里丢掉。"""
+        screen = TerminalScreen()
+        screen.feed("主屏\r\n".encode())
+        screen.mark_segment()
+        screen.feed(self.ALT_ON.encode())
+        screen.feed("选择器内容\r\n".encode())
+        screen.mark_segment()
+        screen.feed(self.ALT_OFF.encode())
+
+        timeline = screen.timeline()
+        self.assertIn("选择器内容", timeline, "选择器内容没有并入时间线")
+        self.assertIn("主屏", timeline)
+
+
+class _AltScreenManagerTest(_ManagerBackedTest):
     def test_timeline_marks_on_pause_not_only_with_data(self) -> None:
         """回归：时间线打点必须每轮检查，否则 idle 永远为 0、时间线一直为空。"""
         store: dict[str, _FakeBackend] = {}

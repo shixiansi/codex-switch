@@ -11,6 +11,7 @@ AI CLI（codex / claude）会输出大量光标定位序列（如 ``ESC[1;22H``�
 from __future__ import annotations
 
 import codecs
+import re
 import time
 
 import pyte
@@ -22,12 +23,36 @@ DEFAULT_HISTORY = 2000
 # 时间线最多保留的段落数，避免长时间运行无限增长。
 DEFAULT_MAX_SEGMENTS = 500
 
+# 备用屏幕的进入/退出序列：ESC[?1049h / ESC[?1049l。
+# 捕获组只取最后的 h/l —— 用它判断"进入还是退出"。
+_ALT_SCREEN_RE = re.compile(r"\x1b\[\?1049([hl])")
+
+# 可能是"半截备用屏幕序列"的开头。PTY 的读取边界会把序列切开，
+# 这些前缀先攒着，等后续字节到齐再判定，避免误当普通文本渲染出来。
+_PARTIAL_PREFIXES = tuple(
+    "\x1b[?1049"[: length] for length in range(1, len("\x1b[?1049") + 1)
+)
+
+
+def _partial_alt_suffix(text: str) -> int:
+    """若 ``text`` 以半截备用屏幕序列结尾，返回该尾巴的长度，否则 0。"""
+    for size in range(min(len(text), len("\x1b[?1049")), 0, -1):
+        if text[-size:] in _PARTIAL_PREFIXES:
+            return size
+    return 0
+
 
 class TerminalScreen:
     """维护一块带滚动历史的 VT 字符网格，并可导出为纯文本。
 
     同时维护一条**带时间戳的时间线**：每当输出出现一段停顿后，就把当时的屏幕
     快照记为一个段落。这样界面既能看实时终端，也能看到"什么时候发生了什么"。
+
+    **备用屏幕**：codex 的选择器（resume / 审批菜单）跑在备用屏幕里
+    （``ESC[?1049h`` 进入、``ESC[?1049l`` 退出）。pyte 会把 1049 记进模式集合，
+    却**不做任何切换**——实测进入再退出后，备用屏内容赖在屏幕上、主屏内容
+    反而不见了。表现为"选择器关掉之后界面就停在选择器那一屏"。
+    这里自己实现换屏：进入时存下主屏并清空，退出时把主屏还原。
     """
 
     def __init__(
@@ -39,6 +64,7 @@ class TerminalScreen:
     ) -> None:
         self._columns = columns
         self._lines = lines
+        self._history = history
         self._screen = pyte.HistoryScreen(columns, lines, history=history)
         # strict=False：遇到未知/不完整的转义序列时忽略而不是抛错，
         # 保证 CLI 输出的任何片段都不会中断渲染。
@@ -52,6 +78,12 @@ class TerminalScreen:
         self._max_segments = max_segments
         self._last_activity = 0.0
         self._dirty = False
+        # 备用屏幕：进入时把主屏文本与主屏时间线存下来，退出时还原。
+        self._in_alt_screen = False
+        self._saved_lines: list[str] = []
+        self._saved_segments: list[tuple[float, str]] = []
+        # 跨读取的未完成序列（见 _split_alt_screen）。
+        self._pending_alt = ""
 
     def feed(self, data: bytes) -> None:
         """喂入一段 PTY 字节流。"""
@@ -63,8 +95,91 @@ class TerminalScreen:
         self._last_activity = time.time()
         self._dirty = True
         try:
-            self._stream.feed(text)
+            for chunk in self._split_alt_screen(text):
+                if chunk:
+                    self._stream.feed(chunk)
         except Exception:  # noqa: BLE001 - 渲染失败绝不应中断会话
+            pass
+
+    # -- 备用屏幕 ------------------------------------------------------
+    def _split_alt_screen(self, text: str) -> list[str]:
+        """按"进入/退出备用屏幕"把输入切开，并在切换点换屏。
+
+        切换序列本身不喂给 pyte：换屏由我们自己做，给它只会留下无用的状态。
+
+        PTY 的读取边界**可能把序列切开**（``ESC[?10`` 与 ``49h`` 分两次到达），
+        所以把疑似未完成的尾巴留到下一次处理，而不是当成普通文本喂下去。
+        """
+        text = self._pending_alt + text
+        self._pending_alt = ""
+
+        out: list[str] = []
+        index = 0
+        for match in _ALT_SCREEN_RE.finditer(text):
+            if match.start() > index:
+                out.append(text[index:match.start()])
+            if match.group(1) == "h":
+                self._enter_alt_screen()
+            else:
+                self._leave_alt_screen()
+            index = match.end()
+
+        rest = text[index:]
+        # 尾巴可能是半截序列：以 ESC 开头、且不含终止字母 h/l 的片段先留着。
+        hold = _partial_alt_suffix(rest)
+        if hold:
+            self._pending_alt = rest[-hold:]
+            rest = rest[:-hold]
+        if rest:
+            out.append(rest)
+        return out
+
+    def _new_screen(self) -> None:
+        """换一块干净的网格与流（历史另行处理）。"""
+        self._screen = pyte.HistoryScreen(self._columns, self._lines, history=self._history)
+        self._stream = pyte.Stream(self._screen, strict=False)
+
+    def _enter_alt_screen(self) -> None:
+        """进入备用屏幕：存下主屏文本，再清空给 TUI 用。"""
+        if self._in_alt_screen:
+            return
+        self._saved_lines = self._all_lines()
+        self._saved_segments = list(self._segments)
+        self._in_alt_screen = True
+        self._new_screen()
+        self._dirty = True
+
+    def _leave_alt_screen(self) -> None:
+        """退出备用屏幕：还原主屏，并把选择器期间的输出并入时间线。"""
+        if not self._in_alt_screen:
+            return
+        alt_segments = list(self._segments)
+        saved_lines = self._saved_lines
+        saved_segments = self._saved_segments
+
+        self._in_alt_screen = False
+        self._saved_lines = []
+        self._saved_segments = []
+        self._new_screen()
+        self._replay(saved_lines)
+
+        # 用户在选择器里做的事也有价值（"刚才在选哪个会话"），
+        # 因此把那段也接进时间线，而不是直接丢掉。
+        merged = list(saved_segments)
+        for item in alt_segments:
+            if not merged or merged[-1][1] != item[1]:
+                merged.append(item)
+        self._segments = merged[-self._max_segments:]
+        self._dirty = True
+
+    def _replay(self, lines: list[str]) -> None:
+        """把若干行文本重新画回网格（还原主屏用）。"""
+        if not lines:
+            return
+        try:
+            self._stream.feed("\x1b[2J\x1b[H")
+            self._stream.feed("\r\n".join(lines))
+        except Exception:  # noqa: BLE001 - 还原失败不影响后续输出
             pass
 
     @property
