@@ -9,7 +9,12 @@ DSH 的 CodeBuddy 插件（`@shatyuka/dsh-llm-codebuddy`）把登录凭据存在
 每次登录都会直接覆盖它，所以插件本身同时只能持有一个账号。本工具在这个文件之外维护
 一个账号快照库，切换时把目标账号原子地写回凭据文件，从而实现「账号快照，随时切换」。
 
+**不改动 CodeBuddy 插件自身的任何文件**，所以插件升级不会丢失账号。
+
 ## 快速开始
+
+最省事的方式是在 CodexSwitch 界面里操作：左侧「插件中心」→「CodeBuddy 多账号」。
+下面是命令行用法。
 
 ```powershell
 # 把当前正在用的账号存成快照（名字可省略，默认用账号昵称）
@@ -75,32 +80,42 @@ python scripts/codebuddy_accounts.py import G:\codebuddy2api\auth
 
 工具栏里不会自动刷新账号名，这属于插件自身行为，本工具不做侵入式改动。
 
-## 在 CodexSwitch 里使用（重要）
+## 三种使用方式
 
-**本工具是一个独立的命令行程序，不需要 CodexSwitch，也不应该复制进「脚本中心」。**
+同一个核心实现（`src/codex_switch/codebuddy_core.py`）有三种入口，按需选一种即可。
 
-CodexSwitch 的脚本中心以 `python <临时文件>` 运行 Python 脚本，**不传任何参数**。
-而本工具是需要子命令（`list` / `use` / …）的 CLI：不带参数时 argparse 会直接以
-退出码 2 报错退出。若又勾选了「结束后自动关闭窗口」，窗口一闪而过，看起来就像
-「点了没反应」。这是运行方式不匹配，不是脚本损坏。
+### 1. 在 CodexSwitch 界面里用（推荐）
 
-想在 CodexSwitch 里用，正确做法二选一：
+打开 CodexSwitch → 左侧「插件中心」→「CodeBuddy 多账号」，即可查看账号列表、
+一键切换、保存当前账号。这是最省事的方式，不需要记命令。
 
-1. **直接用命令行**（推荐）：本项目附带全局命令 `cb`，任意目录可用：
-   ```powershell
-   cb list
-   cb use 主号
-   ```
-2. **写一个固定动作的包装脚本**贴进脚本中心。因为脚本中心不传参数，动作必须写死，
-   且每个动作要单独一个脚本：
-   ```python
-   import subprocess, sys
-   subprocess.run([sys.executable, r"F:\编程\codex-switch\scripts\codebuddy_accounts.py", "list"])
-   ```
-   同时**不要勾选「结束后自动关闭窗口」**，否则看不到输出。
+界面版由内置插件 `codebuddy-accounts` 提供，详见 [`plugins.md`](plugins.md)。
 
-如果要的是「在 CodexSwitch 界面里点按钮切换」的完整体验，那需要给 CodexSwitch 新增一个
-CodeBuddy 账号页面（类似现有的号池页），不属于本工具的范围。
+### 2. 命令行
+
+```powershell
+python scripts\codebuddy_accounts.py list
+python scripts\codebuddy_accounts.py use 主号
+```
+
+脚本自带路径探测，未安装成包也能直接运行。
+
+### 3. 走进 CodexSwitch 的脚本中心（需要包装脚本）
+
+脚本中心以 `python <临时文件>` 运行脚本，**不传任何参数**，而本工具的 CLI 需要
+子命令。直接贴进去会在 argparse 处以退出码 2 退出；若又勾了「结束后自动关闭窗口」，
+窗口一闪而过，看起来就像「点了没反应」——这是运行方式不匹配，不是脚本损坏。
+
+要用的话必须写一个把动作写死的包装脚本，且每个动作一个：
+
+```python
+import subprocess, sys
+subprocess.run([sys.executable, r"F:\编程\codex-switch\scripts\codebuddy_accounts.py", "list"])
+```
+
+并且**不要勾选「结束后自动关闭窗口」**，否则看不到输出。
+
+> 既然插件中心已经提供了完整的图形界面，一般不需要再走这条路。
 
 ## 安全与可恢复性
 
