@@ -1,5 +1,6 @@
 from .base import BaseViewModel, SnapshotViewModel
 from .dashboard import DashboardViewModel
+from .plugins import PluginsViewModel
 from .profiles import ProfilesViewModel
 from .projects import ProjectsViewModel
 from .proxy import ProxyViewModel
@@ -11,6 +12,7 @@ from .tools import ToolsViewModel
 __all__ = [
     "BaseViewModel",
     "DashboardViewModel",
+    "PluginsViewModel",
     "ProfilesViewModel",
     "ProjectsViewModel",
     "ProxyViewModel",

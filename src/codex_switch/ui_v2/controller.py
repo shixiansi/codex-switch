@@ -14,11 +14,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from ..plugins import (
+    PluginActionError,
+    PluginApi,
+    PluginLoadError,
+    PluginRegistry,
+    default_plugin_root,
+    load_plugin,
+    permission_label,
+    unload_plugin,
+)
 from ..storage import ProfileStore
 from .theme import ThemeController
 from .qt_compat import Property, QObject, QTimer, Signal, Slot
 from .viewmodels import (
     DashboardViewModel,
+    PluginsViewModel,
     ProfilesViewModel,
     ProjectsViewModel,
     ProxyViewModel,
@@ -81,6 +92,9 @@ class AppController(QObject):
         super().__init__(parent)
         self.workspace = workspace or Workspace()
         self._section = "dashboard"
+        # 插件注册表：扫描磁盘但不加载代码。加载推迟到用户显式操作或显式调用
+        # ``load_plugins()``，这样"启动即执行第三方代码"不是默认行为。
+        self._plugin_registry = PluginRegistry()
         self._busy = False
         self._drawer = ""
         self._active_task = ""
@@ -124,6 +138,7 @@ class AppController(QObject):
         self.settings = SettingsViewModel(self, self)
         self.scripts = ScriptsViewModel(self, self)
         self.terminal = TerminalViewModel(self, self)
+        self.plugins = PluginsViewModel(self, self)
 
         self._models = (
             self.dashboard,
@@ -134,6 +149,7 @@ class AppController(QObject):
             self.settings,
             self.scripts,
             self.terminal,
+            self.plugins,
         )
         for model in self._models:
             model.errorRaised.connect(self._on_view_model_error)
@@ -233,6 +249,10 @@ class AppController(QObject):
     @Property(TerminalViewModel, constant=True)
     def terminalModel(self):
         return self.terminal
+
+    @Property(PluginsViewModel, constant=True)
+    def pluginsModel(self):
+        return self.plugins
 
     @Property("QVariantList", notify=stateChanged)
     def contextInfo(self) -> list[dict[str, Any]]:
@@ -1121,6 +1141,172 @@ class AppController(QObject):
 
     def script_detail(self, script_id: str) -> dict[str, Any]:
         return self.workspace.script_detail(str(script_id))
+
+    # =====================================================================
+    # Plugins
+    # =====================================================================
+    def plugin_root(self) -> Path:
+        """用户插件目录。插件中心会显示它并提供"打开"入口。"""
+        return default_plugin_root()
+
+    def plugin_rows(self) -> list[dict[str, Any]]:
+        return self._plugin_registry.rows()
+
+    def plugin_issue_rows(self) -> list[dict[str, Any]]:
+        return self._plugin_registry.issue_rows()
+
+    def plugin_detail(self, plugin_id: str) -> dict[str, Any]:
+        entry = self._plugin_registry.get(str(plugin_id))
+        if entry is None:
+            return {}
+        row = entry.to_row()
+        row["permissions"] = [
+            {"name": item, "label": permission_label(item)}
+            for item in sorted(entry.manifest.permissions)
+        ]
+        row["actions"] = [dict(item) for item in entry.manifest.actions]
+        return row
+
+    @Slot()
+    def rescanPlugins(self) -> None:
+        """重新扫描插件目录，并加载新出现且已启用的插件。"""
+        self._plugin_registry.reload()
+        loaded = self._load_enabled_plugins()
+        self.plugins.rebuild()
+        if loaded:
+            self.showToast(f"已加载 {len(loaded)} 个插件。", "success")
+        else:
+            self.showToast("插件目录已重新扫描。", "info")
+
+    @Slot(str, bool)
+    def setPluginEnabled(self, plugin_id: str, enabled: bool) -> None:
+        entry = self._plugin_registry.set_enabled(str(plugin_id), bool(enabled))
+        if entry is None:
+            self.showToast("插件不存在。", "error")
+            return
+        if enabled:
+            self._load_plugin(entry.id)
+        else:
+            unload_plugin(entry)
+        self.plugins.rebuild()
+        self.showToast(f"已{'启用' if enabled else '禁用'}插件：{entry.manifest.name}", "success")
+
+    @Slot(str, str)
+    def runPluginAction(self, plugin_id: str, action_key: str) -> None:
+        """执行插件声明的动作。
+
+        插件动作经宿主统一入口执行，因此异常都在这里被收敛成提示，
+        不会冒泡到 QML 造成界面报错。
+        """
+        entry = self._plugin_registry.get(str(plugin_id))
+        if entry is None or entry.instance is None:
+            self.showToast("插件未加载，无法执行动作。", "error")
+            return
+        handler = getattr(entry.instance, "run_action", None)
+        if not callable(handler):
+            self.showToast("该插件没有提供可执行动作。", "error")
+            return
+        try:
+            result = handler(str(action_key))
+        except Exception as exc:  # noqa: BLE001 - 插件异常不得冒泡
+            self.showToast(f"插件动作失败：{exc}", "error")
+            return
+        message = str(result) if result else "动作已完成。"
+        self.showToast(message, "success")
+
+    @Slot()
+    def openPluginFolder(self) -> None:
+        """打开插件目录；不存在时先建出来，避免用户面对一个空对话框。"""
+        root = self.plugin_root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.showToast(f"无法创建插件目录：{exc}", "error")
+            return
+        from .qt_compat import QDesktopServices, QUrl
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    def load_plugins(self) -> list[str]:
+        """扫描并加载已启用的插件。启动时调用；返回加载成功的 id 列表。"""
+        self._plugin_registry.reload()
+        return self._load_enabled_plugins()
+
+    def _load_enabled_plugins(self) -> list[str]:
+        loaded: list[str] = []
+        for entry in self._plugin_registry.entries:
+            if entry.loadable and entry.instance is None:
+                if self._load_plugin(entry.id):
+                    loaded.append(entry.id)
+        return loaded
+
+    def _load_plugin(self, plugin_id: str) -> bool:
+        """加载单个插件；失败只标记状态并提示，绝不影响其他插件或主程序。"""
+        entry = self._plugin_registry.get(str(plugin_id))
+        if entry is None or not entry.loadable:
+            return False
+        try:
+            api = self._make_plugin_api(entry.manifest)
+            entry.instance = load_plugin(entry, api)
+            self._plugin_registry.mark_ready(entry.id)
+            return True
+        except PluginLoadError as exc:
+            self._plugin_registry.mark_error(entry.id, str(exc))
+            self.showToast(f"插件 {entry.manifest.name} 加载失败：{exc}", "error")
+            return False
+
+    def _make_plugin_api(self, manifest) -> PluginApi:
+        """构造该插件的受控 API 面。
+
+        只按清单声明的权限放行；文件根目录取自清单的 ``paths`` 声明。
+        """
+        return PluginApi(
+            manifest,
+            snapshot_provider=self._plugin_snapshot,
+            action_runner=self._run_plugin_host_action,
+            allowed_roots={key: list(value) for key, value in manifest.path_roots.items()},
+            logger=lambda message: self.showToast(str(message), "info"),
+        )
+
+    def _plugin_snapshot(self) -> dict[str, Any]:
+        """给插件的只读状态快照。
+
+        `PluginApi.snapshot()` 会再做一次深拷贝，所以这里直接给引用是安全的，
+        也避免每次调用都复制一遍整个配置库。
+        """
+        session = self.workspace.session
+        return {
+            "version": self.version,
+            "section": self._section,
+            "pluginRoot": str(self.plugin_root()),
+            "profiles": [
+                {"id": profile.id, "name": profile.name, "vendor": profile.vendor}
+                for profile in session.profiles
+            ],
+            "projects": [
+                {"id": project.id, "name": project.name, "dir": project.project_dir}
+                for project in session.projects
+            ],
+        }
+
+    def _run_plugin_host_action(self, action: str, payload: dict[str, Any]) -> Any:
+        """插件可调用的宿主动作白名单。
+
+        刻意做小：插件能触达的宿主能力全部列在这里，新增能力必须显式登记，
+        这样"插件到底能动什么"始终是一份可审计的短清单。
+        """
+        if action == "refresh":
+            self.refreshAll()
+            return "已刷新。"
+        if action == "toast":
+            self.showToast(str(payload.get("message") or ""), str(payload.get("level") or "info"))
+            return "已提示。"
+        raise PluginActionError(f"未登记的动作：{action!r}")
+
+    def shutdown_plugins(self) -> None:
+        """卸载全部插件。退出时调用，失败不阻断退出。"""
+        for entry in self._plugin_registry.entries:
+            unload_plugin(entry)
 
     def _sync_script_polling(self) -> None:
         """Run the poll timer only while a script is actually running."""
