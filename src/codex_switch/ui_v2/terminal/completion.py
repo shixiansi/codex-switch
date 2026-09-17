@@ -44,7 +44,18 @@ _SELECTION_MARKERS = "›❯>»"
 _HINT_KEY_RE = re.compile(r"(?<![\w+])(enter|esc|tab|ctrl\+\w|shift\+tab)(?![\w+])", re.I)
 
 # 至少要有这么多条编号选项，才认为是在等待选择。
+#
+# 编号菜单刻意**不允许只有 1 项**：codex 的输入提示符本身就是
+# ``› 1. 做点什么`` 这个形状（用户输入 ``1. xxx`` 时尤其像），
+# 放宽到 1 项会把用户正在输入的内容判成菜单。
 _MIN_OPTIONS = 2
+
+# 无编号列表菜单（如 codex 的 resume 选择器）允许**只有 1 项**。
+#
+# 为什么可以和编号菜单不同：它额外要求"尾部有按键提示行 + 至少一项带选中标记"，
+# 这两个信号叠加后，单条也是可靠证据。而"只剩一个历史会话"是完全正常的场景，
+# 旧实现按 2 项判定会让整个菜单识别失败——界面不弹选项条，用户连回车都发不出。
+_MIN_LIST_ITEMS = 1
 # 只看屏幕末尾，避免匹配到历史输出里的旧内容。
 #
 # 取尾部时**按行对齐**（见 _tail_lines）：直接切字符串会把第一行截成半截，
@@ -211,10 +222,14 @@ def _detect_plain_list(lines: list[str]) -> ChoiceMenu | None:
     判定条件刻意收紧，避免把 AI 正文里的引用块当成菜单：
 
     1. 屏幕尾部存在**按键提示行**（含两个以上按键名）；
-    2. 提示行上方是一段连续列表项，至少两行；
+    2. 提示行上方是一段连续列表项，至少 ``_MIN_LIST_ITEMS`` 行；
     3. 这段里至少有一行带选中标记。
 
     三条同时满足才认。缺任何一条都返回 None，宁可漏报。
+
+    列表项数下限是 1（而不是编号菜单的 2）："只剩一个历史会话"是正常场景，
+    按 2 项判定会让整个菜单识别失败，表现为界面不弹选项条、用户无从选择。
+    条件是叠加的，单条仍需同时具备页脚按键行与选中标记，因此不会因此引入误报。
 
     实现要点（每一条都来自真实 codex 输出）：
 
@@ -224,7 +239,7 @@ def _detect_plain_list(lines: list[str]) -> ChoiceMenu | None:
     * 列表末尾还有一行 ``↓ more``，既不是列表项也不该打断收集；
     * 缩进不固定：选中项前是两格、其余是四格。
     """
-    if len(lines) < _MIN_OPTIONS + 1:
+    if len(lines) < _MIN_LIST_ITEMS + 1:
         return None
 
     # 在尾部有限几行内找按键提示行。取**最靠上**的那一行：页脚的第一行
@@ -256,7 +271,7 @@ def _detect_plain_list(lines: list[str]) -> ChoiceMenu | None:
         cursor -= 1
     block.reverse()
 
-    if len(block) < _MIN_OPTIONS:
+    if len(block) < _MIN_LIST_ITEMS:
         return None
 
     # 逐行解析：带标记的算一项并记录选中位置。
@@ -279,7 +294,7 @@ def _detect_plain_list(lines: list[str]) -> ChoiceMenu | None:
             return None
         labels.append(label)
 
-    if len(labels) < _MIN_OPTIONS or selected < 0:
+    if len(labels) < _MIN_LIST_ITEMS or selected < 0:
         return None
 
     # 很长的段落更像是正文而不是菜单项。

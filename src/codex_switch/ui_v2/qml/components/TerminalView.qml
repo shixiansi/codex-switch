@@ -78,36 +78,10 @@ Item {
                         // 必须用方向键把光标移过去，所以提示文案要跟着变。
                         text: root.choiceKind === "list"
                             ? "等待选择（列表菜单：点选项会自动用 ↑↓ 移动光标后回车）"
-                            : "等待你的选择（点按钮直接选定；也可用下方 ↑↓ 移动、Enter 确认）"
+                            : "等待你的选择（点按钮直接选定；也可用 ↓ 下方方向键移动、Enter 确认）"
                         color: Theme.accent
                         font.pixelSize: Theme.fontCaption
                         wrapMode: Text.WordWrap
-                    }
-
-                    // 方向键/确认键：部分 TUI 菜单只认键盘操作
-                    AppButton {
-                        text: "↑"
-                        variant: "secondary"
-                        implicitHeight: Theme.controlHeightSm
-                        onClicked: root.keySent("up")
-                    }
-                    AppButton {
-                        text: "↓"
-                        variant: "secondary"
-                        implicitHeight: Theme.controlHeightSm
-                        onClicked: root.keySent("down")
-                    }
-                    AppButton {
-                        text: "Enter"
-                        variant: "secondary"
-                        implicitHeight: Theme.controlHeightSm
-                        onClicked: root.keySent("enter")
-                    }
-                    AppButton {
-                        text: "Esc"
-                        variant: "ghost"
-                        implicitHeight: Theme.controlHeightSm
-                        onClicked: root.keySent("esc")
                     }
                 }
 
@@ -133,6 +107,64 @@ Item {
                     }
                 }
             }
+        }
+
+        // ---- 按键条：方向键 / Enter / Esc ----
+        //
+        // **始终可见**（只要会话存在），不跟"是否检测到菜单"挂钩。
+        // 早先这几个键被放在选项面板里，于是菜单一旦没被识别出来，用户连
+        // 回车和方向键都发不出去，整屏就卡死了——而 TUI 菜单恰恰只能靠按键操作。
+        // 把它们独立出来，识别失败时用户仍能手动操作。
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: visible ? Theme.space2 : 0
+            visible: root.inputEnabled
+            spacing: Theme.space2
+
+            Text {
+                text: "按键"
+                color: Theme.textFaint
+                font.pixelSize: Theme.fontCaption
+            }
+
+            AppButton {
+                text: "↑"
+                variant: "secondary"
+                implicitHeight: Theme.controlHeightSm
+                onClicked: root.keySent("up")
+            }
+            AppButton {
+                text: "↓"
+                variant: "secondary"
+                implicitHeight: Theme.controlHeightSm
+                onClicked: root.keySent("down")
+            }
+            AppButton {
+                text: "←"
+                variant: "secondary"
+                implicitHeight: Theme.controlHeightSm
+                onClicked: root.keySent("left")
+            }
+            AppButton {
+                text: "→"
+                variant: "secondary"
+                implicitHeight: Theme.controlHeightSm
+                onClicked: root.keySent("right")
+            }
+            AppButton {
+                text: "Enter"
+                variant: "secondary"
+                implicitHeight: Theme.controlHeightSm
+                onClicked: root.keySent("enter")
+            }
+            AppButton {
+                text: "Esc"
+                variant: "ghost"
+                implicitHeight: Theme.controlHeightSm
+                onClicked: root.keySent("esc")
+            }
+
+            Item { Layout.fillWidth: true }
         }
 
         // ---- 输出区 ----

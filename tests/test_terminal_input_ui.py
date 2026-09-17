@@ -147,6 +147,67 @@ class TerminalViewKeyTests(unittest.TestCase):
         self._send(0x2F, "/")
         self.assertTrue(any(item[0] == "edited" for item in self.received))
 
+    # -- 按键条必须始终可用 ------------------------------------------------
+    def _key_buttons(self):
+        """找出按键条里的按钮（按文字识别）。"""
+        from PySide6.QtQuick import QQuickItem
+
+        found = {}
+        for item in self.view.findChildren(QQuickItem):
+            try:
+                if not item.metaObject().className().startswith("AppButton"):
+                    continue
+                text = str(item.property("text") or "")
+            except Exception:  # noqa: BLE001
+                continue
+            if text in ("↑", "↓", "←", "→", "Enter", "Esc"):
+                found[text] = item
+        return found
+
+    def test_key_buttons_visible_even_without_a_detected_menu(self) -> None:
+        """回归：识别不出菜单时，用户仍必须能手动发方向键与回车。
+
+        旧实现把这几个键放在"检测到选择菜单"的面板里，于是一旦菜单没被识别
+        （例如只剩一个历史会话的 resume 列表），整屏就卡死——菜单明明在等按键，
+        界面却一个键都发不出去。按键条现在与会话存在与否挂钩，不再依赖识别结果。
+        """
+        self.view.setProperty("inputEnabled", True)
+        self.view.setProperty("awaitingChoice", False)
+        self.view.setProperty("choices", [])
+        self.view.setProperty("forceActiveFocus", True)
+        buttons = self._key_buttons()
+        for label in ("↑", "↓", "Enter", "Esc"):
+            self.assertIn(label, buttons, f"缺少按键按钮 {label}")
+            self.assertTrue(
+                buttons[label].property("visible"), f"{label} 在没有菜单时也应可见"
+            )
+
+    def test_key_buttons_emit_key_sent(self) -> None:
+        """按键条要真的发出 keySent，而不是只摆在那里。"""
+        from PySide6.QtQuick import QQuickItem
+
+        self.view.setProperty("inputEnabled", True)
+        self.view.setProperty("awaitingChoice", False)
+        self.view.setProperty("choices", [])
+        sent: list[str] = []
+        self.view.keySent.connect(lambda key: sent.append(str(key)))
+
+        buttons = self._key_buttons()
+        for label, expected in (("↑", "up"), ("↓", "down"), ("Enter", "enter"), ("Esc", "esc")):
+            self.assertIn(label, buttons, f"缺少按键按钮 {label}")
+            buttons[label].clicked.emit()
+        self.assertEqual(sent, ["up", "down", "enter", "esc"])
+
+    def test_key_buttons_hidden_when_no_session(self) -> None:
+        """没有会话时按键条不该出现（否则点了没有接收方）。"""
+        self.view.setProperty("inputEnabled", False)
+        buttons = self._key_buttons()
+        for label in ("↑", "↓", "Enter", "Esc"):
+            self.assertIn(label, buttons, f"缺少按键按钮 {label}")
+            self.assertFalse(
+                buttons[label].property("visible"), f"没有会话时 {label} 不该可见"
+            )
+
 
 @unittest.skipUnless(_qt_ready(), "需要 Qt")
 class EnterSendsFullCommandTests(unittest.TestCase):

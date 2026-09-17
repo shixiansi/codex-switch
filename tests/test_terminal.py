@@ -537,6 +537,85 @@ class PlainListMenuTests(unittest.TestCase):
         self.assertTrue(menu.awaiting)
         self.assertEqual(menu.kind, "numbered")
 
+    # -- 只有一项的列表菜单 ----------------------------------------------
+    # 真实缺陷（用户截图）：只剩一个历史会话时，`1 / 1` 的 resume 菜单被整个
+    # 否决，界面不弹选项条，用户完全无法选择。
+    SINGLE_ITEM_SCREEN = (
+        "Resume a previous session\n"
+        "Type to search\n"
+        "Filter: [Cwd] All  Status: [Active] Archived  Sort: [Updated] Created\n"
+        "\n"
+        "› 26m ago  开发视频图片智能分类去重App\n"
+        "\n"
+        "  1 / 1 · 100% ────────────────────────\n"
+        "enter resume  ctrl+a archive  ctrl+c exit  tab focus sort/filter  "
+        "+/→ change option\n"
+        "ctrl+o comfortable view  ctrl+t transcript  ctrl+e expand  ↑/↓ browse\n"
+    )
+
+    def test_single_item_list_is_detected(self) -> None:
+        """只有一项的列表菜单同样要识别出来。
+
+        旧实现要求列表至少两项，于是"只剩一个历史会话"这一常见场景整屏失效。
+        列表菜单的条件是叠加的（页脚按键行 + 选中标记），单项仍然可靠。
+        """
+        menu = detect_menu(self.SINGLE_ITEM_SCREEN)
+        self.assertTrue(menu.awaiting, "单项 resume 菜单没有被识别出来")
+        self.assertEqual(menu.kind, "list")
+        self.assertEqual(len(menu.choices), 1)
+        self.assertEqual(menu.selected, 0)
+        self.assertIn("开发视频图片智能分类去重App", menu.choices[0])
+
+    def test_single_numbered_option_is_still_not_a_menu(self) -> None:
+        """编号菜单**不**放宽到 1 项：codex 的输入提示符就是这个形状。
+
+        放宽会把用户自己输入的 ``1. xxx`` 判成菜单，这是本模块一直在防的误报。
+        """
+        self.assertFalse(detect_menu("› 1. do something\n").awaiting)
+        self.assertFalse(detect_menu("› 1. Yes\n").awaiting)
+
+    def test_single_item_still_requires_footer_and_marker(self) -> None:
+        """单项放宽后，防误报的两个条件必须仍然生效。"""
+        no_footer = "输出：\n› 26m ago  某个会话\n"
+        self.assertFalse(detect_menu(no_footer).awaiting, "缺按键提示行不该认作菜单")
+
+        no_marker = (
+            "Resume a previous session\n"
+            "  26m ago  某个会话\n"
+            "\n"
+            "enter resume  esc exit  ctrl+c exit\n"
+        )
+        self.assertFalse(detect_menu(no_marker).awaiting, "缺选中标记不该认作菜单")
+
+    def test_single_item_with_wrapped_label_is_still_detected(self) -> None:
+        """标题长到触发 TUI 折行时，菜单仍要能被识别出来（可用性优先）。
+
+        已知局限：折行的续行目前会被当成额外选项，于是选项数偏多
+        （实测长标题得 3 项）。这与"只剩一项"是两个独立问题，且属于本次
+        修复之前就存在的行为，因此这里如实记录现状，不假装已经解决：
+        - 识别本身必须成功（否则用户完全无法操作，才是真正的卡死）；
+        - 但不能因此把菜单判成不可用。
+
+        真正要修需要"折行续行"的判定规则（续行没有 "xx ago" 前缀、缩进更深），
+        属于独立改动，避免在没有真实样本的情况下引入新的误判。
+        """
+        long_title = "一个特别长的会话标题" * 12  # 填满 120 列，必然折行
+        wrapped = (
+            "Resume a previous session\n"
+            "Type to search\n"
+            "\n"
+            f"› 26m ago   {long_title}\n"
+            "\n"
+            "  1 / 1 · 100% ────────────────────────\n"
+            "enter resume  ctrl+a archive  esc exit  ←/→ change option\n"
+        )
+        menu = detect_menu(wrapped)
+        self.assertTrue(menu.awaiting, "折行的列表菜单仍应被识别")
+        self.assertEqual(menu.kind, "list")
+        # 如实记录：续行被计入，因此项数多于真实会话数。
+        self.assertGreaterEqual(len(menu.choices), 1)
+
+
     def test_confirm_prompt_kind(self) -> None:
         menu = detect_menu("Overwrite file? [Y/n] ")
         self.assertTrue(menu.awaiting)
