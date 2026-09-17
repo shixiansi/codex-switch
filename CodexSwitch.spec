@@ -19,6 +19,7 @@ BASE_PREFIX = Path(sys.base_prefix)
 HOOKS_ROOT = ROOT / "pyinstaller-hooks"
 QML_ROOT = SRC_ROOT / "codex_switch" / "ui_v2" / "qml"
 ICONS_ROOT = SRC_ROOT / "codex_switch" / "ui_v2" / "assets" / "icons"
+BUILTIN_PLUGINS_ROOT = SRC_ROOT / "codex_switch" / "builtin_plugins"
 sys.path.insert(0, str(SRC_ROOT))
 
 
@@ -29,6 +30,10 @@ def _collect_tree(source: Path, target_root: str) -> list[tuple[str, str]]:
     output: list[tuple[str, str]] = []
     for path in source.rglob("*"):
         if not path.is_file():
+            continue
+        # 跳过字节码缓存：真源码就在旁边，把 .pyc 一起打进去既没用，
+        # 又可能在解释器看来"更新"而遮蔽真正的 .py。
+        if "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         relative_parent = path.relative_to(source).parent
         destination_dir = Path(target_root) / relative_parent
@@ -57,6 +62,29 @@ TKINTER_DATAS = (
 QML_PACKAGE_ROOT = "codex_switch/ui_v2"
 QML_DATAS = _collect_tree(QML_ROOT, f"{QML_PACKAGE_ROOT}/qml")
 ICON_DATAS = _collect_tree(ICONS_ROOT, f"{QML_PACKAGE_ROOT}/assets/icons")
+
+# --- 内置插件（数据文件，必须显式打包） -------------------------------------
+# 内置插件目录里是 plugin.json / entry.py / page.qml 这类**数据**，不是可导入的
+# Python 包（目录下没有 __init__.py），PyInstaller 的模块分析看不到它们，
+# 不显式收集就会静默丢失。丢失后 builtin_plugin_root() 指向不存在的目录，
+# 插件中心永远显示「已安装插件 (0)」，且不会有任何报错。
+# 目标路径必须与运行时 builtin_plugin_root() 的查找位置一致。
+PLUGIN_PACKAGE_ROOT = "codex_switch/builtin_plugins"
+BUILTIN_PLUGIN_DATAS = _collect_tree(BUILTIN_PLUGINS_ROOT, PLUGIN_PACKAGE_ROOT)
+
+# 插件入口是用 importlib 按文件路径加载的（见 plugins/loader.py），
+# PyInstaller 的静态分析完全看不到插件里的 import，所以插件依赖的宿主模块
+# 必须在这里显式声明。否则插件能被打包、也能被发现，但一加载就
+# ModuleNotFoundError——表现为插件状态变成"错误"。
+PLUGIN_HIDDENIMPORTS = [
+    "codex_switch.plugins",
+    "codex_switch.plugins.api",
+    "codex_switch.plugins.loader",
+    "codex_switch.plugins.manifest",
+    "codex_switch.plugins.registry",
+    "codex_switch.codebuddy_core",
+]
+
 QML_HIDDENIMPORTS = [
     "PySide6.QtCore",
     "PySide6.QtGui",
@@ -140,10 +168,17 @@ a = Analysis(
         + APP_DATAS
         + QML_DATAS
         + ICON_DATAS
+        + BUILTIN_PLUGIN_DATAS
         + TTKBOOTSTRAP_DATAS
         + TERMINAL_DATAS
     ),
-    hiddenimports=TKINTER_HIDDENIMPORTS + TTKBOOTSTRAP_HIDDENIMPORTS + QML_HIDDENIMPORTS + TERMINAL_HIDDENIMPORTS,
+    hiddenimports=(
+        TKINTER_HIDDENIMPORTS
+        + TTKBOOTSTRAP_HIDDENIMPORTS
+        + QML_HIDDENIMPORTS
+        + TERMINAL_HIDDENIMPORTS
+        + PLUGIN_HIDDENIMPORTS
+    ),
     hookspath=[str(HOOKS_ROOT)],
     hooksconfig={},
     runtime_hooks=[],

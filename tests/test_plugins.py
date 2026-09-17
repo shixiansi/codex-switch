@@ -598,5 +598,78 @@ class LoadAllIsolationTests(unittest.TestCase):
         self.assertEqual(loaded, [])
 
 
+class FrozenPathTests(unittest.TestCase):
+    """冻结（PyInstaller）形态下的路径解析。
+
+    内置插件是**数据文件**而不是可导入的包，PyInstaller 的模块分析看不到
+    它们。曾经因此出现：exe 里根本没有 builtin_plugins 目录，插件中心
+    永远显示「已安装插件 (0)」，且没有任何报错。这里锁死两件事：
+    路径查找要认 ``sys._MEIPASS``，spec 也要真的把它们打进去。
+    """
+
+    def test_builtin_root_prefers_meipass_when_frozen(self) -> None:
+        """冻结运行时必须优先使用 ``sys._MEIPASS`` 下的插件目录。"""
+        import importlib
+        import os
+
+        from codex_switch.plugins import registry as registry_module
+
+        scratch = PROJECT_ROOT / ".tmp"
+        scratch.mkdir(parents=True, exist_ok=True)
+        fake_root = Path(tempfile.mkdtemp(prefix="meipass-", dir=str(scratch)))
+        self.addCleanup(lambda: shutil.rmtree(fake_root, ignore_errors=True))
+
+        plugin_dir = fake_root / "codex_switch" / "builtin_plugins" / "demo"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text("{}", encoding="utf-8")
+
+        original = getattr(sys, "_MEIPASS", None)
+        sys._MEIPASS = str(fake_root)
+        self.addCleanup(lambda: (
+            setattr(sys, "_MEIPASS", original) if original is not None
+            else delattr(sys, "_MEIPASS")
+        ))
+
+        try:
+            importlib.reload(registry_module)
+            resolved = registry_module.builtin_plugin_root()
+        finally:
+            importlib.reload(registry_module)
+
+        self.assertEqual(
+            resolved, fake_root / "codex_switch" / "builtin_plugins",
+            "冻结形态下没有使用 _MEIPASS，插件将全部找不到",
+        )
+
+    def test_builtin_root_falls_back_to_source_tree(self) -> None:
+        """源码运行时指向仓库内的 builtin_plugins。"""
+        from codex_switch.plugins.registry import builtin_plugin_root
+
+        resolved = builtin_plugin_root()
+        self.assertTrue(resolved.is_dir())
+        self.assertEqual(resolved.name, "builtin_plugins")
+
+    def test_spec_bundles_builtin_plugins(self) -> None:
+        """打包配置必须显式收集内置插件目录。
+
+        这条防的是"改了 spec 又漏掉插件"——插件目录里的 plugin.json /
+        page.qml 都是数据文件，不会被自动收集。
+        """
+        spec = (PROJECT_ROOT / "CodexSwitch.spec").read_text(encoding="utf-8")
+        self.assertIn("BUILTIN_PLUGIN_DATAS", spec,
+                      "spec 没有定义内置插件的收集项")
+        self.assertIn("BUILTIN_PLUGIN_DATAS", spec.split("datas=(", 1)[1],
+                      "定义了却没有放进 datas，等于没打包")
+        self.assertIn("codex_switch/builtin_plugins", spec,
+                      "打包目标路径必须与运行时查找位置一致")
+        self.assertIn("codex_switch.codebuddy_core", spec,
+                      "插件入口用 importlib 加载，其依赖必须作为隐藏导入声明")
+
+    def test_builtin_plugin_directory_has_no_pycache_in_spec_scope(self) -> None:
+        """收集逻辑要跳过 __pycache__，避免把陈旧字节码打进包里。"""
+        spec = (PROJECT_ROOT / "CodexSwitch.spec").read_text(encoding="utf-8")
+        self.assertIn("__pycache__", spec)
+
+
 if __name__ == "__main__":
     unittest.main()

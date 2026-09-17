@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 from typing import Any
 
 from .manifest import MANIFEST_FILE_NAME, ManifestError, PluginManifest, load_manifest_file
@@ -103,8 +104,30 @@ def default_plugin_root() -> Path:
 
 
 def builtin_plugin_root() -> Path:
-    """随程序分发的内置插件目录（只读语义，但实现上不强制）。"""
-    return Path(__file__).resolve().parent.parent / "builtin_plugins"
+    """随程序分发的内置插件目录（只读语义，但实现上不强制）。
+
+    需要处理两种运行形态：
+
+    * 源码运行：插件目录就在 ``codex_switch/builtin_plugins``，
+      即 ``__file__`` 的上一级包目录下；
+    * PyInstaller 冻结运行：程序和数据被解包到 ``sys._MEIPASS``，
+      ``__file__`` 指向那个临时目录。spec 里把内置插件按
+      ``codex_switch/builtin_plugins`` 的相对结构打了进去，所以这里
+      必须先看 ``_MEIPASS``，否则冻结后**一个插件都找不到**——
+      表现就是插件中心永远显示「已安装插件 (0)」。
+
+    与 :mod:`codex_switch.resources` 的资产查找保持同一套约定。
+    """
+    candidates: list[Path] = []
+    pyinstaller_root = getattr(sys, "_MEIPASS", None)
+    if pyinstaller_root:
+        candidates.append(Path(pyinstaller_root) / "codex_switch" / "builtin_plugins")
+    candidates.append(Path(__file__).resolve().parent.parent / "builtin_plugins")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    # 都不存在时返回源码形态的路径，便于报错信息里给出可读位置。
+    return candidates[-1]
 
 
 def scan_plugins(roots: list[tuple[Path, bool]] | None = None) -> ScanResult:
