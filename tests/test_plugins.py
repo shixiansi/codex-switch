@@ -671,5 +671,53 @@ class FrozenPathTests(unittest.TestCase):
         self.assertIn("__pycache__", spec)
 
 
+class PermissionBoundaryHonestyTests(unittest.TestCase):
+    """文档必须如实描述权限边界的范围。
+
+    权限沙箱约束的是"插件通过 ``api`` 能做什么"，**不是**对任意 Python 代码
+    的隔离。插件入口运行在宿主进程内，可以直接 ``open()`` 读任何文件。
+    如果把这一点说成"越界会被拒绝"，会让用户误以为它能抵御恶意插件。
+    这里用行为把真实边界钉住，避免文档写出过度承诺。
+    """
+
+    def test_api_enforces_declared_roots(self) -> None:
+        """走 api 的越界访问确实会被拒绝。"""
+        inside = make_temp_dir(self)
+        outside = make_temp_dir(self)
+        secret = outside / "secret.txt"
+        secret.write_text("SECRET", encoding="utf-8")
+
+        api = PluginApi(
+            parse_manifest(manifest_payload(
+                permissions=["fs:read"], paths={"fs:read": [str(inside)]},
+            )),
+            allowed_roots={"fs:read": [inside]},
+        )
+        with self.assertRaises(PermissionDenied):
+            api.read_text(str(secret))
+
+    def test_direct_file_access_bypasses_the_api(self) -> None:
+        """但插件代码可以绕过 api 直接读文件——这是已知边界，不是缺陷。
+
+        锁定这个事实是为了让文档不能声称"越界一定会被拒绝"。
+        若将来引入进程级隔离，这条测试会失败，正好提醒去更新文档。
+        """
+        outside = make_temp_dir(self)
+        secret = outside / "secret.txt"
+        secret.write_text("SECRET", encoding="utf-8")
+
+        # 等价于插件入口里直接写 open(...)：宿主不会拦截。
+        self.assertEqual(secret.read_text(encoding="utf-8"), "SECRET")
+
+    def test_docs_describe_the_boundary_honestly(self) -> None:
+        """文档必须点明"沙箱只覆盖 api"这一点。"""
+        docs = (PROJECT_ROOT / "docs" / "plugins.md").read_text(encoding="utf-8")
+        self.assertIn("只对", docs)
+        self.assertIn("不是操作系统级的沙箱", docs)
+        self.assertIn("只安装你信任的插件", docs)
+        # 不能出现"越界会被拒绝"这类过度承诺
+        self.assertNotIn("不要试图读写声明范围之外的路径——会被拒绝", docs)
+
+
 if __name__ == "__main__":
     unittest.main()
