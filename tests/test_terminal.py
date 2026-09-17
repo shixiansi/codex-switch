@@ -23,7 +23,11 @@ os.environ.setdefault("CODEX_SWITCH_DISABLE_OPEN_URL", "1")
 
 from codex_switch.ui_v2.terminal import TerminalManager
 from codex_switch.ui_v2.terminal.completion import detect_choice, detect_menu
-from codex_switch.ui_v2.terminal.input_assist import InputHistory, command_hints
+from codex_switch.ui_v2.terminal.input_assist import (
+    SLASH_COMMANDS,
+    InputHistory,
+    command_hints,
+)
 from codex_switch.ui_v2.terminal.pty_session import PtySession, SessionStatus, _Backend
 from codex_switch.ui_v2.terminal.screen import TerminalScreen
 
@@ -492,6 +496,111 @@ class PlainListMenuTests(unittest.TestCase):
         )
         self.assertFalse(detect_menu(footer_only).awaiting)
 
+    # 真实捕获（codex resume --all 的 PTY 输出）。与手写样例的差别：
+    #   * 缩进不固定（选中项两格、其余四格）
+    #   * 列表末尾有 "↓ more" 行
+    #   * 共 21 项，且被 _TAIL_CHARS 截断过
+    # 先前的手写样例这三点都没有，所以测试全绿但实际用不了。
+    REAL_CAPTURE = (
+        " Resume a previous session\n"
+        "\n"
+        " Type to search                              Filter:  Cwd [All]   "
+        "Status: [Active] Archived    Sort: [Updated] Created\n"
+        "\n"
+        "  \u276f 14d ago     [Image #1]没更新前的数据抽数是对的，更新记录后角色的抽数显示就\n"
+        "    61d ago     首页logo大小改成120*120，同时左边菜单栏显示具体的导航名称\n"
+        "    72d ago     依旧重复验证码\n"
+        "    118d ago    Unable to locate the real codex executable from PATH.\n"
+        "    120d ago    说明更新规则\n"
+        "    120d ago    遵循开发规则与PMNote\n"
+        "    121d ago    检查pmnote MCP能力\n"
+        "    121d ago    打招呼\n"
+        "    121d ago    优化角色素材与图层控制\n"
+        "    121d ago    修复 pickGroup 代理错误\n"
+        "    122d ago    Fix bottom part slicing\n"
+        "    122d ago    Refactor body rigging pipeline\n"
+        "    124d ago    编写图片生成裁剪脚本\n"
+        "    125d ago    整理角色外观自定义PRD\n"
+        "    127d ago    分析AIGC检测原理\n"
+        "    130d ago    调查 collect 长度不一致\n"
+        "    131d ago    分析三个JS文件作用\n"
+        "    145d ago    定位 button 消息处理冲突\n"
+        "    146d ago    为什么启动不了这个项目\n"
+        "    153d ago    修改ChatGPT第二步注册并新增退出登录流程\n"
+        "    157d ago    无法连接 PostgreSQL。请检查 DATABASE_URL 是否正确，"
+        "以及数据库账号密码是否可用。\n"
+        "  \u2193 more\n"
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 1 / 25 \u00b7 0% \u2500\n"
+        " enter resume   ctrl+a archive   esc start new   ctrl+c quit   "
+        "tab focus sort/filter   \u2190/\u2192 change option\n"
+        " ctrl+o comfortable view   ctrl+t transcript   ctrl+e expand   \u2191/\u2193 browse\n"
+    )
+
+    def test_real_capture_is_detected(self) -> None:
+        """真实捕获的 resume 列表（21 项、含 ↓ more、缩进不固定）。"""
+        menu = detect_menu(self.REAL_CAPTURE)
+        self.assertTrue(menu.awaiting, "真实 resume 列表没有被识别")
+        self.assertEqual(menu.kind, "list")
+        self.assertEqual(len(menu.choices), 21)
+        self.assertEqual(menu.selected, 0)
+
+    def test_more_row_is_not_treated_as_option(self) -> None:
+        """"↓ more" 是列表与页脚间的装饰，不该成为一个可选会话。"""
+        menu = detect_menu(self.REAL_CAPTURE)
+        joined = " ".join(menu.choices).lower()
+        self.assertNotIn("more", joined)
+        self.assertNotIn("enter resume", joined)
+
+    def test_tail_window_does_not_slice_lines(self) -> None:
+        """尾部截断必须是整行的。
+
+        直接按字符切会把第一行截成半截，半截行既不像列表项也不像页脚，
+        会让整块列表作废——真实 resume 输出正是这样被漏掉的。
+        """
+        from codex_switch.ui_v2.terminal.completion import _tail_lines
+
+        text = "\n".join(f"    行 {index}" for index in range(200))
+        lines = _tail_lines(text)
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertRegex(line, r"^    行 \d+$", "截断产生了半截行")
+
+    def test_long_list_survives_tail_truncation(self) -> None:
+        """列表很长时仍要能识别。
+
+        真实终端只有 40 行，列表会被 TUI 滚动；若尾部窗口太窄，可能刚好
+        把带选中标记的那一项切掉，于是整个菜单认不出来（表现为"看得到
+        菜单却弹不出选项条"）。窗口必须比一屏宽裕。
+        """
+        rows = ["Select a session", ""]
+        rows.append("  \u276f 1d ago    第一项")
+        for index in range(44):
+            rows.append(f"    {index}d ago    第 {index} 项")
+        rows.append("  \u2193 more")
+        rows.append("\u2500" * 40 + " 1 / 45 \u00b7 0% \u2500")
+        rows.append(" enter resume   esc exit   ctrl+c quit   tab focus   \u2190/\u2192 change")
+        rows.append(" ctrl+o view   ctrl+t transcript   \u2191/\u2193 browse")
+
+        menu = detect_menu("\n".join(rows))
+        self.assertTrue(menu.awaiting, "长列表没有被识别")
+        self.assertEqual(menu.selected, 0)
+        self.assertEqual(len(menu.choices), 45)
+
+    def test_selection_near_end_is_still_found(self) -> None:
+        """选中标记落在列表末尾附近时也要能找到。"""
+        rows = ["Select a session", ""]
+        for index in range(30):
+            rows.append(f"    {index}d ago    第 {index} 项")
+        rows.append("  \u276f 31d ago    选中项在最后")
+        rows.append("  \u2193 more")
+        rows.append("\u2500" * 40 + " 1 / 35 \u00b7 0% \u2500")
+        rows.append(" enter resume   esc exit   ctrl+c quit   tab focus")
+        rows.append(" ctrl+o view   ctrl+t transcript")
+
+        menu = detect_menu("\n".join(rows))
+        self.assertTrue(menu.awaiting)
+        self.assertEqual(menu.selected, len(menu.choices) - 1)
+
 
 class SelectChoiceTests(unittest.TestCase):
     """选中菜单项时该发什么——发错就等于点了没反应。"""
@@ -682,6 +791,28 @@ class CommandHintTests(unittest.TestCase):
     def test_every_candidate_has_a_description(self) -> None:
         for item in command_hints("/").items:
             self.assertTrue(item.get("description"), item)
+
+    def test_no_fabricated_commands(self) -> None:
+        """候选里不能出现在 codex 中并不存在的命令。
+
+        早先这表里有 /approvals /undo /help，全凭印象写的；
+        用户照着提示输入只会得到一个错误的菜单。
+        这份白名单来自实测（逐字母输入 /a../z 收集 CLI 自己的补全）。
+        """
+        names = {name for name, _ in SLASH_COMMANDS}
+        for fake in ("/approvals", "/undo", "/help"):
+            self.assertNotIn(fake, names, f"{fake} 在 codex 里不存在，不该出现在提示里")
+        for real in ("/model", "/resume", "/review", "/permissions", "/plan"):
+            self.assertIn(real, names)
+
+    def test_prefix_order_matches_codex(self) -> None:
+        """/re 的候选顺序要与 codex 自己的一致。
+
+        顺序重要：用户只输入前缀就回车时，codex 会取它列表里的**第一个**
+        匹配项。界面若把别的命令排前面，用户以为选中的与实际执行的不一致。
+        """
+        names = [item["name"] for item in command_hints("/re").items]
+        self.assertEqual(names[0], "/resume", f"第一个应是 /resume，实际 {names}")
 
 
 class ManagerTests(unittest.TestCase):

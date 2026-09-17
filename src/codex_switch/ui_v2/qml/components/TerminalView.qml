@@ -241,7 +241,10 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.hintChosen(index)
+                            // 点击候选 = 直接补全（hintAccepted）。
+                            // 曾误写成已改名的 hintChosen，导致点击报
+                            // ReferenceError 而毫无反应。
+                            onClicked: root.hintAccepted(index)
                         }
                     }
                 }
@@ -261,10 +264,11 @@ Item {
                 enabled: root.inputEnabled
                 placeholderText: root.placeholder
                 onAccepted: {
-                    if (text !== "") {
-                        root.inputSubmitted(text)
-                        text = ""
-                    }
+                    if (text === "")
+                        return
+                    // 候选条开着时发送**完整命令名**，理由见 payloadFor。
+                    root.inputSubmitted(root.payloadFor(text))
+                    text = ""
                 }
 
                 // 内容变化时通知上层刷新指令候选；程序化填入历史时不触发，
@@ -305,7 +309,7 @@ Item {
                 }
 
                 Keys.onTabPressed: function (event) {
-                    // Tab 确认补全；Enter 交给 TextField 正常发送。
+                    // Tab 只把候选填进输入框，不发送——用户可以继续加参数。
                     if (root.hintVisible && root.hintSelected >= 0)
                         root.hintAccepted(root.hintSelected)
                     event.accepted = true
@@ -331,11 +335,24 @@ Item {
                 variant: "primary"
                 enabled: root.inputEnabled && inputField.text !== ""
                 onClicked: {
-                    root.inputSubmitted(inputField.text)
+                    root.inputSubmitted(root.payloadFor(inputField.text))
                     inputField.text = ""
                 }
             }
         }
+    }
+
+    // 真正要发送的文本。
+    //
+    // 候选条开着时返回**完整命令名**而不是输入框里的前缀：
+    // 输入 "/re" 时若不补全就发送，codex 会按它自己的规则匹配到第一个
+    // 候选 /review——用户高亮的是 /resume，起来的却是 review 菜单。
+    function payloadFor(text) {
+        if (root.hintVisible && root.hintSelected >= 0
+                && root.hintSelected < root.hintItems.length) {
+            return root.hintItems[root.hintSelected].name
+        }
+        return text
     }
 
     // 上层调用：把历史内容填进输入框并聚焦。

@@ -27,7 +27,14 @@ _CONFIRM_RE = re.compile(r"\[\s*([Yy])\s*/\s*([Nn])\s*\]|\(\s*([Yy])\s*/\s*([Nn]
 _OPTION_LINE_RE = re.compile(r"^(\s*)([›❯>»]?)(\s*)(\d{1,2})\s*[.)、]\s*(\S.*?)\s*$")
 
 # 无编号列表行：可选选中标记 + 内容。用于 resume 这类列表菜单。
-_PLAIN_ROW_RE = re.compile(r"^(\s*)([›❯>»])(\s+)(\S.*?)\s*$|^(\s{2,})(\S.*?)\s*$")
+#
+# 前导空格数量不一（真实 codex 输出里选中项前是两格、其余是四格），
+# 所以统一用 ``\s+`` 吸收缩进，不再区分"带标记"与"缩进"两种分支。
+_PLAIN_ROW_RE = re.compile(r"^(\s*)([›❯>»])?\s*(\S.*?)\s*$")
+
+# "还有更多"提示行（``↓ more`` / ``↑ more``）。它是列表与页脚之间的装饰，
+# 既不是列表项也不该打断收集，必须单独识别后跳过。
+_MORE_RE = re.compile(r"^\s*[↑↓⇡⇣]\s*more\s*$", re.I)
 
 # TUI 菜单总会把"当前选中项"用符号标出来。正文里的编号列表没有这个标记，
 # 这是区分"真菜单"和"AI 回复里的 1. 2. 3."的关键。
@@ -39,7 +46,15 @@ _HINT_KEY_RE = re.compile(r"(?<![\w+])(enter|esc|tab|ctrl\+\w|shift\+tab)(?![\w+
 # 至少要有这么多条编号选项，才认为是在等待选择。
 _MIN_OPTIONS = 2
 # 只看屏幕末尾，避免匹配到历史输出里的旧内容。
-_TAIL_CHARS = 800
+#
+# 取尾部时**按行对齐**（见 _tail_lines）：直接切字符串会把第一行截成半截，
+# 那一行既匹配不上列表项，又会因为"不像列表项"而让整块作废——
+# 真实 codex resume 输出正是这样被漏掉的。
+#
+# 窗口要比一屏（40 行）宽裕：列表很长时 TUI 会把列表滚动到只露出后半段，
+# 若窗口刚好卡在选中项上方，就会因为"找不到选中标记"而整个菜单认不出来。
+_TAIL_CHARS = 6000
+_TAIL_LINES = 60
 # 从末尾向上找按键提示行时最多看几行：页脚可能有多行（codex 的 resume
 # 是两行），但也不该一路往上找到正常输出里。
 _FOOTER_SCAN_LINES = 6
@@ -50,10 +65,33 @@ _PAGINATION_RE = re.compile(r"^\s*\d+\s*/\s*\d+\s*[·⋅]|^\s*[─━-]{4,}\s*$|
 
 
 def _is_footer_noise(line: str) -> bool:
-    """这一行是否是页脚装饰（空行 / 分页行），而不是列表项或按键提示。"""
+    """这一行是否是页脚装饰（空行 / 分页行 / "更多"提示），而不是列表项。"""
     if not line.strip():
         return True
-    return bool(_PAGINATION_RE.search(line))
+    if _PAGINATION_RE.search(line):
+        return True
+    return bool(_MORE_RE.match(line))
+
+
+def _tail_lines(text: str, max_chars: int = _TAIL_CHARS, max_lines: int = _TAIL_LINES) -> list[str]:
+    """取屏幕末尾的若干行，**按整行切分**。
+
+    不能直接 ``text[-N:]``：那会把第一行截成半截，而半截行既不像列表项、
+    也不像页脚，会让整块列表收集作废。真实 codex resume 输出正是因此被漏掉。
+    """
+    lines = [line for line in text.splitlines()]
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    # 再按字符数收敛一次，同样保持整行。
+    total = 0
+    kept: list[str] = []
+    for line in reversed(lines):
+        total += len(line) + 1
+        if kept and total > max_chars:
+            break
+        kept.append(line)
+    kept.reverse()
+    return kept
 
 
 @dataclass
@@ -94,16 +132,16 @@ def _clean_label(label: str) -> str:
     return re.sub(r"\s{2,}", "  ", label).strip()
 
 
-def _detect_confirm(tail: str) -> ChoiceMenu | None:
-    if _CONFIRM_RE.search(tail):
+def _detect_confirm(lines: list[str]) -> ChoiceMenu | None:
+    if _CONFIRM_RE.search("\n".join(lines)):
         return ChoiceMenu(awaiting=True, choices=["是", "否"], selected=0, kind="confirm")
     return None
 
 
-def _detect_numbered(tail: str) -> ChoiceMenu | None:
+def _detect_numbered(lines: list[str]) -> ChoiceMenu | None:
     """编号选项菜单（带选中标记，且编号从 1 起连续）。"""
     found: list[tuple[int, str, bool]] = []
-    for line in tail.splitlines():
+    for line in lines:
         match = _OPTION_LINE_RE.match(line)
         if not match:
             continue
@@ -146,23 +184,25 @@ def _detect_numbered(tail: str) -> ChoiceMenu | None:
     )
 
 
-def _detect_plain_list(tail: str) -> ChoiceMenu | None:
+def _detect_plain_list(lines: list[str]) -> ChoiceMenu | None:
     """无编号的列表菜单（如 codex 的 resume 会话选择器）。
 
     判定条件刻意收紧，避免把 AI 正文里的引用块当成菜单：
 
-    1. 屏幕尾部存在**按键提示行**（含两个以上按键名），
-       且该行到屏幕末尾之间只有页脚性质的内容；
+    1. 屏幕尾部存在**按键提示行**（含两个以上按键名）；
     2. 提示行上方是一段连续列表项，至少两行；
     3. 这段里至少有一行带选中标记。
 
     三条同时满足才认。缺任何一条都返回 None，宁可漏报。
 
-    实现要点：页脚可能是**多行**（codex 的 resume 有两行，第二行还有
-    ``↑/↓ browse``），中间还可能夹着分页行（``1 / 4 · 100% ────``）。
-    因此先把整个尾部页脚区域识别出来，再从其上方收集列表项。
+    实现要点（每一条都来自真实 codex 输出）：
+
+    * 页脚是**多行**的（第二行还有 ``ctrl+o ... ↑/↓ browse``），
+      所以不能只看最后一行；
+    * 页脚与列表之间夹着分页行（``1 / 25 · 0% ────``）；
+    * 列表末尾还有一行 ``↓ more``，既不是列表项也不该打断收集；
+    * 缩进不固定：选中项前是两格、其余是四格。
     """
-    lines = tail.splitlines()
     if len(lines) < _MIN_OPTIONS + 1:
         return None
 
@@ -198,23 +238,22 @@ def _detect_plain_list(tail: str) -> ChoiceMenu | None:
     if len(block) < _MIN_OPTIONS:
         return None
 
-    # 逐行解析：带标记的算一项并记录选中位置；缩进两格以上的也算一项。
+    # 逐行解析：带标记的算一项并记录选中位置。
     labels: list[str] = []
     selected = -1
     for raw in block:
+        # "还有更多"行是列表与页脚之间的装饰，跳过而不是作废整块。
+        if _MORE_RE.match(raw):
+            continue
         match = _PLAIN_ROW_RE.match(raw)
         if not match:
             # 块里出现不像列表项的行（例如说明文字）：整块作废，避免拼出
             # 一个"半真半假"的菜单让用户点到错误的东西。
             return None
-        if match.group(2):
-            marked = match.group(2) in _SELECTION_MARKERS
-            text = match.group(4) or ""
-            if marked and selected < 0:
-                selected = len(labels)
-        else:
-            text = match.group(6) or ""
-        label = _clean_label(text)
+        marker = match.group(2) or ""
+        if marker and marker in _SELECTION_MARKERS and selected < 0:
+            selected = len(labels)
+        label = _clean_label(match.group(3) or "")
         if not label:
             return None
         labels.append(label)
@@ -238,10 +277,12 @@ def detect_menu(text: str) -> ChoiceMenu:
     if not text:
         return ChoiceMenu()
 
-    tail = text[-_TAIL_CHARS:]
+    lines = _tail_lines(text)
+    if not lines:
+        return ChoiceMenu()
 
     for detector in (_detect_confirm, _detect_numbered, _detect_plain_list):
-        menu = detector(tail)
+        menu = detector(lines)
         if menu is not None:
             return menu
     return ChoiceMenu()
