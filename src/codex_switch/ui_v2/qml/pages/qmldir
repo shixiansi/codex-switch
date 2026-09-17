@@ -4,6 +4,7 @@ AccountPoolPanel 1.0 AccountPoolPanel.qml
 DashboardPage 1.0 DashboardPage.qml
 ModelTestPanel 1.0 ModelTestPanel.qml
 NetworkPage 1.0 NetworkPage.qml
+PluginsPage 1.0 PluginsPage.qml
 ProfilesPage 1.0 ProfilesPage.qml
 ProjectsPage 1.0 ProjectsPage.qml
 ScriptsPage 1.0 ScriptsPage.qml

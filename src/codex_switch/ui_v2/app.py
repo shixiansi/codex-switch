@@ -11,7 +11,7 @@ import os
 import sys
 
 from .controller import AppController
-from .qt_compat import QT_AVAILABLE, QGuiApplication, QQmlApplicationEngine, QQuickStyle, QUrl
+from .qt_compat import QT_AVAILABLE, QGuiApplication, QQmlApplicationEngine, QQuickStyle, QTimer, QUrl
 from .single_instance import acquire_single_instance, release_single_instance
 
 QML_ROOT = Path(__file__).with_name("qml")
@@ -57,6 +57,7 @@ def build_engine(controller: AppController) -> QQmlApplicationEngine:
     context.setContextProperty("settingsModel", controller.settings)
     context.setContextProperty("scriptsModel", controller.scripts)
     context.setContextProperty("terminalModel", controller.terminal)
+    context.setContextProperty("pluginsModel", controller.plugins)
     return engine
 
 
@@ -95,6 +96,12 @@ def run_app(argv: list[str] | None = None, *, workspace=None, entrypoint: Path |
         app._codex_switch_controller = controller  # type: ignore[attr-defined]
         app._codex_switch_engine = engine  # type: ignore[attr-defined]
 
+        # Plugins load after the window is up: a slow or broken plugin then
+        # delays nothing the user is waiting on, and its failure lands in the
+        # plugin centre rather than blocking startup.
+        QTimer.singleShot(0, controller.load_plugins)
+
+        app.aboutToQuit.connect(controller.shutdownPlugins)
         app.aboutToQuit.connect(controller.shutdown)
         return app.exec()
     finally:

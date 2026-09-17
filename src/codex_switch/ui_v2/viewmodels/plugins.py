@@ -17,11 +17,20 @@ class PluginsViewModel(SnapshotViewModel):
 
     selectedIdChanged = Signal()
     detailChanged = Signal()
+    # 必须在本类作用域内声明 notify 用的信号，并用**裸名字**引用。
+    #
+    # Qt 的元对象系统无法解析 `notify=SnapshotViewModel.itemsChanged` 这种
+    # 限定名：读取该属性时不会报错，而是直接死循环卡住整个界面。
+    # base.py 里的 `notify=itemsChanged` 能工作，正是因为那个名字定义在
+    # 它自己的类作用域内。这里复制同样的写法。
+    issuesChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
         self._selected_id = ""
         self._detail: dict[str, Any] = {}
+        # 缓存问题行：见 _rebuild_issues。
+        self._issues: list[dict[str, Any]] = []
         super().__init__(self._build_items, parent)
 
     # -- properties ------------------------------------------------------
@@ -37,24 +46,39 @@ class PluginsViewModel(SnapshotViewModel):
     def pluginRoot(self) -> str:
         return str(self._controller.plugin_root())
 
-    @Property(int, notify=SnapshotViewModel.itemsChanged)
+    @Property(int, notify=issuesChanged)
     def issueCount(self) -> int:
-        return len(self._controller.plugin_issue_rows())
+        return len(self._issues)
 
-    @Property("QVariantList", notify=SnapshotViewModel.itemsChanged)
+    @Property("QVariantList", notify=issuesChanged)
     def issues(self) -> list[dict[str, Any]]:
-        return self._controller.plugin_issue_rows()
+        return list(self._issues)
 
     # -- data ------------------------------------------------------------
     def _build_items(self) -> list[dict[str, Any]]:
         return self._controller.plugin_rows()
 
+    def _rebuild_issues(self) -> None:
+        """刷新问题列表，且只在内容真的变化时才发信号。
+
+        无条件的 emit 会让 Repeater 反复重建；这里与基类 set_items 同思路。
+        """
+        rows = [dict(item) for item in self._controller.plugin_issue_rows()]
+        if rows == self._issues:
+            return
+        self._issues = rows
+        self.issuesChanged.emit()
+
     @Slot()
     def refresh(self) -> None:
+        # 先取问题列表：_rebuild_issues 可能 emit itemsChanged，
+        # 放在 super().refresh() 之前可以合并成一次界面刷新。
+        self._rebuild_issues()
         super().refresh()
         self._build_detail()
 
     def rebuild(self) -> None:
+        self._rebuild_issues()
         super().rebuild()
         self._build_detail()
 

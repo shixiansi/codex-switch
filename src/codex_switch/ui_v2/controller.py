@@ -46,7 +46,7 @@ from .workspace import (
     Workspace,
     WorkspaceError,
 )
-SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "scripts", "terminal", "system")
+SECTION_ORDER = ("dashboard", "profiles", "projects", "network", "scripts", "terminal", "plugins", "system")
 SECTION_TITLES = {
     "dashboard": "首页",
     "profiles": "配置中心",
@@ -54,6 +54,7 @@ SECTION_TITLES = {
     "network": "网络与监控",
     "scripts": "脚本中心",
     "terminal": "AI 终端",
+    "plugins": "插件中心",
     "system": "系统",
 }
 
@@ -1307,6 +1308,11 @@ class AppController(QObject):
         """卸载全部插件。退出时调用，失败不阻断退出。"""
         for entry in self._plugin_registry.entries:
             unload_plugin(entry)
+
+    @Slot()
+    def shutdownPlugins(self) -> None:
+        """``shutdown_plugins`` 的 Qt 侧别名（QML/信号槽用驼峰命名）。"""
+        self.shutdown_plugins()
 
     def _sync_script_polling(self) -> None:
         """Run the poll timer only while a script is actually running."""
