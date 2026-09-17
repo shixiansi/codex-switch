@@ -472,5 +472,113 @@ class PluginsPageQmlTests(unittest.TestCase):
         self.assertIn("PluginsPage", pages)
 
 
+class PluginHostLayoutTests(unittest.TestCase):
+    """插件宿主必须把页面摆放好，否则内容会全部叠在一起。
+
+    真实缺陷：``Component.createObject(parent)`` 只建立父子关系，
+    **不会**给创建出来的对象尺寸。页面根对象因此是 0x0，页面内部的
+    ``anchors.fill: parent`` 没有可填充的空间，实测 ColumnLayout 拿到
+    负尺寸（-48），所有区块挤在同一处——用户看到的就是"账号全部叠加
+    到一起了"。
+    """
+
+    def setUp(self) -> None:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QEventLoop, QTimer, QUrl
+        from PySide6.QtGui import QGuiApplication
+
+        self.app = QGuiApplication.instance() or QGuiApplication([])
+
+        from codex_switch.ui_v2.app import QML_ENTRYPOINT, build_engine, configure_style
+        from codex_switch.ui_v2.controller import AppController
+
+        configure_style()
+        self.controller = AppController()
+        self.engine = build_engine(self.controller)
+        self.engine.load(QUrl.fromLocalFile(str(QML_ENTRYPOINT)))
+        self.assertFalse(
+            not self.engine.rootObjects(), "主窗口未创建"
+        )
+        self.root = self.engine.rootObjects()[0]
+
+        loop = QEventLoop()
+        QTimer.singleShot(0, self.controller.load_plugins)
+        QTimer.singleShot(400, loop.quit)
+        loop.exec()
+
+        self.controller.navigateTo("plugins")
+        self.controller.plugins.select("codebuddy-accounts")
+
+        settle = QEventLoop()
+        QTimer.singleShot(700, settle.quit)
+        settle.exec()
+
+    def _find(self, class_name: str):
+        found: list = []
+
+        def walk(item) -> None:
+            try:
+                name = item.metaObject().className()
+            except Exception:  # noqa: BLE001
+                return
+            if name.startswith(class_name):
+                found.append(item)
+                return
+            for child in item.children():
+                walk(child)
+
+        walk(self.root)
+        return found[0] if found else None
+
+    def test_created_page_fills_the_host(self) -> None:
+        """页面根对象必须铺满宿主，而不是 0x0。"""
+        host = self._find("PluginHost")
+        self.assertIsNotNone(host, "没找到 PluginHost")
+        page = host.property("loadedItem")
+        self.assertIsNotNone(page, "插件页面没有被创建出来")
+
+        self.assertGreater(page.width(), 0, "页面宽度为 0（内容会挤在一起）")
+        self.assertGreater(page.height(), 0, "页面高度为 0（内容会挤在一起）")
+        self.assertAlmostEqual(page.width(), host.width(), delta=1.0)
+        self.assertAlmostEqual(page.height(), host.height(), delta=1.0)
+
+    def test_page_blocks_do_not_overlap(self) -> None:
+        """页面内部各区块必须纵向错开，不能全部落在同一坐标。"""
+        host = self._find("PluginHost")
+        page = host.property("loadedItem")
+        self.assertIsNotNone(page)
+
+        layout = None
+        for child in page.children():
+            if child.metaObject().className().startswith("QQuickColumnLayout"):
+                layout = child
+                break
+        self.assertIsNotNone(layout, "页面根下没有 ColumnLayout")
+
+        self.assertGreater(layout.width(), 0, "顶层布局宽度非正——已经塌陷")
+        self.assertGreater(layout.height(), 0, "顶层布局高度非正——已经塌陷")
+
+        rows = []
+        for child in layout.children():
+            try:
+                if not child.metaObject().className().startswith("QQuick"):
+                    continue
+                if not child.property("visible"):
+                    continue
+                if child.width() <= 0 or child.height() <= 0:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            rows.append(child.y())
+
+        self.assertTrue(rows, "布局里没有可见的区块")
+        self.assertEqual(
+            len(set(rows)), len(rows),
+            f"有区块 y 坐标重复，说明叠在一起了：{rows}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

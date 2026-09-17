@@ -61,14 +61,28 @@ Item {
             loadError = "页面创建失败。"
             return
         }
+
+        // createObject(parent) 只建立父子关系，**不会**给创建出来的对象尺寸。
+        // 不铺满的话页面根对象是 0x0，页面内部的 anchors.fill: parent 也就
+        // 没有可填充的空间，表现为所有内容挤成一堆叠在一起。
+        // 插件页面通常不会自己设 anchors（它不知道宿主给了多大地方），
+        // 所以由宿主负责摆放。
+        if (item.hasOwnProperty("anchors")) {
+            item.anchors.fill = placeholder
+        }
+
         loadedItem = item
     }
 
     onPageUrlChanged: build()
     onInstanceChanged: {
-        // 实例后到（插件异步加载）时，把实例补进已创建的页面。
+        // 实例通常后到（宿主先建页面、插件随后才加载完）。
+        // 已经建好页面时只需把新实例换进去，不必销毁重建——
+        // build() 里会先 teardown，重建会丢掉页面当前的状态（滚动位置、
+        // 正在编辑的内容），也会闪一下。
         if (loadedItem) {
             loadedItem.instance = host.instance
+            return
         }
         build()
     }
