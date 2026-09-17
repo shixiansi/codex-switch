@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import theme
 import components
 
@@ -38,6 +39,72 @@ Item {
         reload()
     }
 
+    // 导入结果除了摘要，还要把每个被跳过的文件原因列出来——
+    // 只说"跳过 3 个"用户不知道该修哪个文件。
+    function notifyImport(result) {
+        if (!result) {
+            message = "导入失败：没有返回结果。"
+            messageTone = "danger"
+            reload()
+            return
+        }
+        var text = result.message || ""
+        if (result.failed && result.failed.length > 0) {
+            text += "\n" + result.failed.join("\n")
+        }
+        message = text
+        messageTone = result.ok ? "success" : "danger"
+        reload()
+    }
+
+    function importFromFiles() {
+        if (!instance) return
+        fileDialog.open()
+    }
+
+    function importFromDirectory() {
+        if (!instance) return
+        dirDialog.open()
+    }
+
+    // 图形化的文件选择器。用 QtQuick.Dialogs 而不是 QtWidgets 的
+    // QFileDialog：本应用是 QGuiApplication，实例化 QFileDialog 会直接
+    // 让进程崩溃（实测退出码 0xC0000409）。
+    FileDialog {
+        id: fileDialog
+        title: "选择 CodeBuddy 凭据文件"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["凭据文件 (*.json *.info)", "所有文件 (*)"]
+        onAccepted: page.notifyImport(page.instance.import_files(page.toPathList(selectedFiles)))
+    }
+
+    FolderDialog {
+        id: dirDialog
+        title: "选择包含凭据文件的目录"
+        onAccepted: page.notifyImport(page.instance.import_directory(page.toPath(selectedFolder)))
+    }
+
+    // QML 的 url 是 file:// 形式，而插件的文件 API 要的是本地路径。
+    function toPath(url) {
+        var text = String(url)
+        if (text.indexOf("file:///") === 0) {
+            return decodeURIComponent(text.substring(8))
+        }
+        if (text.indexOf("file://") === 0) {
+            return decodeURIComponent(text.substring(7))
+        }
+        return text
+    }
+
+    function toPathList(urls) {
+        var out = []
+        if (!urls) return out
+        for (var i = 0; i < urls.length; i++) {
+            out.push(toPath(urls[i]))
+        }
+        return out
+    }
+
     // instance 可能是创建后才注入的（宿主先建页面、插件后加载完），
     // 所以两个时机都要拉一次数据，只在 onCompleted 里读会拿到空列表。
     onInstanceChanged: if (instance) reload()
@@ -57,6 +124,17 @@ Item {
                 iconName: "refresh"
                 enabled: page.instance !== null
                 onClicked: page.reload()
+            }
+            AppButton {
+                text: "导入凭据文件"
+                iconName: "plus"
+                enabled: page.instance !== null
+                onClicked: page.importFromFiles()
+            }
+            AppButton {
+                text: "导入目录"
+                enabled: page.instance !== null
+                onClicked: page.importFromDirectory()
             }
             AppButton {
                 text: "保存当前账号"

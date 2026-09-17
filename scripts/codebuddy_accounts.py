@@ -53,6 +53,25 @@ def _load_live_credential() -> dict:
     return load_credential_file(resolve_auth_path())
 
 
+def _console_supports(text: str) -> bool:
+    """当前控制台编码能否输出这段文字。
+
+    中文 Windows 的控制台默认是 GBK，输出 ``✔`` 这类符号会直接抛
+    ``UnicodeEncodeError`` 让整个命令崩掉——用户看到的是一次莫名其妙的
+    堆栈，而不是账号列表。所以符号类装饰要先问一句能不能印。
+    """
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def _mark(primary: str, fallback: str) -> str:
+    return primary if _console_supports(primary) else fallback
+
+
 # --------------------------------------------------------------------------
 # 命令实现
 # --------------------------------------------------------------------------
@@ -72,7 +91,7 @@ def cmd_list(store: SnapshotStore, _args: argparse.Namespace) -> int:
         if row["broken"]:
             print(f"{row['seq']:<4} {'':<4} {'<损坏>':<14} {'':<10} {'':<18} {row['error']}")
             continue
-        current = "✔" if row["current"] else ""
+        current = _mark("✔", "*") if row["current"] else ""
         state = "刷新令牌已过期" if row["refreshExpired"] else "可用"
         print(
             f"{row['seq']:<4} {current:<4} {row['nickname']:<14} {row['uidShort']:<10} "

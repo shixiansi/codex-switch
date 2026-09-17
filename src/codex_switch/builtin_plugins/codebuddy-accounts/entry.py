@@ -117,6 +117,35 @@ class CodeBuddyAccountsPlugin:
             "message": f"已删除快照：{info['nickname']}（{info['uid'][:8]}）",
         }
 
+    def import_files(self, paths: list) -> dict:
+        """导入若干个凭据文件（页面通过文件选择器拿到路径后调用）。
+
+        与 ``import_directory`` 的区别：那个收一个目录、由插件自己遍历；
+        这个直接收文件列表，因为图形界面的文件选择器允许用户精确挑选，
+        也允许选中位于不同目录的多个文件。
+        """
+        candidates: list[Path] = []
+        for item in paths or []:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            if path.is_dir():
+                # 用户选的可能是目录（不同对话框的返回值不一样），
+                # 那就按目录展开，行为与 import_directory 一致。
+                try:
+                    candidates.extend(core.collect_import_files(path))
+                except core.ToolError:
+                    continue
+            elif path.is_file():
+                candidates.append(path)
+
+        if not candidates:
+            return {"ok": False, "message": "没有选中可导入的凭据文件。"}
+
+        outcome = core.import_files(candidates)
+        return self._import_outcome(outcome)
+
     def import_directory(self, directory: str) -> dict:
         """从一个目录批量导入凭据文件（支持 .json 与 codebuddy2api 的 .info）。"""
         path = Path(str(directory)).expanduser()
@@ -125,14 +154,23 @@ class CodeBuddyAccountsPlugin:
         except core.ToolError as error:
             return {"ok": False, "message": str(error)}
         if not targets:
-            return {"ok": False, "message": f"{path} 下没有可导入的凭据文件。"}
+            return {
+                "ok": False,
+                "message": f"{path} 下没有可导入的凭据文件（支持 .json 与 .info）。",
+            }
+        return self._import_outcome(core.import_files(targets))
 
-        outcome = core.import_files(targets)
+    @staticmethod
+    def _import_outcome(outcome: dict) -> dict:
+        """把导入结果整理成页面统一消费的形状。
+
+        失败项必须逐个带出来：只报"跳过 N 个"会让用户不知道该修哪个文件。
+        """
         parts: list[str] = []
         if outcome["imported"]:
-            parts.append(f"导入 {len(outcome['imported'])} 个：" + "、".join(outcome["imported"]))
+            parts.append(f"已导入 {len(outcome['imported'])} 个：" + "、".join(outcome["imported"]))
         if outcome["failed"]:
-            parts.append(f"跳过 {len(outcome['failed'])} 个（{outcome['failed'][0]}）")
+            parts.append(f"跳过 {len(outcome['failed'])} 个")
         return {
             "ok": bool(outcome["imported"]),
             "message": "；".join(parts) or "没有可导入的文件。",

@@ -31,6 +31,7 @@ ALLOWED_METHODS = (
     "save_current",
     "remove",
     "import_directory",
+    "import_files",
 )
 
 
@@ -100,6 +101,17 @@ class PluginCallBridge(QObject):
     @Slot(str, result="QVariant")
     def import_directory(self, directory: str) -> Any:
         return self._call("import_directory", str(directory))
+
+    @Slot("QVariantList", result="QVariant")
+    def import_files(self, paths: Any) -> Any:
+        """导入一组凭据文件路径。
+
+        参数类型必须是 ``QVariantList``：QML 传进来的是 JS 数组，
+        声明成 ``str`` 会让 Qt 匹配不到签名而**静默不派发**——按钮点了
+        没反应且没有任何报错（这个坑在本项目里已经踩过一次）。
+        """
+        cleaned = [str(item) for item in (paths or []) if str(item or "").strip()]
+        return self._call("import_files", cleaned)
 
 
 __all__ = ["ALLOWED_METHODS", "PluginCallBridge"]

@@ -454,5 +454,72 @@ class CliEndToEndTests(unittest.TestCase):
         self.assertEqual(store.read(primary)["account"]["uid"], "3c5aa09c-live")
 
 
+class ConsoleEncodingTests(unittest.TestCase):
+    """CLI 在非 UTF-8 控制台上不能崩。
+
+    中文 Windows 的控制台默认 GBK，输出 ``✔`` 会抛 UnicodeEncodeError，
+    整个命令以堆栈结束——用户看不到账号列表，只看到报错。
+    """
+
+    def test_console_supports_detects_unencodable_text(self) -> None:
+        """能编码的返回 True，编不出来的返回 False。"""
+        import io
+
+        original = sys.stdout
+        try:
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="gbk")
+            self.assertTrue(tool._console_supports("普通中文"))
+            self.assertFalse(tool._console_supports("✔"))
+        finally:
+            sys.stdout = original
+
+    def test_mark_falls_back_when_symbol_unencodable(self) -> None:
+        """印不出来时必须退化成 ASCII，而不是抛异常。"""
+        import io
+
+        original = sys.stdout
+        try:
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="gbk")
+            self.assertEqual(tool._mark("✔", "*"), "*")
+        finally:
+            sys.stdout = original
+
+    def test_mark_keeps_symbol_on_utf8_console(self) -> None:
+        import io
+
+        original = sys.stdout
+        try:
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+            self.assertEqual(tool._mark("✔", "*"), "✔")
+        finally:
+            sys.stdout = original
+
+    def test_list_runs_under_gbk_console(self) -> None:
+        """端到端：GBK 下 `list` 必须成功退出。"""
+        import os
+        import subprocess
+
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "gbk"
+        env["DSH_HOME"] = str(self.home)
+        completed = subprocess.run(
+            [sys.executable, str(TOOL_PATH), "list"],
+            capture_output=True,
+            env=env,
+            cwd=str(PROJECT_ROOT),
+            timeout=90,
+        )
+        self.assertEqual(
+            completed.returncode, 0,
+            "GBK 控制台下 list 失败：" + completed.stderr.decode("gbk", "replace")[-300:],
+        )
+
+    def setUp(self) -> None:
+        scratch = PROJECT_ROOT / ".tmp" / "test-codebuddy-accounts"
+        scratch.mkdir(parents=True, exist_ok=True)
+        self.home = Path(tempfile.mkdtemp(prefix="gbk-", dir=str(scratch)))
+        self.addCleanup(lambda: shutil.rmtree(self.home, ignore_errors=True))
+
+
 if __name__ == "__main__":
     unittest.main()

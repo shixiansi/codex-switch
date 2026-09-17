@@ -415,6 +415,232 @@ class _StubInstance:
     def import_directory(self, directory):
         return {"ok": True, "message": "imported"}
 
+    def import_files(self, paths):
+        if self.explode:
+            raise RuntimeError("boom")
+        return {"ok": True, "message": f"imported {len(paths)}", "paths": list(paths)}
+
+
+class PluginImportTests(unittest.TestCase):
+    """导入凭据文件的功能。
+
+    整个流程在隔离的 ``DSH_HOME`` 里跑，绝不触碰用户真实凭据。
+    覆盖三类容易出问题的地方：
+    1. 文件形态差异（.json / 带 BOM 的 .info / 坏文件）；
+    2. 坏文件不能中断整批导入，且原因要能定位到具体文件；
+    3. 导入后账号要真的能列出来、能切换过去。
+    """
+
+    def setUp(self) -> None:
+        self.home = make_temp_dir(self)
+        self._previous = {
+            "DSH_HOME": os.environ.get("DSH_HOME"),
+            "CODEBUDDY_ACCOUNTS_DIR": os.environ.get("CODEBUDDY_ACCOUNTS_DIR"),
+            "DSH_CODEBUDDY_AUTH_FILE": os.environ.get("DSH_CODEBUDDY_AUTH_FILE"),
+        }
+        os.environ["DSH_HOME"] = str(self.home)
+        for key in ("CODEBUDDY_ACCOUNTS_DIR", "DSH_CODEBUDDY_AUTH_FILE"):
+            os.environ.pop(key, None)
+        self.addCleanup(self._restore_env)
+
+        import importlib
+
+        from codex_switch import codebuddy_core
+
+        importlib.reload(codebuddy_core)
+        self.core = codebuddy_core
+
+        self.exports = make_temp_dir(self)
+        self.plugin = self._load_plugin()
+
+    def _restore_env(self) -> None:
+        for key, value in self._previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        import importlib
+
+        from codex_switch import codebuddy_core
+
+        importlib.reload(codebuddy_core)
+
+    def _load_plugin(self):
+        from codex_switch.plugins import PluginApi
+        from codex_switch.plugins.loader import load_plugin
+        from codex_switch.plugins.registry import PluginRegistry, builtin_plugin_root
+
+        registry = PluginRegistry([(builtin_plugin_root(), True)])
+        registry.reload()
+        entry = registry.get("codebuddy-accounts")
+        self.assertIsNotNone(entry, "内置插件没有被发现")
+        return load_plugin(entry, PluginApi(entry.manifest))
+
+    def _write(self, name: str, uid: str, nickname: str, *, bom: bool = False) -> Path:
+        path = self.exports / name
+        text = json.dumps(make_credential(uid, nickname), ensure_ascii=False)
+        path.write_text(text, encoding="utf-8-sig" if bom else "utf-8")
+        return path
+
+    def test_import_single_json_file(self) -> None:
+        path = self._write("a.json", "uid-aaa", "甲号")
+        result = self.plugin.import_files([str(path)])
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIn("甲号", result["message"])
+
+    def test_import_info_file_with_bom(self) -> None:
+        """codebuddy2api 导出的 .info 常带 BOM，必须能导入。"""
+        path = self._write("b.info", "uid-bbb", "乙号", bom=True)
+        result = self.plugin.import_files([str(path)])
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIn("乙号", result["message"])
+
+    def test_bad_file_is_skipped_without_losing_the_rest(self) -> None:
+        """一个坏文件不该让整批导入失败，而且原因要能定位到文件名。"""
+        good = self._write("good.json", "uid-good", "好号")
+        bad = self.exports / "broken.json"
+        bad.write_text("{ not json", encoding="utf-8")
+
+        result = self.plugin.import_files([str(bad), str(good)])
+        self.assertTrue(result["ok"], "好文件应当仍然被导入")
+        self.assertTrue(result["failed"], "坏文件应当出现在失败列表里")
+        self.assertTrue(any("broken.json" in item for item in result["failed"]),
+                        f"失败原因没有指明是哪个文件：{result['failed']}")
+
+    def test_import_directory_collects_json_and_info(self) -> None:
+        self._write("a.json", "uid-a", "甲号")
+        self._write("b.info", "uid-b", "乙号", bom=True)
+        result = self.plugin.import_directory(str(self.exports))
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(len(result["imported"]), 2, result["imported"])
+
+    def test_empty_selection_is_reported_not_crashed(self) -> None:
+        result = self.plugin.import_files([])
+        self.assertFalse(result["ok"])
+        self.assertIn("没有选中", result["message"])
+
+    def test_missing_path_is_rejected(self) -> None:
+        result = self.plugin.import_files([str(self.exports / "nope.json")])
+        self.assertFalse(result["ok"])
+
+    def test_imported_account_appears_and_can_be_switched_to(self) -> None:
+        """导入不是终点——账号要能列出来、能切过去，才算真的可用。"""
+        path = self._write("a.json", "uid-aaa", "甲号")
+        self.assertTrue(self.plugin.import_files([str(path)])["ok"])
+
+        names = [row["nickname"] for row in self.plugin.accounts()]
+        self.assertIn("甲号", names, f"导入的账号没出现在列表里：{names}")
+
+        result = self.plugin.switch("甲号")
+        self.assertTrue(result["ok"], result["message"])
+        live = self.core.load_credential_file(self.core.resolve_auth_path())
+        self.assertEqual(live["account"]["uid"], "uid-aaa")
+
+    def test_directory_selection_expands_to_files(self) -> None:
+        """页面的文件选择器可能返回目录，插件要能识别并展开。"""
+        self._write("a.json", "uid-a", "甲号")
+        result = self.plugin.import_files([str(self.exports)])
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIn("甲号", result["message"])
+
+
+class ImportBridgeTests(unittest.TestCase):
+    """导入相关的桥接签名——写错会静默失效。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtGui import QGuiApplication
+
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+
+    def test_import_files_slot_takes_a_variant_list(self) -> None:
+        """必须声明成 QVariantList。
+
+        QML 传的是 JS 数组；若把签名写成 ``str``，Qt 匹配不到就不派发，
+        按钮点了没反应且没有任何报错——这个坑本项目已经踩过一次。
+        """
+        from codex_switch.ui_v2.plugin_bridge import PluginCallBridge
+
+        bridge = PluginCallBridge(_StubInstance())
+        meta = bridge.metaObject()
+        signature = None
+        for index in range(meta.methodCount()):
+            method = meta.method(index)
+            if bytes(method.name()) == b"import_files":
+                signature = method.methodSignature().data().decode()
+        self.assertIsNotNone(signature, "桥上没有注册 import_files")
+        self.assertIn("QVariantList", signature,
+                      f"签名不是列表类型，QML 调用会静默失效：{signature}")
+
+    def test_bridge_forwards_paths_to_the_plugin(self) -> None:
+        from codex_switch.ui_v2.plugin_bridge import PluginCallBridge
+
+        instance = _StubInstance()
+        bridge = PluginCallBridge(instance)
+        result = bridge.import_files(["G:/a.json", "G:/b.info"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["paths"], ["G:/a.json", "G:/b.info"])
+
+    def test_bridge_strips_blank_paths(self) -> None:
+        """空白项直接丢掉，不要送给插件当成路径。"""
+        from codex_switch.ui_v2.plugin_bridge import PluginCallBridge
+
+        bridge = PluginCallBridge(_StubInstance())
+        result = bridge.import_files(["G:/a.json", "", "   ", None])
+        self.assertEqual(result["paths"], ["G:/a.json"])
+
+
+class PluginPageImportUiTests(unittest.TestCase):
+    """插件页面必须真的把导入入口接出来，而不只是后端有方法。
+
+    "后端有实现但界面没入口"是本项目真实出现过的问题：``import_directory``
+    早就在插件与桥里实现了，页面却一直没有按钮，用户根本用不到。
+    """
+
+    def setUp(self) -> None:
+        self.qml = (PLUGIN_DIR / "page.qml").read_text(encoding="utf-8")
+
+    def test_page_has_import_actions(self) -> None:
+        for marker in ("导入凭据文件", "导入目录"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.qml, f"页面上没有「{marker}」按钮")
+
+    def test_page_calls_the_import_bridge_methods(self) -> None:
+        self.assertIn("import_files(", self.qml)
+        self.assertIn("import_directory(", self.qml)
+
+    def test_page_imports_qtquick_dialogs(self) -> None:
+        """文件选择器必须用 QtQuick.Dialogs。
+
+        QtWidgets 的 QFileDialog 在本应用里**会让进程崩溃**（实测退出码
+        0xC0000409），因为应用是 QGuiApplication 而非 QApplication。
+        """
+        self.assertIn("import QtQuick.Dialogs", self.qml)
+        # 只看代码，不看注释：注释里正当地提到了这个反例（写清楚"不能用它"），
+        # 直接搜全文会命中注释，导致测试永远失败。
+        code = "\n".join(
+            line for line in self.qml.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        self.assertNotIn("QFileDialog", code, "代码里不应使用 QtWidgets 的 QFileDialog")
+
+    def test_page_uses_file_and_folder_dialogs(self) -> None:
+        self.assertIn("FileDialog {", self.qml)
+        self.assertIn("FolderDialog {", self.qml)
+
+    def test_page_converts_file_urls_to_local_paths(self) -> None:
+        """选择器给的是 file:// URL，插件要的是本地路径，必须转换。"""
+        self.assertIn("function toPath(", self.qml)
+        self.assertIn("decodeURIComponent", self.qml,
+                      "路径里的百分号转义（如空格 %20）必须解码")
+
+    def test_manifest_declares_fs_read_for_import(self) -> None:
+        """导入要读外部凭据文件，权限声明必须覆盖这一点。"""
+        manifest = json.loads((PLUGIN_DIR / "plugin.json").read_text(encoding="utf-8"))
+        self.assertIn("fs:read", manifest["permissions"])
+        self.assertIn("fs:read", manifest.get("paths", {}))
+
 
 if __name__ == "__main__":
     unittest.main()
