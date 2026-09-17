@@ -117,13 +117,18 @@ class PluginsViewModel(SnapshotViewModel):
     def setEnabled(self, plugin_id: str, enabled: bool) -> None:
         self._controller.setPluginEnabled(str(plugin_id), bool(enabled))
 
-    @Slot(str)
+    @Slot()
     def openFolder(self) -> None:
-        """打开插件目录，方便用户手动放入插件。"""
+        """打开插件目录，方便用户手动放入插件。
+
+        必须声明成无参槽：QML 侧调用 ``pluginsModel.openFolder()`` 不传参数，
+        若签名写成 ``@Slot(str)``，Qt 匹配不到就不派发，点击会**静默失效**。
+        """
         self._controller.openPluginFolder()
 
-    @Slot(str)
+    @Slot(str, str)
     def runAction(self, plugin_id: str, action_key: str) -> None:
+        """执行插件声明的动作。两个参数都要声明，否则 QML 调用不派发。"""
         self._controller.runPluginAction(str(plugin_id), str(action_key))
 
 

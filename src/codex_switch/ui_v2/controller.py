@@ -1296,9 +1296,16 @@ class AppController(QObject):
             return False
 
     def load_plugins(self) -> list[str]:
-        """扫描并加载已启用的插件。启动时调用；返回加载成功的 id 列表。"""
+        """扫描并加载已启用的插件。启动时调用；返回加载成功的 id 列表。
+
+        必须同时刷新视图模型：注册表有数据不等于界面有数据。
+        早期实现只更新注册表，导致插件明明加载成功，插件中心仍显示
+        「已安装插件 (0)」——列表是空的，用户根本看不到、也点不进插件页面。
+        """
         self._plugin_registry.reload()
-        return self._load_enabled_plugins()
+        loaded = self._load_enabled_plugins()
+        self.plugins.rebuild()
+        return loaded
 
     def _load_enabled_plugins(self) -> list[str]:
         loaded: list[str] = []

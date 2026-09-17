@@ -157,8 +157,13 @@ class TerminalViewModel(BaseViewModel):
             "info",
         )
 
-    @Slot(bool)
+    @Slot()
     def toggleAutoAnswer(self) -> None:
+        """无参槽：QML 调用 ``toggleAutoAnswer()`` 时不传参数。
+
+        原签名写成 ``@Slot(bool)``，与实现不符；一旦这个槽被 QML 调用就会
+        因为匹配不到签名而静默失效。
+        """
         self.setAutoAnswer(not self._auto_answer)
 
     @Slot(str, str, str)

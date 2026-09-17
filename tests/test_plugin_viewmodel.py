@@ -118,6 +118,23 @@ class PluginViewModelQtTests(unittest.TestCase):
         self.model.refresh()
         self.assertEqual(self.model.issueCount, first)
 
+    def test_load_plugins_refreshes_viewmodel(self) -> None:
+        """加载插件后，视图模型必须跟着更新。
+
+        这条锁死一个真实缺陷：``load_plugins()`` 早期只更新注册表、
+        不刷新视图模型，于是插件明明加载成功、注册表里也有数据，
+        界面仍然显示「已安装插件 (0)」——列表空的，用户既看不到插件，
+        也点不进插件页面。
+        """
+        loaded = self.controller.load_plugins()
+        self.assertTrue(loaded, "内置插件没有被加载")
+        self.assertEqual(
+            len(self.controller.plugins.items), len(loaded),
+            "注册表有插件但视图模型仍为空",
+        )
+        ids = {row["id"] for row in self.controller.plugins.items}
+        self.assertIn("codebuddy-accounts", ids)
+
     def test_plugin_detail_returns_permission_labels(self) -> None:
         """详情里的权限必须带上中文说明，而不是只给机器名。"""
         from codex_switch.plugins.registry import STATUS_READY  # noqa: F401
@@ -193,6 +210,117 @@ class OpenPluginFolderTests(unittest.TestCase):
             for i in range(meta.methodCount())
         }
         self.assertIn("openPluginFolder", names)
+
+    def test_open_folder_slot_has_zero_argument_signature(self) -> None:
+        """视图模型的 openFolder 必须注册成 ``openFolder()``。
+
+        这条是上面那个 bug 的直接回归：签名曾误写成 ``@Slot(str)``，
+        而 QML 调用 ``pluginsModel.openFolder()`` 不传参数，Qt 匹配不到
+        就不派发——按钮点了完全没反应，且没有任何报错。
+        """
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        meta = controller.plugins.metaObject()
+        signature = None
+        for i in range(meta.methodCount()):
+            method = meta.method(i)
+            if bytes(method.name()) == b"openFolder":
+                signature = method.methodSignature().data().decode()
+        self.assertEqual(signature, "openFolder()",
+                         "签名不对，QML 点击会静默失效")
+
+    def test_run_action_slot_declares_both_arguments(self) -> None:
+        """runAction 必须声明两个参数，否则插件动作按钮点不动。"""
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        meta = controller.plugins.metaObject()
+        signature = None
+        for i in range(meta.methodCount()):
+            method = meta.method(i)
+            if bytes(method.name()) == b"runAction":
+                signature = method.methodSignature().data().decode()
+        self.assertIsNotNone(signature)
+        self.assertEqual(signature.count(","), 1,
+                         f"runAction 参数个数不对：{signature}")
+
+
+class PluginSlotSignatureAuditTests(unittest.TestCase):
+    """全仓库审计：@Slot 声明的参数个数必须与函数实现一致。
+
+    这类错误不会报错、不会崩溃，只会让对应的 QML 调用**静默失效**——
+    插件中心的「打开插件目录」和「执行动作」都是这么坏掉的。
+    所以用静态扫描把它挡在提交前。
+    """
+
+    @staticmethod
+    def _split_params(raw: str) -> list[str]:
+        """按顶层逗号切分参数列表。
+
+        不能直接 ``str.split(",")``：类型注解里可能有逗号，例如
+        ``payload: dict[str, Any]`` 会被切成两段，导致误报。
+        这里跟踪 ``[]``/``()`` 的嵌套深度，只在深度为 0 时切分。
+        """
+        parts: list[str] = []
+        current = ""
+        depth = 0
+        for char in raw:
+            if char in "[({":
+                depth += 1
+            elif char in "])}":
+                depth -= 1
+            if char == "," and depth == 0:
+                parts.append(current)
+                current = ""
+            else:
+                current += char
+        parts.append(current)
+        return [p.strip() for p in parts if p.strip()]
+
+    def _iter_slot_mismatches(self, directory: Path):
+        import re
+
+        for path in sorted(directory.rglob("*.py")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for index, line in enumerate(lines):
+                match = re.match(r"\s*@Slot\(([^)]*)\)", line)
+                if not match:
+                    continue
+                declared = match.group(1)
+                if not declared.strip():
+                    continue
+                # result=... 是返回类型，不是参数，先剔除。
+                cleaned = re.sub(r"result\s*=\s*[^,]+", "", declared)
+                expected = len(self._split_params(cleaned))
+                if not expected:
+                    continue
+
+                for offset in range(index + 1, min(index + 5, len(lines))):
+                    definition = re.match(r"\s*def\s+(\w+)\(([^)]*)\)", lines[offset])
+                    if not definition:
+                        continue
+                    params = [
+                        p for p in self._split_params(definition.group(2))
+                        if p != "self"
+                    ]
+                    # 带默认值的参数可以省略不传，不算不匹配。
+                    required = [p for p in params if "=" not in p]
+                    if len(required) != expected and len(params) != expected:
+                        yield (
+                            f"{path.name}:{offset + 1} "
+                            f"{definition.group(1)} 声明 {expected} 参，实现 {len(params)} 参"
+                        )
+                    break
+
+    def test_no_slot_signature_mismatches(self) -> None:
+        viewmodels = PROJECT_ROOT / "src" / "codex_switch" / "ui_v2" / "viewmodels"
+        mismatches = list(self._iter_slot_mismatches(viewmodels))
+        self.assertEqual(
+            mismatches, [],
+            "发现 @Slot 签名与实现不一致（会导致 QML 调用静默失效）：\n"
+            + "\n".join(mismatches),
+        )
 
 
 class PluginsPageQmlTests(unittest.TestCase):
