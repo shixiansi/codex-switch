@@ -187,5 +187,104 @@ class ViewModelTests(unittest.TestCase):
             vm.dispose()
 
 
+class InputAssistViewModelTests(unittest.TestCase):
+    """输入辅助在 view model 层的接线。
+
+    逻辑本身在 terminal/input_assist.py 里单测过；这里验证的是
+    "界面能调到"：槽注册、按会话取历史、候选随输入变化。
+    """
+
+    def _vm(self):
+        vm = TerminalViewModel(_StubController())
+        self.addCleanup(vm.dispose)
+        return vm
+
+    def test_hint_slots_are_registered_for_qml(self) -> None:
+        """槽没注册进元对象时，QML 调用会静默失效。"""
+        vm = self._vm()
+        meta = vm.metaObject()
+        names = {bytes(meta.method(i).name()).decode() for i in range(meta.methodCount())}
+        for slot in (
+            "updateInputHints",
+            "historyPrevious",
+            "historyNext",
+            "resetHistoryCursor",
+            "applyHint",
+            "selectHint",
+            "hideHints",
+            "zoomHistoryPrevious",
+            "zoomHistoryNext",
+        ):
+            with self.subTest(slot=slot):
+                self.assertIn(slot, names, f"{slot} 没有注册，QML 调不到")
+
+    def test_history_slots_declare_correct_arguments(self) -> None:
+        """签名写错会导致 QML 调用被 Qt 丢弃。"""
+        vm = self._vm()
+        meta = vm.metaObject()
+        signatures = {}
+        for i in range(meta.methodCount()):
+            method = meta.method(i)
+            signatures[bytes(method.name()).decode()] = method.methodSignature().data().decode()
+
+        self.assertEqual(signatures.get("historyPrevious"), "historyPrevious(QString)")
+        self.assertEqual(signatures.get("historyNext"), "historyNext()")
+        self.assertEqual(signatures.get("applyHint"), "applyHint(int)")
+        self.assertEqual(signatures.get("zoomHistoryPrevious"), "zoomHistoryPrevious(QString)")
+
+    def test_hints_track_the_input(self) -> None:
+        vm = self._vm()
+        vm.updateInputHints("/")
+        self.assertTrue(vm.hintVisible)
+        self.assertGreater(len(vm.hintItems), 3)
+
+        vm.updateInputHints("/mo")
+        self.assertEqual([item["name"] for item in vm.hintItems], ["/model"])
+
+        vm.updateInputHints("普通文字")
+        self.assertFalse(vm.hintVisible)
+
+    def test_apply_hint_returns_the_command(self) -> None:
+        vm = self._vm()
+        vm.updateInputHints("/")
+        self.assertEqual(vm.applyHint(0), "/model")
+        self.assertEqual(vm.applyHint(999), "", "越界应返回空而不是抛错")
+
+    def test_select_hint_wraps_around(self) -> None:
+        vm = self._vm()
+        vm.updateInputHints("/")
+        count = len(vm.hintItems)
+        vm.selectHint(count + 1)
+        self.assertEqual(vm.hintSelected, 1)
+
+    def test_history_is_per_session(self) -> None:
+        """放大窗口必须用被放大会话的历史，否则会翻出别的会话的消息。"""
+        store: dict[str, _FakeBackend] = {}
+
+        def make(command, cwd, env):
+            backend = _FakeBackend(command, cwd, env)
+            store.setdefault("last", backend)
+            return backend
+
+        vm = self._vm()
+        a = vm._manager.create_session("a", "codex", "", backend_factory=make)
+        b = vm._manager.create_session("b", "codex", "", backend_factory=make)
+
+        vm.focus(a)
+        vm.sendInput("给 A 的消息")
+        vm.zoom(b)
+        vm.sendZoomInput("给 B 的消息")
+
+        self.assertEqual(vm.historyPrevious(""), "给 A 的消息",
+                         "主视图的历史应来自 activeId")
+        self.assertEqual(vm.zoomHistoryPrevious(""), "给 B 的消息",
+                         "放大视图的历史应来自 zoomedId")
+
+    def test_history_previous_returns_empty_without_session(self) -> None:
+        vm = self._vm()
+        self.assertEqual(vm.historyPrevious("草稿"), "")
+        self.assertEqual(vm.historyNext(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
