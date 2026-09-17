@@ -2069,6 +2069,45 @@ class SnapshotHelperTests(unittest.TestCase):
         self.assertFalse(data["exists"])
         self.assertEqual(data["results"], [])
 
+    def test_batch_cache_snapshot_summarizes_multiline_detail(self) -> None:
+        """回归：成功项的 detail 可能是整段响应 JSON，直接渲染会撑爆列表。
+
+        列表只放单行摘要，完整内容留在 detailFull 里（悬停可看）。
+        """
+        from codex_switch.ui.model_batch_logic import ModelBatchCache, ModelBatchResult
+
+        payload = (
+            "接口已返回响应，但没有提取到文本内容。完整返回结果：\n"
+            '```json\n{\n  "message": "Chat-GLM API",\n'
+            '  "usage": {"avg_input_tokens": 23865}\n}\n```'
+        )
+        cache = ModelBatchCache(
+            models=["glm-4-air"],
+            results={"glm-4-air": ModelBatchResult(status="success", detail=payload)},
+            completed=True,
+        )
+        row = snapshots.batch_cache_snapshot(cache)["results"][0]
+        # 摘要必须是一行、且不含 JSON 主体
+        self.assertNotIn("\n", row["detail"])
+        self.assertNotIn("avg_input_tokens", row["detail"])
+        self.assertEqual(row["detail"], "接口已返回响应，但没有提取到文本内容。")
+        # 完整内容仍可获取，不丢信息
+        self.assertIn("avg_input_tokens", row["detailFull"])
+
+    def test_summarize_detail_keeps_short_failure_line(self) -> None:
+        """失败项本来就短，摘要应与原文一致，不额外加工。"""
+        text = '请求失败：HTTP 500 {"error":{"message":"invalid character"}}'
+        self.assertEqual(snapshots._summarize_detail(text), text)
+
+    def test_summarize_detail_truncates_long_line(self) -> None:
+        out = snapshots._summarize_detail("x" * 300)
+        self.assertLessEqual(len(out), 120)
+        self.assertTrue(out.endswith("…"))
+
+    def test_summarize_detail_handles_empty(self) -> None:
+        self.assertEqual(snapshots._summarize_detail(""), "")
+        self.assertEqual(snapshots._summarize_detail("   \n  "), "")
+
     def test_event_row_normalizes_level_to_tone(self) -> None:
         event = HotUpdateEvent.create(scope="project", target="t", status="error", detail="d")
         row = snapshots.event_row(event, source="update")

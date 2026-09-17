@@ -307,6 +307,39 @@ def account_pool_summary(settings: AccountPoolSettings, *, project_count: int) -
 
 
 # -- model batch ---------------------------------------------------------
+def _summarize_detail(detail: str, *, limit: int = 120) -> str:
+    """把结果说明压成适合列表展示的单行摘要。
+
+    失败项的 detail 本来就只有一行（如 ``请求失败：HTTP 500 ...``）；但"接口返回了
+    数据却提取不到文本"这类成功项会把**整段响应的 JSON**塞进 detail，直接渲染会
+    把整个列表撑爆。这里统一取首个有意义的行并截断，完整内容仍可通过复制查看。
+    """
+    text = str(detail or "").strip()
+    if not text:
+        return ""
+    # 去掉 markdown 代码块围栏，避免摘要里出现 ```。
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    first = lines[0]
+    if first.startswith("```"):
+        # 首行是代码块围栏时，用下一行作为摘要。
+        first = lines[1] if len(lines) > 1 else first
+    first = first.lstrip("`").strip()
+    # 只取第一句话：像"…没有提取到文本内容。完整返回结果："这种引导语，
+    # 后半截对列表摘要是噪音。
+    for stop in ("。", "！", "？", ". "):
+        head, separator, rest = first.partition(stop)
+        if separator:
+            # 英文句点后要补回句号；"后面的内容"整体丢弃。
+            first = head + ("." if stop == ". " else separator)
+            break
+    first = first.rstrip("：:，, ").strip()
+    if len(first) > limit:
+        first = first[: limit - 1].rstrip() + "…"
+    return first
+
+
 def batch_cache_snapshot(cache: ModelBatchCache | None) -> dict[str, Any]:
     if cache is None:
         return {
@@ -330,12 +363,15 @@ def batch_cache_snapshot(cache: ModelBatchCache | None) -> dict[str, Any]:
             success += 1
         elif status == "error":
             error += 1
+        detail = str(getattr(item, "detail", "") or "")
         results.append(
             {
                 "model": model,
                 "status": status,
                 "tone": {"success": "success", "error": "danger"}.get(status, "unknown"),
-                "detail": str(getattr(item, "detail", "") or ""),
+                # 列表只显示单行摘要，避免整段 JSON 撑爆布局。
+                "detail": _summarize_detail(detail),
+                "detailFull": detail,
                 "durationMs": getattr(item, "duration_ms", None),
             }
         )

@@ -72,6 +72,8 @@ RowLayout {
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             delegate: ListRow {
+                id: resultRow
+
                 required property var modelData
 
                 width: parent ? parent.width : 0
@@ -84,6 +86,14 @@ RowLayout {
                 badgeTone: modelData.tone
                 meta: modelData.durationMs === null || modelData.durationMs === undefined
                     ? "" : (modelData.durationMs + " ms")
+
+                // 列表只显示单行摘要；被省略的完整内容（例如接口返回的原始 JSON）
+                // 通过悬停提示查看，避免撑爆布局又保留排查信息。
+                ToolTip.visible: resultRow.hovered
+                    && modelData.detailFull !== undefined
+                    && modelData.detailFull !== modelData.detail
+                ToolTip.delay: 400
+                ToolTip.text: modelData.detailFull || ""
             }
         }
     }
