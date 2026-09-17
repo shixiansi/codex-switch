@@ -307,34 +307,53 @@ def account_pool_summary(settings: AccountPoolSettings, *, project_count: int) -
 
 
 # -- model batch ---------------------------------------------------------
+# JSON 支架行：整段响应 JSON 被塞进 detail 时，这些行本身没有信息量。
+_JSON_SCAFFOLD_LINES = frozenset({"```", "```json", "{", "}", "[", "]", "[{", "}]"})
+# 纯引导语：后面紧跟的 JSON 才是排查所需内容，摘要里只留这句话等于什么都没说。
+_LEAD_ONLY_PREFIXES = ("完整返回结果", "完整响应", "原始返回")
+
+
 def _summarize_detail(detail: str, *, limit: int = 120) -> str:
     """把结果说明压成适合列表展示的单行摘要。
 
     失败项的 detail 本来就只有一行（如 ``请求失败：HTTP 500 ...``）；但"接口返回了
     数据却提取不到文本"这类成功项会把**整段响应的 JSON**塞进 detail，直接渲染会
-    把整个列表撑爆。这里统一取首个有意义的行并截断，完整内容仍可通过复制查看。
+    把整个列表撑爆。这里只保留首个有内容含义的行并截断，完整内容仍可通过悬停查看。
     """
     text = str(detail or "").strip()
     if not text:
         return ""
-    # 去掉 markdown 代码块围栏，避免摘要里出现 ```。
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
+    candidates = [line.strip() for line in text.splitlines() if line.strip()]
+    if not candidates:
         return ""
-    first = lines[0]
-    if first.startswith("```"):
-        # 首行是代码块围栏时，用下一行作为摘要。
-        first = lines[1] if len(lines) > 1 else first
-    first = first.lstrip("`").strip()
-    # 只取第一句话：像"…没有提取到文本内容。完整返回结果："这种引导语，
-    # 后半截对列表摘要是噪音。
-    for stop in ("。", "！", "？", ". "):
-        head, separator, rest = first.partition(stop)
-        if separator:
-            # 英文句点后要补回句号；"后面的内容"整体丢弃。
-            first = head + ("." if stop == ". " else separator)
-            break
-    first = first.rstrip("：:，, ").strip()
+
+    first = ""
+    fallback = ""
+    for line in candidates:
+        if line in _JSON_SCAFFOLD_LINES or line.startswith("```"):
+            continue
+        candidate = line.lstrip("`").strip()
+        # 只取第一句话："…没有提取到文本内容。完整返回结果："这种引导语，
+        # 后半截对列表摘要是噪音。
+        for stop in ("。", "！", "？", ". "):
+            head, separator, _rest = line.partition(stop)
+            if separator:
+                # 英文句点后要补回句号；"后面的内容"整体丢弃。
+                candidate = head + ("." if stop == ". " else separator)
+                break
+        candidate = candidate.rstrip("：:，, ").strip()
+        if not candidate:
+            continue
+        # 引导语本身不是内容，先记下备用，继续往下找真正的数据行。
+        if candidate.startswith(_LEAD_ONLY_PREFIXES):
+            fallback = fallback or candidate
+            continue
+        first = candidate
+        break
+
+    first = first or fallback
+    if not first:
+        return ""
     if len(first) > limit:
         first = first[: limit - 1].rstrip() + "…"
     return first

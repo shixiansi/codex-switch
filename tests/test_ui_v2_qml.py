@@ -497,6 +497,125 @@ Window {
             engine.deleteLater()
             self._flush_deferred_deletes()
 
+    def test_listrow_subtitle_lines_clamps_multiline_text(self) -> None:
+        """回归：多行 subtitle 不能把行高撑开。
+
+        Qt 的 Text 即使没有 wrapMode 也会按 \\n 换行，所以"接口返回的原始 JSON"
+        这类多行 detail 会把整行撑高。subtitleLines: 1 必须把它压回单行。
+        """
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQuick import QQuickItem
+
+        probe = self.root / "listrow_lines_probe.qml"
+        probe.write_text(
+            """
+import QtQuick
+import QtQuick.Window
+import theme
+import components
+
+Window {
+    visible: false
+    width: 520; height: 400
+    property alias clampedHeight: clamped.implicitHeight
+    property alias looseHeight: loose.implicitHeight
+    ListRow {
+        id: clamped
+        width: 460
+        title: "clamped"
+        subtitle: "line one\\nline two\\nline three\\nline four"
+        subtitleLines: 1
+    }
+    ListRow {
+        id: loose
+        y: 200
+        width: 460
+        title: "loose"
+        subtitle: "line one\\nline two\\nline three\\nline four"
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        engine = build_engine(self.controller)
+        engine.load(QUrl.fromLocalFile(str(probe)))
+        roots = engine.rootObjects()
+        self.assertTrue(roots, "ListRow lines probe failed to load")
+        win = roots[0]
+        try:
+            clamped = win.property("clampedHeight")
+            loose = win.property("looseHeight")
+            self.assertGreater(
+                loose, clamped, "probe is not exercising multi-line subtitles"
+            )
+            # 单行行高：与"只有一行 subtitle"的行高一致。
+            self.assertLess(
+                clamped,
+                loose,
+                "subtitleLines: 1 must clamp the row to a single line",
+            )
+        finally:
+            win.deleteLater()
+            engine.deleteLater()
+            self._flush_deferred_deletes()
+
+    def test_listrow_without_clamp_keeps_multiline(self) -> None:
+        """默认值不改变既有外观：其余 10 处调用仍可显示多行 subtitle。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQuick import QQuickItem
+
+        probe = self.root / "listrow_default_probe.qml"
+        probe.write_text(
+            """
+import QtQuick
+import QtQuick.Window
+import theme
+import components
+
+Window {
+    visible: false
+    width: 520; height: 400
+    property alias subtitleLines: row.subtitleLines
+    ListRow {
+        id: row
+        width: 460
+        title: "default"
+        subtitle: "line one\\nline two\\nline three"
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        engine = build_engine(self.controller)
+        engine.load(QUrl.fromLocalFile(str(probe)))
+        roots = engine.rootObjects()
+        self.assertTrue(roots, "ListRow default probe failed to load")
+        win = roots[0]
+        try:
+            self.assertEqual(
+                win.property("subtitleLines"), 0, "default must stay unclamped"
+            )
+            rows = [
+                o for o in win.findChildren(QQuickItem)
+                if o.metaObject().className().startswith("ListRow")
+            ]
+            self.assertTrue(rows, "ListRow was not instantiated")
+            texts = [
+                o for o in rows[0].findChildren(QQuickItem)
+                if o.metaObject().className().startswith("QQuickText")
+            ]
+            self.assertTrue(texts, "subtitle Text not found")
+            # 未设置 subtitleLines 时 maximumLineCount 必须足够大（不限制）。
+            counts = [t.property("maximumLineCount") for t in texts]
+            self.assertTrue(
+                any(int(c) > 3 for c in counts),
+                f"default maximumLineCount should not clamp, got {counts}",
+            )
+        finally:
+            win.deleteLater()
+            engine.deleteLater()
+            self._flush_deferred_deletes()
+
     def test_mcp_selection_drives_preview_panel(self) -> None:
         """Clicking an MCP server must update the preview panel.
 

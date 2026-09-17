@@ -2108,6 +2108,27 @@ class SnapshotHelperTests(unittest.TestCase):
         self.assertEqual(snapshots._summarize_detail(""), "")
         self.assertEqual(snapshots._summarize_detail("   \n  "), "")
 
+    def test_summarize_detail_skips_json_scaffolding(self) -> None:
+        """回归：detail 只有裸 JSON 时，摘要不能塌成 "{" 这种无效内容。"""
+        payload = '{\n  "message": "Chat-GLM API",\n  "usage": {"avg_input_tokens": 1}\n}'
+        summary = snapshots._summarize_detail(payload)
+        self.assertEqual(summary, '"message": "Chat-GLM API"')
+        self.assertNotIn(summary, {"{", "[", ""})
+
+    def test_summarize_detail_skips_lead_only_line(self) -> None:
+        """回归：只有 "完整返回结果：" 引导语时必须继续往下取真正的数据行。"""
+        payload = '完整返回结果：\n{\n  "message": "Chat-GLM API"\n}'
+        self.assertEqual(snapshots._summarize_detail(payload), '"message": "Chat-GLM API"')
+
+    def test_summarize_detail_json_scaffolding_only_is_blank(self) -> None:
+        """整段都是 JSON 支架时返回空串，由 UI 决定占位文案。"""
+        self.assertEqual(snapshots._summarize_detail("{\n}"), "")
+        self.assertEqual(snapshots._summarize_detail("```json\n```"), "")
+
+    def test_summarize_detail_fenced_block_uses_inner_line(self) -> None:
+        summary = snapshots._summarize_detail("```\nhello world\n```")
+        self.assertEqual(summary, "hello world")
+
     def test_event_row_normalizes_level_to_tone(self) -> None:
         event = HotUpdateEvent.create(scope="project", target="t", status="error", detail="d")
         row = snapshots.event_row(event, source="update")

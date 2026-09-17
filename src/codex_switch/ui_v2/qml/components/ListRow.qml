@@ -14,6 +14,10 @@ Rectangle {
     property string iconName: ""
     property bool selected: false
     property bool interactive: true
+    // Subtitle 最大行数；0 表示不限制（保持默认外观）。
+    // 传 1 可强制单行省略：Qt 的 Text 即使没有 wrapMode 也会按 \n 换行，
+    // 多行 detail（例如接口返回的原始 JSON）会把整行撑高。
+    property int subtitleLines: 0
     // Exposed so callers can drive a ToolTip from the row's hover state.
     readonly property bool hovered: hover.containsMouse
 
@@ -88,6 +92,7 @@ Rectangle {
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontCaption
                 elide: Text.ElideRight
+                maximumLineCount: root.subtitleLines > 0 ? root.subtitleLines : 32767
                 visible: root.subtitle !== ""
             }
         }

@@ -81,6 +81,8 @@ RowLayout {
                 iconName: modelData.status === "success" ? "check" : "alert"
                 title: modelData.model
                 subtitle: modelData.detail
+                // 成功与失败都只占一行：超出用省略号收尾，排版保持一致。
+                subtitleLines: 1
                 badgeText: modelData.status === "success" ? "可用"
                     : modelData.status === "error" ? "失败" : "等待"
                 badgeTone: modelData.tone
