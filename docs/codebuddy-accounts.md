@@ -49,16 +49,22 @@ python scripts/codebuddy_accounts.py use 主号
 
 ## 导入已有凭据文件
 
-如果你在别处有导出好的 `codebuddy-auth.json`，可以直接批量导入（支持文件、多个文件、目录）：
+如果你在别处有导出好的凭据（DSH 插件的 `codebuddy-auth.json`，或 **codebuddy2api 的 `.info` 账号文件**），
+可以直接批量导入（支持文件、多个文件、目录）：
 
 ```powershell
 python scripts/codebuddy_accounts.py import D:\exports\codebuddy-auth.json
-python scripts/codebuddy_accounts.py import D:\exports\
+python scripts/codebuddy_accounts.py import G:\codebuddy2api\auth
 ```
 
-导入时会校验凭据形状（必须有 `auth.accessToken`、`auth.refreshToken`、
-`account.uid` 等），不合格的文件会被跳过并说明原因，不会污染快照库。
+目录导入会递归收集 `.json` 与 `.info` 两种后缀，同目录下的账单、模型目录、sqlite
+等文件会被自动跳过并说明原因。导入时会校验凭据形状（必须有 `auth.accessToken`、
+`auth.refreshToken`、`account.uid` 等），不合格的文件不会污染快照库。
 带 UTF-8 BOM 的文件也能正常导入。
+
+> **注意**：同一个账号可能在多处各有一份凭据（例如 DSH 里一份、codebuddy2api 里一份），
+> 它们的 `account.uid` 相同但令牌不同。工具按 uid 区分账号，但**不会自动判断哪份更新**，
+> 两份都会成为独立快照。导入后请用 `status` 对比到期时间，`remove` 掉较旧的那份。
 
 ## 生效方式
 
@@ -68,6 +74,33 @@ python scripts/codebuddy_accounts.py import D:\exports\
 - 如果界面仍显示旧账号，重启 DSH 即可，重启后必定读取新账号。
 
 工具栏里不会自动刷新账号名，这属于插件自身行为，本工具不做侵入式改动。
+
+## 在 CodexSwitch 里使用（重要）
+
+**本工具是一个独立的命令行程序，不需要 CodexSwitch，也不应该复制进「脚本中心」。**
+
+CodexSwitch 的脚本中心以 `python <临时文件>` 运行 Python 脚本，**不传任何参数**。
+而本工具是需要子命令（`list` / `use` / …）的 CLI：不带参数时 argparse 会直接以
+退出码 2 报错退出。若又勾选了「结束后自动关闭窗口」，窗口一闪而过，看起来就像
+「点了没反应」。这是运行方式不匹配，不是脚本损坏。
+
+想在 CodexSwitch 里用，正确做法二选一：
+
+1. **直接用命令行**（推荐）：本项目附带全局命令 `cb`，任意目录可用：
+   ```powershell
+   cb list
+   cb use 主号
+   ```
+2. **写一个固定动作的包装脚本**贴进脚本中心。因为脚本中心不传参数，动作必须写死，
+   且每个动作要单独一个脚本：
+   ```python
+   import subprocess, sys
+   subprocess.run([sys.executable, r"F:\编程\codex-switch\scripts\codebuddy_accounts.py", "list"])
+   ```
+   同时**不要勾选「结束后自动关闭窗口」**，否则看不到输出。
+
+如果要的是「在 CodexSwitch 界面里点按钮切换」的完整体验，那需要给 CodexSwitch 新增一个
+CodeBuddy 账号页面（类似现有的号池页），不属于本工具的范围。
 
 ## 安全与可恢复性
 

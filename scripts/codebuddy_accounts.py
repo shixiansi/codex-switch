@@ -35,6 +35,11 @@ REQUIRED_AUTH_FIELDS = ("accessToken", "expiresAt", "refreshToken", "refreshExpi
 
 DEFAULT_AUTH_FILE_NAME = "codebuddy-auth.json"
 
+# 目录导入时认这些后缀。`.json` 是本工具和 DSH 插件的格式；
+# `.info` 是 codebuddy2api 的账号文件格式（字段与本工具完全兼容）。
+# 其余如 .sqlite3 / .lock / .wal 会在校验阶段被自然淘汰。
+IMPORT_SUFFIXES = (".json", ".info")
+
 
 class ToolError(Exception):
     """面向用户的失败，消息直接打印，不带堆栈。"""
@@ -449,10 +454,15 @@ def cmd_import(store: SnapshotStore, args: argparse.Namespace) -> int:
     for raw in args.files:
         path = Path(raw).expanduser()
         if path.is_dir():
-            # 目录导入时递归找 *.json，方便一次吃下一整个导出目录。
-            targets = sorted(item for item in path.rglob("*.json") if item.is_file())
+            # 目录导入时递归找候选文件，方便一次吃下一整个导出目录。
+            # `.info` 是 codebuddy2api 的账号文件后缀，与本工具自身的 `.json`
+            # 快照并存；两种都收，其余（日志、sqlite、锁文件）自然被跳过。
+            targets = sorted(
+                item for item in path.rglob("*")
+                if item.is_file() and item.suffix.lower() in IMPORT_SUFFIXES
+            )
             if not targets:
-                print(f"[跳过] {path}：目录下没有 JSON 文件。")
+                print(f"[跳过] {path}：目录下没有可导入的凭据文件。")
                 failed += 1
                 continue
         else:
@@ -468,7 +478,7 @@ def cmd_import(store: SnapshotStore, args: argparse.Namespace) -> int:
             info = describe_credential(credential)
             label = info["nickname"] if info["nickname"] != "(无昵称)" else info["uid"][:8]
             stored = store.add(credential, label)
-            print(f"[导入] {target}  ->  {stored.name}  ({info['nickname']} / {info['uid'][:8]})")
+            print(f"[导入] {target.name}  ->  {stored.name}  ({info['nickname']} / {info['uid'][:8]})")
             saved += 1
 
     print(f"完成：导入 {saved} 个，跳过 {failed} 个。")

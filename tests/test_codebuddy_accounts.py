@@ -391,6 +391,31 @@ class CliEndToEndTests(unittest.TestCase):
         self.assertEqual(self.run_cli("import", str(self.export_dir)), 0)
         self.assertEqual(len(tool.SnapshotStore(self.store_dir).list_names()), 1)
 
+    def test_import_accepts_info_extension(self) -> None:
+        """回归：codebuddy2api 的账号文件后缀是 .info，目录导入必须认。
+
+        它的字段与本工具完全兼容，只是后缀不同；早期只找 *.json，
+        导致直接导入该目录时一个账号都找不到。
+        """
+        payload = make_credential("dddddddd-info", "info号")
+        (self.export_dir / "dddddddd.info").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+        )
+        self.assertEqual(self.run_cli("import", str(self.export_dir)), 0)
+        store = tool.SnapshotStore(self.store_dir)
+        self.assertEqual(len(store.list_names()), 1)
+        self.assertEqual(store.read(store.list_names()[0])["account"]["uid"], "dddddddd-info")
+
+    def test_directory_import_skips_unrelated_json(self) -> None:
+        """账单、模型目录等 JSON 混在同一目录里时必须被跳过，而不是让导入失败。"""
+        (self.export_dir / "credits-ledger.json").write_text('{"total": 1}', encoding="utf-8")
+        tool.write_credential_file(
+            self.export_dir / "real.json",
+            tool.normalize_credential(make_credential("eeeeeeee-real", "真号")),
+        )
+        self.assertEqual(self.run_cli("import", str(self.export_dir)), 0)
+        self.assertEqual(len(tool.SnapshotStore(self.store_dir).list_names()), 1)
+
     def test_saved_snapshot_is_independent_of_live_file(self) -> None:
         """切换后快照不能被就地改写：它必须保持自己的账号。"""
         other = self.export_dir / "other.json"
