@@ -260,7 +260,13 @@ class AltScreenTests(unittest.TestCase):
 
 class _AltScreenManagerTest(_ManagerBackedTest):
     def test_timeline_marks_on_pause_not_only_with_data(self) -> None:
-        """回归：时间线打点必须每轮检查，否则 idle 永远为 0、时间线一直为空。"""
+        """回归：时间线打点必须每轮检查，否则 idle 永远为 0、时间线一直为空。
+
+        用轮询等待而不是固定 sleep：打点发生在"某个轮询恰好看到 idle 已超过
+        阈值"时，而轮询间隔 0.25s、阈值 0.3s，固定 sleep 0.8s 只剩约 50ms 余量，
+        在负载高时会偶发失败。这里一直等到打点出现，既保留原意（期间没有新数据）
+        又不会因调度抖动而假失败。
+        """
         store: dict[str, _FakeBackend] = {}
         mgr = TerminalManager()
         mgr._segment_idle_seconds = 0.3
@@ -268,8 +274,14 @@ class _AltScreenManagerTest(_ManagerBackedTest):
         try:
             sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
             store["last"].push(b"output one\n")
-            time.sleep(0.8)  # 期间没有新数据，靠轮询发现"停顿"
-            timeline = mgr.timeline_text(sid)
+            # 期间不再 push 任何数据：靠轮询自己发现"停顿"。
+            deadline = time.time() + 5.0
+            timeline = ""
+            while time.time() < deadline:
+                timeline = mgr.timeline_text(sid)
+                if "output one" in timeline:
+                    break
+                time.sleep(0.05)
             self.assertIn("output one", timeline)
             self.assertRegex(timeline, r"\[\d{2}:\d{2}:\d{2}\]")
         finally:
