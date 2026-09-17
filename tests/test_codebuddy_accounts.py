@@ -14,6 +14,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TOOL_PATH = PROJECT_ROOT / "scripts" / "codebuddy_accounts.py"
+SRC = PROJECT_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 # 测试目录放在工作区内，而不是系统的 %TEMP%。
 # 受限环境（沙箱、被策略拦截的临时目录）会对 %TEMP% 直接拒绝写入，
@@ -53,16 +56,38 @@ def make_temp_siblings(case: unittest.TestCase, *names: str) -> list[Path]:
     return paths
 
 
+def load_core():
+    """核心逻辑模块。CLI 与 CodexSwitch 插件共用这一份实现。"""
+    from codex_switch import codebuddy_core
+
+    return codebuddy_core
+
+
 def load_tool():
-    """把 CLI 脚本当模块导入（它不在包内，只能按路径加载）。"""
+    """把 CLI 脚本当模块导入（它不在包内，只能按路径加载）。
+
+    导入后把 ``codebuddy_core`` 的公开名字并进该模块：
+
+    核心逻辑已经抽到 ``codex_switch.codebuddy_core``，CLI 现在只是它的
+    命令行外壳。测试关心的 ``normalize_credential`` / ``write_credential_file``
+    等函数因此不在 CLI 模块里了。这里把两者合并成一个命名空间，
+    让用例继续以 ``tool.xxx`` 的方式调用——测的是同一份实现，不会因为
+    搬了文件而失去覆盖。
+    """
     spec = importlib.util.spec_from_file_location("codebuddy_accounts", TOOL_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules["codebuddy_accounts"] = module
     spec.loader.exec_module(module)
+
+    core = load_core()
+    for name in core.__all__:
+        if not hasattr(module, name):
+            setattr(module, name, getattr(core, name))
     return module
 
 
 tool = load_tool()
+core = load_core()
 
 
 def fake_jwt(claims: dict) -> str:
