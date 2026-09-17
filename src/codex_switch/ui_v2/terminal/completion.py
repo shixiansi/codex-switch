@@ -40,6 +40,20 @@ _HINT_KEY_RE = re.compile(r"(?<![\w+])(enter|esc|tab|ctrl\+\w|shift\+tab)(?![\w+
 _MIN_OPTIONS = 2
 # 只看屏幕末尾，避免匹配到历史输出里的旧内容。
 _TAIL_CHARS = 800
+# 从末尾向上找按键提示行时最多看几行：页脚可能有多行（codex 的 resume
+# 是两行），但也不该一路往上找到正常输出里。
+_FOOTER_SCAN_LINES = 6
+
+# 分页行，如 "  1 / 4 · 100% ────────────"。它是 TUI 的页脚装饰，
+# 既不是按键提示也不是列表项，查找与收集时都要跳过。
+_PAGINATION_RE = re.compile(r"^\s*\d+\s*/\s*\d+\s*[·⋅]|^\s*[─━-]{4,}\s*$|─{4,}")
+
+
+def _is_footer_noise(line: str) -> bool:
+    """这一行是否是页脚装饰（空行 / 分页行），而不是列表项或按键提示。"""
+    if not line.strip():
+        return True
+    return bool(_PAGINATION_RE.search(line))
 
 
 @dataclass
@@ -137,36 +151,42 @@ def _detect_plain_list(tail: str) -> ChoiceMenu | None:
 
     判定条件刻意收紧，避免把 AI 正文里的引用块当成菜单：
 
-    1. **最后一行必须是按键提示行**，且含至少两个不同按键
-       （``enter resume  ctrl+a archive  esc exit``）——这是交互菜单的页脚特征；
+    1. 屏幕尾部存在**按键提示行**（含两个以上按键名），
+       且该行到屏幕末尾之间只有页脚性质的内容；
     2. 提示行上方是一段连续列表项，至少两行；
     3. 这段里至少有一行带选中标记。
 
     三条同时满足才认。缺任何一条都返回 None，宁可漏报。
+
+    实现要点：页脚可能是**多行**（codex 的 resume 有两行，第二行还有
+    ``↑/↓ browse``），中间还可能夹着分页行（``1 / 4 · 100% ────``）。
+    因此先把整个尾部页脚区域识别出来，再从其上方收集列表项。
     """
     lines = tail.splitlines()
+    if len(lines) < _MIN_OPTIONS + 1:
+        return None
 
-    # 找到最后一个非空行作为提示行
+    # 在尾部有限几行内找按键提示行。取**最靠上**的那一行：页脚的第一行
+    # 才是"按键说明"，其下的补充行（ctrl+o / ctrl+t ...）不是。
     hint_index = -1
-    for index in range(len(lines) - 1, -1, -1):
-        if lines[index].strip():
+    start = max(0, len(lines) - _FOOTER_SCAN_LINES)
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if not line.strip() or _PAGINATION_RE.search(line):
+            continue
+        keys = {match.group(1).lower() for match in _HINT_KEY_RE.finditer(line)}
+        if len(keys) >= 2:
             hint_index = index
             break
     if hint_index < 0:
         return None
 
-    hint_line = lines[hint_index]
-    if len(set(match.group(1).lower() for match in _HINT_KEY_RE.finditer(hint_line))) < 2:
-        return None
-
-    # 提示行上方取一段连续列表项。
-    # 注意：提示行与列表之间通常隔着一个空行（TUI 排版如此），
-    # 所以不能一遇到空行就停——先跳过紧邻提示行的空行，再从第一个
-    # 非空行开始收集，直到遇到空行或块已够长。
+    # 提示行与列表之间可能夹着空行/分页行，先跳掉。
     cursor = hint_index - 1
-    while cursor >= 0 and not lines[cursor].strip():
+    while cursor >= 0 and _is_footer_noise(lines[cursor]):
         cursor -= 1
 
+    # 再往上收集连续列表项。
     block: list[str] = []
     while cursor >= 0:
         if not lines[cursor].strip():

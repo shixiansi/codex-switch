@@ -438,6 +438,60 @@ class PlainListMenuTests(unittest.TestCase):
         self.assertEqual(menu.kind, "confirm")
         self.assertEqual(menu.choices, ["是", "否"])
 
+    # 真实屏幕内容（取自用户截图）。这一条最值得留：
+    # 先前用手写的简化样例测试一直是过的，但拿到真实内容就失败——
+    # 因为 codex 的页脚是**两行**，中间还夹着分页行，而实现当时只看最后一行。
+    REAL_SCREEN = (
+        "Resume a previous session\n"
+        "Type to search     Filter: [Cwd] All  Status: [Active] Archived  "
+        "Sort: [Updated] Created\n"
+        "\n"
+        "> 1d ago      读取改项目，查看项目结构，有没有哪里需要优化的地方\n"
+        "  157d ago    你好\n"
+        "  157d ago    你好\n"
+        "  157d ago    你好\n"
+        "\n"
+        "  1 / 4 · 100% ──────────────────────────────\n"
+        "enter resume  ctrl+a archive  esc exit  ctrl+c exit  "
+        "tab focus sort/filter  //+- change option\n"
+        "ctrl+o comfortable view  ctrl+t transcript  ctrl+e expand  ↑/↓ browse\n"
+    )
+
+    def test_real_screen_with_two_line_footer(self) -> None:
+        """真实 resume 菜单：页脚两行 + 分页行。
+
+        手写简化样例能过、真实内容过不了，说明样例不够真实。
+        这里直接用真实屏幕文本锁死。
+        """
+        menu = detect_menu(self.REAL_SCREEN)
+        self.assertTrue(menu.awaiting, "真实 resume 菜单没有被识别")
+        self.assertEqual(menu.kind, "list")
+        self.assertEqual(len(menu.choices), 4)
+        self.assertEqual(menu.selected, 0)
+
+    def test_real_screen_without_pagination_line(self) -> None:
+        """分页行可能不存在，识别不该依赖它。"""
+        without = self.REAL_SCREEN.replace(
+            "  1 / 4 · 100% ──────────────────────────────\n", ""
+        )
+        menu = detect_menu(without)
+        self.assertTrue(menu.awaiting)
+        self.assertEqual(len(menu.choices), 4)
+
+    def test_real_screen_with_second_item_selected(self) -> None:
+        moved = self.REAL_SCREEN.replace("> 1d ago", "  1d ago").replace(
+            "  157d ago    你好", "> 157d ago    你好", 1
+        )
+        self.assertEqual(detect_menu(moved).selected, 1)
+
+    def test_footer_alone_is_not_a_menu(self) -> None:
+        """只有页脚、没有列表时不构成菜单。"""
+        footer_only = (
+            "enter resume  ctrl+a archive  esc exit\n"
+            "ctrl+o comfortable view  ctrl+t transcript\n"
+        )
+        self.assertFalse(detect_menu(footer_only).awaiting)
+
 
 class SelectChoiceTests(unittest.TestCase):
     """选中菜单项时该发什么——发错就等于点了没反应。"""
