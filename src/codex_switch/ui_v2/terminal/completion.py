@@ -114,6 +114,12 @@ class ChoiceMenu:
     selected: int = -1
     # confirm / numbered / list
     kind: str = "numbered"
+    # confirm 型菜单命中的**原始提示行**（如 ``Overwrite file? [Y/n]``）。
+    #
+    # 为什么必须保留：confirm 型的 choices 是本工具自己造的展示文案（"是"/"否"），
+    # 不是 CLI 的原文。风险审查要判定的恰恰是原文里写了什么——只看"是/否"
+    # 会把"覆盖文件？"和"继续？"判成同一件事，风险判定就失效了。
+    prompt: str = ""
 
     @property
     def numbered(self) -> bool:
@@ -133,8 +139,23 @@ def _clean_label(label: str) -> str:
 
 
 def _detect_confirm(lines: list[str]) -> ChoiceMenu | None:
-    if _CONFIRM_RE.search("\n".join(lines)):
-        return ChoiceMenu(awaiting=True, choices=["是", "否"], selected=0, kind="confirm")
+    """确认型提示（``[Y/n]`` / ``(y/N)``）。
+
+    命中时把**整行原文**一并带回（:attr:`ChoiceMenu.prompt`）：风险审查必须看到
+    ``Overwrite file?`` 才知道这一下按键意味着什么。
+
+    从下往上找**最后一条**匹配行：尾部窗口里可能同时存在历史输出中的旧提示，
+    当前等待回答的总是最靠近底部的那一条。
+    """
+    for line in reversed(lines):
+        if _CONFIRM_RE.search(line):
+            return ChoiceMenu(
+                awaiting=True,
+                choices=["是", "否"],
+                selected=0,
+                kind="confirm",
+                prompt=line.strip(),
+            )
     return None
 
 
@@ -297,4 +318,13 @@ def detect_choice(text: str) -> tuple[bool, list[str]]:
     return menu.awaiting, menu.choices
 
 
-__all__ = ["ChoiceMenu", "detect_choice", "detect_menu"]
+def detect_choice_prompt(text: str) -> tuple[bool, list[str], str]:
+    """返回 ``(awaiting_choice, choices, prompt)``。
+
+    给需要**提示原文**的调用方（风险审查）使用；prompt 仅 confirm 型菜单非空。
+    """
+    menu = detect_menu(text)
+    return menu.awaiting, menu.choices, menu.prompt
+
+
+__all__ = ["ChoiceMenu", "detect_choice", "detect_choice_prompt", "detect_menu"]

@@ -69,6 +69,8 @@ class PtySession:
     # list 必须用方向键移动光标，发数字会被当成搜索词——这是"看得到选项
     # 却选不中"的根因。
     choice_kind: str = "numbered"
+    # confirm 型菜单命中的原始提示行，供风险审查判定"这一下按键意味着什么"。
+    choice_prompt: str = ""
     # 是否已收到过任何输出：用于区分"CLI 没输出"与"读取环节坏了"。
     received_output: bool = False
     # 上一次已自动应答过的选项签名，避免同一菜单被反复自动选择。
@@ -79,12 +81,40 @@ class PtySession:
     auto_answer_last_at: float = 0.0
     # 菜单开始"消失"的时刻，用于区分真结束与重绘闪烁。
     menu_absent_since: float = 0.0
+    # -- 风险审查运行期状态 ------------------------------------------------
+    # 已被用户拒绝过的菜单签名：同一菜单不再重复提示（否则会变成骚扰）。
+    # 与 answered_menus 一样，菜单消失后清空。
+    declined_menus: set = None  # type: ignore[assignment]
+    # 本次已经处理过的菜单签名（用户点过"允许本次"）。
+    # 作用：按键要经写入队列延迟 ~0.25s 才发出，而轮询每 0.25s 一次；没有这个
+    # 标记的话，菜单还没从屏幕上消失就会被再问一次，用户会被连续弹两次。
+    # 菜单消失后清空——它只表达"这一屏已经答过了"。
+    answered_menus: set = None  # type: ignore[assignment]
+    # 用户点过"本会话允许此类"的菜单种类（confirm / numbered）。
+    # **按种类而不是按签名**，因为按钮的字面承诺就是"此类"；只存内存，
+    # 会话结束即失效（永久白名单等于换个地方开后门）。
+    approved_kinds: set = None  # type: ignore[assignment]
+    # 自主写入的时间戳窗口，用于限流；人工授权不写入这里。
+    auto_write_times: list = None  # type: ignore[assignment]
+    # 审查计数，供界面与会话列表展示。
+    reviewed_count: int = 0
+    denied_count: int = 0
+    # 本会话是否允许自动应答（None 表示不限制，由 manager 的全局开关决定）。
+    auto_answer_enabled: bool | None = None
 
     def __post_init__(self) -> None:
         if self.child_pids is None:
             self.child_pids = set()
         if self.choices is None:
             self.choices = []
+        if self.declined_menus is None:
+            self.declined_menus = set()
+        if self.answered_menus is None:
+            self.answered_menus = set()
+        if self.approved_kinds is None:
+            self.approved_kinds = set()
+        if self.auto_write_times is None:
+            self.auto_write_times = []
 
 
 class _Backend:

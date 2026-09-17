@@ -4,7 +4,10 @@
 - 登记/启动/停止多个 PTY 会话；
 - 后台线程周期性读取输出、检测退出、触发整树回收（零残留）；
 - 把"完成/失败/可选项"事件通知给上层；
-- cleanup_orphans() 回收本工具登记过但 root 已死、子树仍在的孤儿进程。
+- cleanup_orphans() 回收本工具登记过但 root 已死、子树仍在的孤儿进程；
+- **风险审查闸门**：自动应答不再无条件选第一项，而是先经 :class:`ReviewPolicy`
+  判定（静默放行 / 通知 / 要求授权 / 拒绝），自主写入只允许从
+  :meth:`TerminalManager._write_auto_answer` 这一个出口发出。
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from .pty_session import (
     reap_tree,
     start_session,
 )
+from .review import Action, AnswerRequest, Decision, ReviewPolicy
 from .screen import TerminalScreen
 
 log = get_logger()
@@ -35,6 +39,15 @@ EVENT_STATUS = "status"
 EVENT_CHOICE = "choice"
 # 时间线新增了一段（输出停顿后打点），用于让界面刷新时间线面板。
 EVENT_TIMELINE = "timeline"
+# 风险审查状态变化：需要通知 / 需要授权 / 授权已过期。
+EVENT_REVIEW = "review"
+
+# 审查状态（payload.state）
+REVIEW_PENDING = "pending"
+REVIEW_APPROVED = "approved"
+REVIEW_DENIED = "denied"
+REVIEW_EXPIRED = "expired"
+REVIEW_DISMISSED = "dismissed"
 
 # 特殊按键 → 终端字节序列。TUI 菜单多靠方向键移动、回车确认、Esc 取消，
 # 而普通输入框只能发文本，因此需要单独提供这些控制键。
@@ -95,6 +108,16 @@ class SessionSummary:
     elapsed_ms: int = 0
     # 当前选项是否已由自动应答处理过。
     auto_answered: bool = False
+    # 风险审查：是否存在等待用户授权的菜单，以及本会话的审查计数。
+    review_pending: bool = False
+    review_pending_count: int = 0
+    reviewed_count: int = 0
+    denied_count: int = 0
+    # 当前待审项的风险等级与拟发送内容，供界面展示。
+    review_risk: str = ""
+    review_label: str = ""
+    review_mode: str = ""
+    review_mode_label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +138,14 @@ class SessionSummary:
             "elapsedMs": self.elapsed_ms,
             "elapsedLabel": _format_elapsed(self.elapsed_ms),
             "autoAnswered": self.auto_answered,
+            "reviewPending": self.review_pending,
+            "reviewPendingCount": self.review_pending_count,
+            "reviewedCount": self.reviewed_count,
+            "deniedCount": self.denied_count,
+            "reviewRisk": self.review_risk,
+            "reviewLabel": self.review_label,
+            "reviewMode": self.review_mode,
+            "reviewModeLabel": self.review_mode_label,
         }
 
 
@@ -131,8 +162,60 @@ def _auto_choice_index(choices: list[str]) -> int:
 
     默认第一项：codex/claude 的确认菜单首项通常是"继续/默认"语义
     （如 ``Yes, continue``），最符合"自动放行"的预期。
+
+    **注意**：选哪一项已不再是安全边界。风险是否可接受由
+    :mod:`review` 的规则链判定，本函数只负责"点哪里"。
     """
     return 0
+
+
+@dataclass
+class PendingReview:
+    """一项等待用户授权的自动应答。
+
+    保存请求的完整快照与菜单签名：用户批准时要用签名复核"菜单还是原来那个吗"，
+    否则用户看到的与将要按下的可能已经不是同一件事。
+    """
+
+    request: AnswerRequest
+    decision: Decision
+    created_at: float
+    session_id: str
+    title: str
+
+    @property
+    def deadline(self) -> float:
+        return self.created_at + self.timeout_seconds
+
+    # 由 manager 在建立待审项时写入。
+    timeout_seconds: float = 60.0
+
+    def label(self) -> str:
+        """拟发送内容的可读描述，用于界面展示"要替你按哪个键"。"""
+        request = self.request
+        if request.kind == "confirm":
+            return "是（" + (request.intended_payload or "y") + "）"
+        if request.intended_label:
+            return f"{request.intended_index + 1}. {request.intended_label}"
+        return str(request.intended_payload or "")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sessionId": self.session_id,
+            "title": self.title,
+            "kind": self.request.kind,
+            "label": self.label(),
+            "payload": self.request.intended_payload,
+            "prompt": self.request.prompt,
+            "reason": self.decision.reason,
+            "ruleId": self.decision.rule_id,
+            "risk": self.decision.risk.value,
+            "riskLabel": self.decision.risk.label,
+            "createdAt": self.created_at,
+            "timeoutSeconds": self.timeout_seconds,
+            "choices": list(self.request.choices),
+            "index": self.request.intended_index,
+        }
 
 
 def _format_elapsed(milliseconds: int) -> str:
@@ -159,7 +242,12 @@ _STATUS_LABELS = {
 class TerminalManager:
     """会话登记表 + 轮询线程。"""
 
-    def __init__(self, poll_interval: float = 0.25, on_event: EventHook | None = None) -> None:
+    def __init__(
+        self,
+        poll_interval: float = 0.25,
+        on_event: EventHook | None = None,
+        policy: ReviewPolicy | None = None,
+    ) -> None:
         self._sessions: dict[str, PtySession] = {}
         self._backends: dict[str, _Backend] = {}
         self._screens: dict[str, TerminalScreen] = {}
@@ -179,6 +267,11 @@ class TerminalManager:
         # 自动应答：检测到选择菜单时自动按预设策略回答，无需人工点击。
         # 默认关闭，由界面上的开关控制。
         self.auto_answer = False
+        # 风险审查策略。manager 不读文件：策略由上层从 terminal_policy.json
+        # 读好后注入（依赖倒置），这样 terminal/ 包继续保持无全局状态。
+        self._policy = policy or ReviewPolicy()
+        # 等待用户授权的自动应答，按会话 id 索引。
+        self._reviews: dict[str, PendingReview] = {}
         # 输出停顿多久算"一段结束"，用于给时间线打点。
         self._segment_idle_seconds = 1.2
 
@@ -421,6 +514,8 @@ class TerminalManager:
 
     def remove_session(self, session_id: str) -> None:
         """从登记表移除（进程若仍在则先回收）。"""
+        # 先丢弃待审项：会话马上就不存在了，再弹出它的授权框只会让用户困惑。
+        self.dismiss_review(session_id, "会话已移除")
         self.stop_session(session_id, reap=True)
         with self._lock:
             self._sessions.pop(session_id, None)
@@ -431,10 +526,12 @@ class TerminalManager:
     def summaries(self) -> list[SessionSummary]:
         with self._lock:
             sessions = list(self._sessions.values())
+            reviews = dict(self._reviews)
         out: list[SessionSummary] = []
         for s in sessions:
             screen = self._screens.get(s.session_id)
             last = screen.last_line if screen is not None else ""
+            pending = reviews.get(s.session_id)
             out.append(
                 SessionSummary(
                     session_id=s.session_id,
@@ -452,6 +549,14 @@ class TerminalManager:
                     last_line=last,
                     elapsed_ms=_elapsed_ms(s),
                     auto_answered=bool(s.choices) and tuple(s.choices) == s.auto_answered,
+                    review_pending=pending is not None,
+                    review_pending_count=1 if pending is not None else 0,
+                    reviewed_count=s.reviewed_count,
+                    denied_count=s.denied_count,
+                    review_risk=pending.decision.risk.value if pending is not None else "",
+                    review_label=pending.label() if pending is not None else "",
+                    review_mode=self._policy.mode,
+                    review_mode_label=self._policy.mode_label,
                 )
             )
         return out
@@ -538,18 +643,26 @@ class TerminalManager:
                 rendered = screen.tail()
                 self._emit(session_id, EVENT_OUTPUT, {"text": rendered})
                 menu = detect_menu(rendered)
-                state = (menu.awaiting, menu.choices, menu.selected, menu.kind)
+                state = (
+                    menu.awaiting,
+                    menu.choices,
+                    menu.selected,
+                    menu.kind,
+                    menu.prompt,
+                )
                 previous = (
                     session.awaiting_choice,
                     session.choices,
                     session.choice_selected,
                     session.choice_kind,
+                    session.choice_prompt,
                 )
                 if state != previous:
                     session.awaiting_choice = menu.awaiting
                     session.choices = list(menu.choices)
                     session.choice_selected = menu.selected
                     session.choice_kind = menu.kind
+                    session.choice_prompt = menu.prompt
                     self._emit(
                         session_id,
                         EVENT_CHOICE,
@@ -558,6 +671,7 @@ class TerminalManager:
                             "choices": list(menu.choices),
                             "selectedIndex": menu.selected,
                             "kind": menu.kind,
+                            "prompt": menu.prompt,
                         },
                     )
             # 输出停顿一段时间后，把这一屏记入带时间戳的时间线。
@@ -570,7 +684,7 @@ class TerminalManager:
                         EVENT_TIMELINE,
                         {"text": screen.timeline(), "segments": len(screen.timeline_lines())},
                     )
-            # 自动应答：检测到菜单且用户开启了自动处理时，按策略直接应答。
+            # 自动应答：检测到菜单且用户开启了自动处理时，交由风险审查决定。
             if session.awaiting_choice and session.choices:
                 session.menu_absent_since = 0.0
                 self._maybe_auto_answer(session)
@@ -585,55 +699,382 @@ class TerminalManager:
                     session.auto_answer_attempts = 0
                     session.auto_answer_last_at = 0.0
                     session.menu_absent_since = 0.0
+                    session.declined_menus.clear()
+                    session.answered_menus.clear()
+                    # approved_kinds 刻意**不**清空：用户的"这类不用再问"应当
+                    # 在整个会话内有效，而不是菜单一消失就作废。
+                    # 菜单确实结束了，悬着的授权框也就没有意义了。
+                    self.dismiss_review(session_id, "菜单已关闭")
             # 检测退出
             if not alive and not session.status.is_terminal:
                 self._finish(session_id, session, backend)
 
+        # 授权超时检查必须**每轮**都做，不能塞进上面的 `if data:` 分支：
+        # CLI 静默时没有输出，待审项会永远不过期，授权框就一直悬着。
+        self._expire_reviews()
+
     def _maybe_auto_answer(self, session: PtySession) -> None:
-        """按预设策略自动回应选择菜单。
+        """按策略自动回应选择菜单（**唯一**的自动应答决策入口）。
+
+        与旧实现的区别：不再"检测到菜单就选第一项"，而是先把请求交给
+        :class:`ReviewPolicy`，由它决定静默放行、通知、还是要求授权。
+        真正的写入只允许从 :meth:`_write_auto_answer` 发出。
 
         关键：菜单出现到 CLI 真正开始读标准输入之间有短暂间隙（TUI 还在重绘），
         此时写入的应答可能被丢弃。因此这里**持续重试**，直到菜单消失或达到
         次数上限——只试一次会出现"日志显示已自动应答、菜单却还在"的情况。
         """
-        if not self.auto_answer:
+        if not self._session_auto_answer(session):
             return
-        # 列表菜单（如 codex 的 resume 会话选择器）**不自动应答**。
-        # 自动选第一项等于替用户随便恢复一个历史会话，属于有副作用的误操作；
-        # 这类菜单必须由用户自己挑。自动应答只用于确认提示与编号菜单。
-        if session.choice_kind == "list":
+        # 已有一个待授权的菜单：**绝不重试**。用户还没看清就把键刷出去，
+        # 等于绕过了审查本身。
+        if session.session_id in self._reviews:
             return
         if not session.choices:
             return
+
         signature = tuple(session.choices)
-        now = time.monotonic()
+        threshold = self._policy.config.review_timeout_seconds
         if signature != session.auto_answered:
             # 换了一个菜单：重置尝试计数。
             session.auto_answered = signature
             session.auto_answer_attempts = 0
+        now = time.monotonic()
         if session.auto_answer_attempts >= _AUTO_ANSWER_MAX_ATTEMPTS:
             return
         # 每次尝试之间留出冷却时间，避免把按键刷爆。
         if now - session.auto_answer_last_at < _AUTO_ANSWER_RETRY_S:
             return
-        session.auto_answer_last_at = now
+
+        # 这一屏已经处理过了（自动应答过，或用户刚授权/拒绝过）。
+        #
+        # 必要性：按键要经写入队列延迟约 0.25s 才真正发出，而轮询间隔也是
+        # 0.25s。没有这个标记时，菜单在屏幕上多停留一拍就会被**再问一次**，
+        # 用户会看到同一个菜单连续弹两遍。菜单消失后标记会被清空。
+        if signature in session.answered_menus or signature in session.declined_menus:
+            return
+
+        # 用户点过"本会话允许此类"：同种类的菜单不再询问，直接按策略执行。
+        # 注意"这类"是按菜单**种类**（confirm / numbered）判定的，与按钮字面一致；
+        # 列表菜单永远排除在外。
+        skip_ask = session.choice_kind in session.approved_kinds and session.choice_kind != "list"
+        request = self._build_request(session, now)
+        decision = self._policy.evaluate(request, skip_ask=skip_ask)
+        self._record_review(session, request, decision)
+
+        if decision.action is Action.BLOCK:
+            # 不发任何按键。关闭模式、列表菜单、预算耗尽、已拒绝都从这里返回。
+            if decision.rule_id == "list_menu":
+                # 记下来，避免同一屏列表菜单每轮都被重新判定一次。
+                session.answered_menus.add(signature)
+            return
+
+        if decision.action is Action.ASK:
+            pending = PendingReview(
+                request=request,
+                decision=decision,
+                created_at=now,
+                session_id=session.session_id,
+                title=session.title,
+                timeout_seconds=threshold,
+            )
+            self._reviews[session.session_id] = pending
+            # 标记"这一屏已经问过了"：应答要经写入队列延迟约 0.25s 才发出，
+            # 而轮询间隔也是 0.25s；不标记的话菜单多停一拍就会再弹一次。
+            session.answered_menus.add(signature)
+            # 菜单刚出现时 TUI 可能还没开始读输入，挂起前的那次尝试就是"白打"。
+            # 这里同步一次时间戳，让用户授权后立即发送，不必再等一个冷却周期。
+            session.auto_answer_last_at = now
+            log.info(
+                "自动应答已挂起待授权 id=%s 规则=%s 风险=%s 拟发送=%r 提示=%r",
+                session.session_id,
+                decision.rule_id,
+                decision.risk.value,
+                request.intended_payload,
+                request.prompt[:80],
+            )
+            self._emit(
+                session.session_id,
+                EVENT_REVIEW,
+                {
+                    "state": REVIEW_PENDING,
+                    "review": pending.to_dict(),
+                    "mode": self._policy.mode,
+                    "modeLabel": self._policy.mode_label,
+                },
+            )
+            return
+
+        # SILENT / NOTIFY 才真正按键。通知由界面层负责（manager 不碰 Qt）。
         session.auto_answer_attempts += 1
-        if session.choice_kind == "confirm":
-            # 确认提示发 y（首项）或 n。
-            payload = "y" if _auto_choice_index(session.choices) == 0 else "n"
+        session.auto_answer_last_at = now
+        session.auto_write_times.append(now)
+        # 记下"这一屏已答过"，避免菜单尚未从屏幕消失时被重复处理。
+        session.answered_menus.add(signature)
+        if decision.action is Action.NOTIFY:
+            self._emit(
+                session.session_id,
+                EVENT_REVIEW,
+                {
+                    "state": "notice",
+                    "review": {
+                        "sessionId": session.session_id,
+                        "title": session.title,
+                        "label": request.intended_label,
+                        "payload": request.intended_payload,
+                        "prompt": request.prompt,
+                        "reason": decision.reason,
+                        "ruleId": decision.rule_id,
+                        "risk": decision.risk.value,
+                        "riskLabel": decision.risk.label,
+                    },
+                    "mode": self._policy.mode,
+                    "modeLabel": self._policy.mode_label,
+                },
+            )
+        self._write_auto_answer(session, request, decision)
+
+    def _session_auto_answer(self, session: PtySession) -> bool:
+        """这个会话当前是否允许自动应答。
+
+        调用方（界面层）的设置优先：即使策略里写着 balanced，只要用户把开关
+        关掉了就必须尊重。两者是独立的所有权层级，取交集最不容易出意外。
+        """
+        enabled = bool(self.auto_answer)
+        session_flag = getattr(session, "auto_answer_enabled", None)
+        if session_flag is not None:
+            enabled = enabled and bool(session_flag)
+        return enabled
+
+    def _build_request(self, session: PtySession, now: float) -> AnswerRequest:
+        """组装一次审查请求（纯数据，供策略层判定）。"""
+        index = _auto_choice_index(session.choices)
+        kind = session.choice_kind
+        if kind == "confirm":
+            payload = "y" if index == 0 else "n"
+            # confirm 的选项文本是本工具自造的"是/否"，没有信息量；
+            # 风险判定要靠 CLI 的提示原文。
+            label = ""
+            prompt = str(getattr(session, "choice_prompt", "") or "")
         else:
-            payload = str(_auto_choice_index(session.choices) + 1)
+            payload = str(index + 1)
+            label = session.choices[index] if 0 <= index < len(session.choices) else ""
+            prompt = ""
+        return AnswerRequest(
+            session_id=session.session_id,
+            kind=kind,
+            choices=tuple(session.choices),
+            intended_index=index,
+            intended_payload=payload,
+            intended_label=label,
+            prompt=prompt,
+            title=session.title,
+            cwd=session.cwd,
+            command=session.command,
+            screen_tail=self.screen_text(session.session_id),
+            attempt=session.auto_answer_attempts + 1,
+            declined=tuple(session.choices) in session.declined_menus,
+            asked=tuple(session.choices) in session.answered_menus,
+            budget_exhausted=self._budget_exhausted(session, now),
+        )
+
+    def _budget_exhausted(self, session: PtySession, now: float) -> bool:
+        """自主写入是否已超出预算（限流，防止菜单刷屏时无限按键）。"""
+        window = self._policy.config.budget_window_seconds
+        horizon = now - window
+        session.auto_write_times = [item for item in session.auto_write_times if item > horizon]
+        return len(session.auto_write_times) >= self._policy.config.budget_max_writes
+
+    def _write_auto_answer(
+        self,
+        session: PtySession,
+        request: AnswerRequest,
+        decision: Decision,
+    ) -> None:
+        """**唯一**允许自主按键的出口。
+
+        所有"替用户按键"的路径都必须经过这里：策略放行与用户授权都汇聚到此，
+        便于统一记日志与统计，也避免将来新增规则时绕开审查。
+
+        这里再做一次开关判断：本模块的调用路径不止自动应答（例如用户授权之后
+        可能又把自动应答关掉），把闸门放在出口最不容易漏。
+        """
+        if not self._session_auto_answer(session):
+            log.info("自动应答已被关闭，取消发送 id=%s", session.session_id)
+            return
         log.info(
-            "自动应答会话 id=%s 第 %d/%d 次尝试 -> 发送 %r（选项=%s）",
+            "自动应答 id=%s 动作=%s 规则=%s 风险=%s 发送=%r 选项=%s",
             session.session_id,
-            session.auto_answer_attempts,
-            _AUTO_ANSWER_MAX_ATTEMPTS,
-            payload,
-            [c.strip()[:24] for c in session.choices],
+            decision.action.value,
+            decision.rule_id,
+            decision.risk.value,
+            request.intended_payload,
+            [item.strip()[:24] for item in session.choices],
         )
         # 重试发送同一个应答：只有"菜单仍被检测到"时才会走到这里，
         # 因此不会在菜单已关闭后误把内容打进输入框。
-        self._queue_input(session.session_id, payload)
+        self._queue_input(session.session_id, request.intended_payload)
+
+    def _record_review(self, session: PtySession, request: AnswerRequest, decision: Decision) -> None:
+        """统一记录审查结论，供排查"它到底为什么按键/没按键"。"""
+        log.info(
+            "[review] id=%s 菜单=%s 拟发送=%r 风险=%s 动作=%s 规则=%s 理由=%s",
+            session.session_id,
+            request.kind,
+            request.intended_payload,
+            decision.risk.value,
+            decision.action.value,
+            decision.rule_id,
+            decision.reason,
+        )
+
+    # -- 授权（人工出口）-----------------------------------------------
+    def pending_reviews(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [item.to_dict() for item in self._reviews.values()]
+
+    def pending_review(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            item = self._reviews.get(str(session_id or ""))
+            return item.to_dict() if item is not None else {}
+
+    def has_pending_review(self, session_id: str) -> bool:
+        with self._lock:
+            return str(session_id or "") in self._reviews
+
+    def resolve_review(
+        self,
+        session_id: str,
+        approve: bool,
+        *,
+        allow_kind: bool = False,
+    ) -> bool:
+        """处理一次授权请求（界面线程调用，绝不阻塞）。
+
+        返回是否真的发出了按键——菜单在等待期间变了就返回 False，**绝不补发**
+        （用户批准的是他看到的那一屏，屏幕变了就不该再按）。
+
+        ``allow_kind=True`` 表示"本会话允许此类"，只影响本会话内存态，不落盘：
+        永久白名单等于换个地方开后门。
+        """
+        target = str(session_id or "")
+        with self._lock:
+            pending = self._reviews.pop(target, None)
+        if pending is None:
+            return False
+
+        session = self._sessions.get(target)
+        if session is None:
+            log.info("[review] id=%s 会话已不存在，授权作废", target)
+            return False
+
+        request = pending.request
+        # 无论批准还是拒绝，这一屏都已经有结论了，别再问第二遍。
+        session.answered_menus.add(request.signature)
+        if not approve:
+            session.declined_menus.add(request.signature)
+            session.denied_count += 1
+            log.info("[review] id=%s 用户拒绝，本会话不再提示该菜单", target)
+            self._emit(
+                target,
+                EVENT_REVIEW,
+                {"state": REVIEW_DENIED, "review": pending.to_dict(), "ruleId": request.kind},
+            )
+            return False
+
+        # 复核签名：用户看到的那一屏与现在这一屏必须是同一个菜单。
+        current = tuple(session.choices)
+        if current != request.signature:
+            log.info(
+                "[review] id=%s 菜单已变化（批准时 %s，现在 %s），授权作废",
+                target,
+                list(request.signature)[:3],
+                list(current)[:3],
+            )
+            self._emit(
+                target,
+                EVENT_REVIEW,
+                {"state": REVIEW_EXPIRED, "review": pending.to_dict(), "reason": "菜单已变化"},
+            )
+            return False
+
+        session.reviewed_count += 1
+        if allow_kind:
+            # 记住"这类菜单"已获授权。按**种类**（confirm / numbered）而
+            # 不是按签名记录，因为按钮的字面承诺就是"此类"；只存在内存里，
+            # 会话结束即失效（永久白名单等于换个地方开后门）。
+            session.approved_kinds.add(request.kind)
+            log.info("[review] id=%s 用户允许此类（本会话）：%s", target, request.kind)
+        self._emit(
+            target,
+            EVENT_REVIEW,
+            {"state": REVIEW_APPROVED, "review": pending.to_dict()},
+        )
+        # 人工放行不计入预算：那不是自动化，没理由被限流。
+        self._write_auto_answer(session, request, pending.decision)
+        return True
+
+    # -- 策略 ----------------------------------------------------------
+    def set_policy(self, policy: ReviewPolicy) -> None:
+        """热更新审查策略（界面切换模式时调用）。"""
+        self._policy = policy
+        log.info("审查策略已更新：模式=%s", policy.mode)
+
+    @property
+    def policy(self) -> ReviewPolicy:
+        return self._policy
+
+    # -- 授权超时 ------------------------------------------------------
+    def _expire_reviews(self, now: float | None = None) -> None:
+        """清理超时的待授权项。
+
+        **超时一律按拒绝处理，绝不超时放行**：无人值守时"悄悄放行"正是审查
+        要防的那件事；需要完全放手就该显式切到"完全放行"模式。
+
+        必须每轮轮询都调用，而不是只在收到输出时调用——CLI 静默时没有输出，
+        待审项会永远不过期，界面上的授权框一直悬着。
+        """
+        if not self._reviews:
+            return
+        moment = time.monotonic() if now is None else now
+        expired: list[PendingReview] = []
+        with self._lock:
+            for session_id, item in list(self._reviews.items()):
+                if moment >= item.deadline:
+                    expired.append(item)
+                    del self._reviews[session_id]
+        for item in expired:
+            session = self._sessions.get(item.session_id)
+            if session is not None:
+                session.declined_menus.add(item.request.signature)
+                session.denied_count += 1
+            log.info(
+                "[review] id=%s 授权超时（%.0fs），按拒绝处理",
+                item.session_id,
+                item.timeout_seconds,
+            )
+            self._emit(
+                item.session_id,
+                EVENT_REVIEW,
+                {
+                    "state": REVIEW_EXPIRED,
+                    "review": item.to_dict(),
+                    "reason": "等待授权超时，已按拒绝处理",
+                },
+            )
+
+    def dismiss_review(self, session_id: str, reason: str = "会话已移除") -> None:
+        """会话消失时丢弃它的待审项，避免弹出已不存在会话的授权框。"""
+        target = str(session_id or "")
+        with self._lock:
+            item = self._reviews.pop(target, None)
+        if item is None:
+            return
+        self._emit(
+            target,
+            EVENT_REVIEW,
+            {"state": REVIEW_DISMISSED, "review": item.to_dict(), "reason": str(reason)},
+        )
 
     def _finish(self, session_id: str, session: PtySession, backend: _Backend) -> None:
         if session.status == SessionStatus.STOPPED:
@@ -670,4 +1111,18 @@ class TerminalManager:
             pass
 
 
-__all__ = ["TerminalManager", "SessionSummary", "EVENT_OUTPUT", "EVENT_STATUS", "EVENT_CHOICE"]
+__all__ = [
+    "TerminalManager",
+    "SessionSummary",
+    "PendingReview",
+    "EVENT_OUTPUT",
+    "EVENT_STATUS",
+    "EVENT_CHOICE",
+    "EVENT_TIMELINE",
+    "EVENT_REVIEW",
+    "REVIEW_PENDING",
+    "REVIEW_APPROVED",
+    "REVIEW_DENIED",
+    "REVIEW_EXPIRED",
+    "REVIEW_DISMISSED",
+]
