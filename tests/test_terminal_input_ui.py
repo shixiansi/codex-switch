@@ -243,5 +243,143 @@ class EnterSendsFullCommandTests(unittest.TestCase):
         self.assertEqual(self.view.payloadFor("/re"), "/resume")
 
 
+class HistoryThroughUiTests(unittest.TestCase):
+    """↑ 翻历史必须**逐条往回**，不能一直停在同一句。
+
+    真实缺陷：处理 ↑ 时每次末尾都调用了 ``resetHistoryCursor()``，
+    翻页位置被清零，于是每次 ↑ 都从最新一条重新开始——用户按多少次
+    ↑ 都只能看到最后发的那一句，感觉"按了没反应/填不进历史"。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QGuiApplication
+
+        from codex_switch.ui_v2.app import QML_ENTRYPOINT, build_engine, configure_style
+        from codex_switch.ui_v2.controller import AppController
+
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+        configure_style()
+        cls.controller = AppController()
+        cls.engine = build_engine(cls.controller)
+        cls.engine.load(QUrl.fromLocalFile(str(QML_ENTRYPOINT)))
+        cls.root = cls.engine.rootObjects()[0]
+        cls.controller.navigateTo("terminal")
+
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        QTimer.singleShot(500, loop.quit)
+        loop.exec()
+
+    def setUp(self) -> None:
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        from codex_switch.ui_v2.terminal.pty_session import _Backend
+
+        class _FakeBackend(_Backend):
+            def __init__(self, *_args):
+                pass
+
+            def read(self):
+                return b""
+
+            def write(self, _data):
+                pass
+
+            def is_alive(self):
+                return True
+
+            def pid(self):
+                return 1
+
+            def kill(self):
+                pass
+
+        model = self.controller.terminal
+        self.session_id = model._manager.create_session(
+            "history-test", "codex", "",
+            backend_factory=lambda c, w, e: _FakeBackend(c, w, e),
+        )
+        model._refresh_sessions()
+        model.focus(self.session_id)
+        for text in ("第一", "第二", "第三"):
+            model.sendInput(text)
+        self.model = model
+
+        view = self._visible_view()
+        self.field = self._find(view, "AppTextField")[0]
+        self.field.forceActiveFocus()
+        self.field.setProperty("text", "")
+
+    def tearDown(self) -> None:
+        self.model.removeSession(self.session_id)
+
+    def _visible_view(self):
+        for view in self._find(self.root, "TerminalView"):
+            if view.property("visible"):
+                return view
+        raise AssertionError("没有可见的 TerminalView")
+
+    def _find(self, item, cls):
+        found = []
+
+        def walk(node):
+            try:
+                name = node.metaObject().className()
+            except Exception:  # noqa: BLE001
+                return
+            if name.startswith(cls):
+                found.append(node)
+                return
+            for child in node.children():
+                walk(child)
+
+        walk(item)
+        return found
+
+    def _press(self, key, text="") -> str:
+        from PySide6.QtCore import (
+            QCoreApplication, QEvent, QEventLoop, Qt, QTimer,
+        )
+        from PySide6.QtGui import QKeyEvent
+
+        event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier, text)
+        QCoreApplication.sendEvent(self.field, event)
+        loop = QEventLoop()
+        QTimer.singleShot(100, loop.quit)
+        loop.exec()
+        return self.field.property("text")
+
+    def test_up_walks_back_through_history(self) -> None:
+        """这条是本次缺陷的直接回归。"""
+        from PySide6.QtCore import Qt
+
+        self.assertEqual(self._press(Qt.Key.Key_Up), "第三")
+        self.assertEqual(self._press(Qt.Key.Key_Up), "第二",
+                         "第二次 ↑ 仍停在同一句——翻页位置被错误重置了")
+        self.assertEqual(self._press(Qt.Key.Key_Up), "第一")
+
+    def test_down_walks_forward_and_restores_draft(self) -> None:
+        from PySide6.QtCore import Qt
+
+        self._press(Qt.Key.Key_Up)
+        self._press(Qt.Key.Key_Up)
+        self.assertEqual(self._press(Qt.Key.Key_Down), "第三")
+        self.assertEqual(self._press(Qt.Key.Key_Down), "", "越过最新应回到空草稿")
+
+    def test_typing_exits_history_navigation(self) -> None:
+        """翻历史后手动编辑，应退出翻页状态（下次 ↑ 从最新开始）。"""
+        from PySide6.QtCore import Qt
+
+        self._press(Qt.Key.Key_Up)
+        self._press(Qt.Key.Key_Up)
+        typed = self._press(0x58, "X")
+        self.assertIn("X", typed)
+        self.assertEqual(self._press(Qt.Key.Key_Up), "第三",
+                         "编辑后没有退出翻页状态")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -352,14 +352,22 @@ Item {
                         onInputSubmitted: function (text) { terminalModel.sendInput(text) }
                         onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
                         onKeySent: function (key) { terminalModel.sendKey(key) }
-                        onInputEdited: function (text) { terminalModel.updateInputHints(text) }
+                        onInputEdited: function (text) {
+                            // 用户手动打字：刷新候选，并退出"正在翻历史"状态——
+                            // 否则翻到一半再编辑，光标位置与实际内容会脱节。
+                            terminalModel.updateInputHints(text)
+                            terminalModel.resetHistoryCursor()
+                        }
                         onHistoryRequested: function (older) {
                             var value = older
                                 ? terminalModel.historyPrevious(mainTerminal.currentDraft())
                                 : terminalModel.historyNext()
                             if (value !== "" || !older)
                                 mainTerminal.applyHistory(value)
-                            terminalModel.resetHistoryCursor()
+                            // 这里**不能**调 resetHistoryCursor()。
+                            // 那会把翻页位置清零，于是每次 ↑ 都从最新一条重新开始，
+                            // 表现为"一直停在同一句、退不回更早的历史"。
+                            // 光标只在用户手动编辑输入框时才该重置。
                         }
                         onHintMoved: function (index) {
                             terminalModel.selectHint(index)
@@ -844,14 +852,17 @@ Item {
                 onInputSubmitted: function (text) { terminalModel.sendZoomInput(text) }
                 onChoiceSelected: function (index) { terminalModel.sendZoomChoice(index) }
                 onKeySent: function (key) { terminalModel.sendZoomKey(key) }
-                onInputEdited: function (text) { terminalModel.updateInputHints(text) }
+                onInputEdited: function (text) {
+                    terminalModel.updateInputHints(text)
+                    terminalModel.resetHistoryCursor()
+                }
                 onHistoryRequested: function (older) {
                     var value = older
                         ? terminalModel.zoomHistoryPrevious(zoomTerminal.currentDraft())
                         : terminalModel.zoomHistoryNext()
                     if (value !== "" || !older)
                         zoomTerminal.applyHistory(value)
-                    terminalModel.resetHistoryCursor()
+                    // 同主视图：这里不能重置翻页位置，否则 ↑ 永远停在同一句。
                 }
                 onHintMoved: function (index) { terminalModel.selectHint(index) }
                 onHintAccepted: function (index) {
