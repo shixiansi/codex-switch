@@ -117,6 +117,16 @@ Item {
                 ToolTip.text: "开启后，检测到选择菜单会自动选第一项（如 codex 的信任目录确认）"
             }
             AppButton {
+                text: "载入项目历史"
+                iconName: "refresh"
+                enabled: terminalModel.activeId !== ""
+                onClicked: terminalModel.reloadProjectHistory()
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "读取该项目以前的提示词，之后可用 ↑ 翻出来（当前支持 codex）"
+            }
+            AppButton {
                 text: "清理残留"
                 iconName: "refresh"
                 enabled: terminalModel.runningCount === 0 || terminalModel.sessions.length > 0

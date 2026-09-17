@@ -465,6 +465,14 @@ class TerminalManager:
         screen = self._screens.get(session_id)
         return screen.tail() if screen is not None else ""
 
+    def session(self, session_id: str) -> PtySession | None:
+        """按 id 取会话对象；不存在返回 None。
+
+        调用方需要会话的工作目录（例如按项目读历史）时用它，
+        避免直接摸内部字典。
+        """
+        return self._sessions.get(str(session_id or ""))
+
     def running_count(self) -> int:
         with self._lock:
             return sum(1 for s in self._sessions.values() if s.status == SessionStatus.RUNNING)

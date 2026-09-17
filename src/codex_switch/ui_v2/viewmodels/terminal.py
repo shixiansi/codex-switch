@@ -13,6 +13,7 @@ from ..terminal import (
     EVENT_STATUS,
     EVENT_TIMELINE,
     InputHistory,
+    PromptHistoryReader,
     TerminalManager,
     check_pty_backend,
     command_hints,
@@ -59,6 +60,8 @@ class TerminalViewModel(BaseViewModel):
         self._active_timeline = ""
         # 输入历史与指令提示（纯逻辑，见 terminal/input_assist.py）。
         self._history = InputHistory()
+        # 项目级历史读取器：从 CLI 自己的会话记录里取以前发过的提示词。
+        self._cli_history = PromptHistoryReader()
         self._hint_visible = False
         self._hint_items: list[dict[str, str]] = []
         self._hint_selected = -1
@@ -278,6 +281,42 @@ class TerminalViewModel(BaseViewModel):
             return
         self._refresh_sessions()
         self.focus(session_id)
+        # 接上该项目以前的提示词，这样一按 ↑ 就能翻到历史，
+        # 而不是从零开始（新会话本身没有任何历史）。
+        self._seed_project_history(session_id)
+
+    def _seed_project_history(self, session_id: str) -> int:
+        """把会话所在目录的项目级历史接进输入历史。
+
+        读的是 CLI 自己存的会话记录（当前支持 codex）。读不到时静默跳过——
+        历史只是便利功能，绝不该影响终端本身可用。
+        """
+        session = self._manager.session(session_id)
+        if session is None:
+            return 0
+        cwd = str(session.cwd or "").strip()
+        if not cwd:
+            return 0
+        try:
+            prompts = self._cli_history.prompts_for(cwd)
+        except Exception:  # noqa: BLE001 - 读历史失败不该影响终端
+            log.exception("读取项目历史失败 cwd=%s", cwd)
+            return 0
+        added = self._history.seed(session_id, prompts)
+        if added:
+            log.info("已接入项目历史 id=%s 条数=%s cwd=%s", session_id, added, cwd)
+            self.inputAssistChanged.emit()
+        return added
+
+    @Slot(result=int)
+    def reloadProjectHistory(self) -> int:
+        """手动重新读取项目历史（界面按钮用）。"""
+        added = self._seed_project_history(self._active_id)
+        self._controller.showToast(
+            f"已载入 {added} 条历史提示词。" if added else "没有新的历史提示词。",
+            "info",
+        )
+        return added
 
     @Slot(str)
     def focus(self, session_id: str) -> None:

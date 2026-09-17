@@ -50,6 +50,27 @@ class InputHistory:
     def entries(self, session_id: str) -> list[str]:
         return list(self._per_session.get(session_id, ()))
 
+    def seed(self, session_id: str, prompts: list[str]) -> int:
+        """用**项目级历史**预置本会话的历史，返回新增条数。
+
+        新开的会话本来没有历史，但它所在目录里有以前发过的提示词。
+        把那些接进来后按 ↑ 就能翻到，不必重新敲一遍。
+
+        这些提示词在时间上更早，所以放在现有内容**前面**；
+        同时按内容去重，避免和本次已发过的消息重复。
+        """
+        if not prompts:
+            return 0
+        existing = self._per_session.get(session_id) or []
+        seen = set(existing)
+        older = [item for item in prompts if item not in seen]
+        if not older:
+            return 0
+        self._per_session[session_id] = older + existing
+        if len(self._per_session[session_id]) > MAX_HISTORY:
+            self._per_session[session_id] = self._per_session[session_id][-MAX_HISTORY:]
+        return len(older)
+
     def forget(self, session_id: str) -> None:
         """会话被清除时一并丢弃它的历史，避免长跑后越堆越多。"""
         self._per_session.pop(session_id, None)

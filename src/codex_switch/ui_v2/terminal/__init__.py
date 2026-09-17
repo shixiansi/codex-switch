@@ -18,6 +18,7 @@ from .pty_session import PtySession, SessionStatus, check_pty_backend
 from .screen import TerminalScreen
 from .completion import ChoiceMenu, detect_choice, detect_menu
 from .input_assist import CommandHint, InputHistory, command_hints
+from .cli_history import PromptHistoryReader, codex_home, sessions_root
 from .logging_setup import get_logger, log_path
 
 __all__ = [
@@ -36,7 +37,10 @@ __all__ = [
     "detect_menu",
     "CommandHint",
     "InputHistory",
+    "PromptHistoryReader",
+    "codex_home",
     "command_hints",
     "get_logger",
     "log_path",
+    "sessions_root",
 ]
