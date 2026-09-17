@@ -22,7 +22,8 @@ for _p in (_SRC, _ROOT):
 os.environ.setdefault("CODEX_SWITCH_DISABLE_OPEN_URL", "1")
 
 from codex_switch.ui_v2.terminal import TerminalManager
-from codex_switch.ui_v2.terminal.completion import detect_choice
+from codex_switch.ui_v2.terminal.completion import detect_choice, detect_menu
+from codex_switch.ui_v2.terminal.input_assist import InputHistory, command_hints
 from codex_switch.ui_v2.terminal.pty_session import PtySession, SessionStatus, _Backend
 from codex_switch.ui_v2.terminal.screen import TerminalScreen
 
@@ -375,6 +376,258 @@ class CompletionTests(unittest.TestCase):
         awaiting, choices = detect_choice("步骤\n1. 先做 A\n3. 再做 B\n7. 最后 C")
         self.assertFalse(awaiting)
         self.assertEqual(choices, [])
+
+
+class PlainListMenuTests(unittest.TestCase):
+    """无编号列表菜单（codex 的 resume 会话选择器）。
+
+    真实缺陷：这类菜单没有数字编号，只有 ``>`` 标出的当前项和一行按键提示。
+    原实现只认编号菜单，于是 **detect 返回 False**，界面上根本弹不出选项条——
+    用户看到菜单里列着历史会话，却点不了、也选不中。
+    """
+
+    RESUME = (
+        "Resume a previous session\n"
+        "Type to search     Filter: [Cwd] All  Status: [Active] Archived\n"
+        "\n"
+        "> 1d ago        读取改项目，查看项目结构，有没有哪里需要优化的地方\n"
+        "  157d ago      你好\n"
+        "  157d ago      你好\n"
+        "  157d ago      你好\n"
+        "\n"
+        "enter resume  ctrl+a archive  esc exit  ctrl+c exit\n"
+    )
+
+    def test_resume_list_is_detected(self) -> None:
+        menu = detect_menu(self.RESUME)
+        self.assertTrue(menu.awaiting, "resume 列表菜单没有被识别出来")
+        self.assertEqual(len(menu.choices), 4)
+        self.assertEqual(menu.kind, "list")
+        self.assertFalse(menu.numbered, "list 菜单不应被当作编号菜单")
+
+    def test_current_highlight_is_reported(self) -> None:
+        """要能看出当前高亮在第几项，界面才能标出"回车会选中哪个"。"""
+        menu = detect_menu(self.RESUME)
+        self.assertEqual(menu.selected, 0)
+
+        shifted = self.RESUME.replace("> 1d ago", "  1d ago").replace(
+            "  157d ago      你好\n  157d ago      你好\n  157d ago      你好",
+            "> 157d ago      你好\n  157d ago      你好\n  157d ago      你好",
+        )
+        self.assertEqual(detect_menu(shifted).selected, 1)
+
+    def test_list_without_hint_footer_is_not_a_menu(self) -> None:
+        """没有按键提示行就不是交互菜单（避免把正文引用块当成菜单）。"""
+        text = "输出如下\n> 引用第一行\n> 引用第二行\n"
+        self.assertFalse(detect_menu(text).awaiting)
+
+    def test_list_without_selection_marker_is_not_a_menu(self) -> None:
+        text = "会话\n  157d ago 你好\n  158d ago 再见\n\nenter resume  esc exit\n"
+        self.assertFalse(detect_menu(text).awaiting, "没有选中标记就不是菜单")
+
+    def test_numbered_menu_still_wins(self) -> None:
+        """编号菜单的判定优先于列表菜单（更明确、误判风险更低）。"""
+        text = "› 1. Yes\n  2. No\n\nenter confirm  esc cancel\n"
+        menu = detect_menu(text)
+        self.assertTrue(menu.awaiting)
+        self.assertEqual(menu.kind, "numbered")
+
+    def test_confirm_prompt_kind(self) -> None:
+        menu = detect_menu("Overwrite file? [Y/n] ")
+        self.assertTrue(menu.awaiting)
+        self.assertEqual(menu.kind, "confirm")
+        self.assertEqual(menu.choices, ["是", "否"])
+
+
+class SelectChoiceTests(unittest.TestCase):
+    """选中菜单项时该发什么——发错就等于点了没反应。"""
+
+    def _manager_with_backend(self):
+        store: dict[str, _FakeBackend] = {}
+
+        def make(command, cwd, env):
+            backend = _FakeBackend(command, cwd, env)
+            store["last"] = backend
+            return backend
+
+        manager = TerminalManager(poll_interval=0.05)
+        manager.start()
+        self.addCleanup(manager.shutdown)
+        manager.create_session("t", "codex", "", backend_factory=make)
+        session = next(iter(manager._sessions.values()))
+        return manager, session, store["last"]
+
+    @staticmethod
+    def _written(backend: _FakeBackend) -> str:
+        """把多次写入拼起来，便于断言"整体发了什么"。"""
+        return "".join(backend.write_calls())
+
+    def _wait_for_write(self, backend: _FakeBackend, timeout=3.0) -> str:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if backend.write_calls():
+                return self._written(backend)
+            time.sleep(0.02)
+        return self._written(backend)
+
+    def test_numbered_menu_sends_the_number(self) -> None:
+        manager, session, backend = self._manager_with_backend()
+        session.choices = ["Yes", "No"]
+        session.choice_kind = "numbered"
+        manager.select_choice(session.session_id, 1)
+        self.assertIn("2", self._wait_for_write(backend))
+
+    def test_confirm_menu_sends_y_or_n(self) -> None:
+        """确认提示要发 y / n，不是数字。"""
+        manager, session, backend = self._manager_with_backend()
+        session.choices = ["是", "否"]
+        session.choice_kind = "confirm"
+        manager.select_choice(session.session_id, 0)
+        self.assertIn("y", self._wait_for_write(backend))
+
+    def test_list_menu_uses_arrow_keys_not_numbers(self) -> None:
+        """列表菜单必须用方向键：发数字会被 TUI 当成搜索词。
+
+        这正是"看得到选项却选不中"的根因。
+        """
+        manager, session, backend = self._manager_with_backend()
+        session.choices = ["会话一", "会话二", "会话三"]
+        session.choice_kind = "list"
+        session.choice_selected = 0
+        manager.select_choice(session.session_id, 2)
+
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            if "\r" in self._written(backend):
+                break
+            time.sleep(0.02)
+        written = self._written(backend)
+        self.assertIn("\x1b[B", written, "没有发送下方向键")
+        self.assertNotIn("3", written, "列表菜单不该发数字")
+        self.assertIn("\r", written, "最后应当回车确认")
+
+    def test_list_menu_from_unknown_position_returns_to_top(self) -> None:
+        """看不出高亮位置时先发 ↑ 回到首项，保证结果确定。"""
+        manager, session, backend = self._manager_with_backend()
+        session.choices = ["一", "二"]
+        session.choice_kind = "list"
+        session.choice_selected = -1
+        manager.select_choice(session.session_id, 0)
+
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            if "\r" in self._written(backend):
+                break
+            time.sleep(0.02)
+        self.assertIn("\x1b[A", self._written(backend), "没有先回到首项")
+
+    def test_list_menu_is_not_auto_answered(self) -> None:
+        """列表菜单不能被自动应答。
+
+        开启自动选择后如果对 resume 菜单也自动回车，等于替用户随便恢复一个
+        历史会话——这是有副作用的误操作，必须跳过。
+        """
+        manager, session, backend = self._manager_with_backend()
+        manager.auto_answer = True
+        session.choices = ["会话一", "会话二"]
+        session.choice_kind = "list"
+        manager._maybe_auto_answer(session)
+        time.sleep(0.4)
+        self.assertEqual(self._written(backend), "", "列表菜单不应被自动应答")
+
+    def test_confirm_menu_is_auto_answered_with_y(self) -> None:
+        manager, session, backend = self._manager_with_backend()
+        manager.auto_answer = True
+        session.choices = ["是", "否"]
+        session.choice_kind = "confirm"
+        manager._maybe_auto_answer(session)
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if backend.write_calls():
+                break
+            time.sleep(0.02)
+        self.assertIn("y", self._written(backend))
+
+
+class InputHistoryTests(unittest.TestCase):
+    """↑↓ 翻历史。"""
+
+    def test_previous_and_next_navigate(self) -> None:
+        history = InputHistory()
+        for text in ("一", "二", "三"):
+            history.record("s", text)
+        self.assertEqual(history.previous("s", "草稿"), "三")
+        self.assertEqual(history.previous("s"), "二")
+        self.assertEqual(history.next("s"), "三")
+        self.assertEqual(history.next("s"), "草稿", "越过最新应回到草稿")
+        self.assertIsNone(history.next("s"))
+
+    def test_previous_at_oldest_returns_none(self) -> None:
+        history = InputHistory()
+        history.record("s", "只有一条")
+        self.assertEqual(history.previous("s", ""), "只有一条")
+        self.assertIsNone(history.previous("s"), "到最早后不应再动")
+
+    def test_consecutive_duplicates_are_not_recorded(self) -> None:
+        history = InputHistory()
+        history.record("s", "重复")
+        history.record("s", "重复")
+        self.assertEqual(history.entries("s"), ["重复"])
+
+    def test_blank_input_is_not_recorded(self) -> None:
+        history = InputHistory()
+        history.record("s", "   ")
+        self.assertEqual(history.entries("s"), [])
+
+    def test_history_is_isolated_per_session(self) -> None:
+        """不同会话的历史不能混：否则会把 A 项目的提示词发到 B 项目。"""
+        history = InputHistory()
+        history.record("a", "A 的")
+        history.record("b", "B 的")
+        self.assertEqual(history.entries("a"), ["A 的"])
+        self.assertEqual(history.entries("b"), ["B 的"])
+
+    def test_forget_drops_only_that_session(self) -> None:
+        history = InputHistory()
+        history.record("a", "A 的")
+        history.record("b", "B 的")
+        history.forget("a")
+        self.assertEqual(history.entries("a"), [])
+        self.assertEqual(history.entries("b"), ["B 的"])
+
+    def test_recording_resets_navigation(self) -> None:
+        history = InputHistory()
+        history.record("s", "旧")
+        history.previous("s", "")
+        history.record("s", "新")
+        self.assertEqual(history.previous("s", ""), "新")
+
+
+class CommandHintTests(unittest.TestCase):
+    """斜杠指令提示。"""
+
+    def test_slash_prefix_shows_candidates(self) -> None:
+        hint = command_hints("/")
+        self.assertTrue(hint.visible)
+        self.assertGreater(len(hint.items), 3)
+
+    def test_prefix_filters(self) -> None:
+        hint = command_hints("/mo")
+        self.assertEqual([item["name"] for item in hint.items], ["/model"])
+
+    def test_plain_text_shows_nothing(self) -> None:
+        self.assertFalse(command_hints("你好").visible)
+
+    def test_arguments_stop_the_hint(self) -> None:
+        """已输入参数后不再提示，免得挡着用户看自己写的内容。"""
+        self.assertFalse(command_hints("/model gpt-5").visible)
+
+    def test_unknown_command_shows_nothing(self) -> None:
+        self.assertFalse(command_hints("/zzz").visible)
+
+    def test_every_candidate_has_a_description(self) -> None:
+        for item in command_hints("/").items:
+            self.assertTrue(item.get("description"), item)
 
 
 class ManagerTests(unittest.TestCase):

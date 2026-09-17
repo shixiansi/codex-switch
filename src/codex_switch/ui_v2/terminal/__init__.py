@@ -16,7 +16,8 @@ from .manager import (
 )
 from .pty_session import PtySession, SessionStatus, check_pty_backend
 from .screen import TerminalScreen
-from .completion import detect_choice
+from .completion import ChoiceMenu, detect_choice, detect_menu
+from .input_assist import CommandHint, InputHistory, command_hints
 from .logging_setup import get_logger, log_path
 
 __all__ = [
@@ -30,7 +31,12 @@ __all__ = [
     "SessionStatus",
     "TerminalScreen",
     "check_pty_backend",
+    "ChoiceMenu",
     "detect_choice",
+    "detect_menu",
+    "CommandHint",
+    "InputHistory",
+    "command_hints",
     "get_logger",
     "log_path",
 ]

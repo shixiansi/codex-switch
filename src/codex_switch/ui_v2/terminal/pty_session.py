@@ -63,6 +63,12 @@ class PtySession:
     child_pids: set[int] = None  # type: ignore[assignment]
     awaiting_choice: bool = False
     choices: list[str] = None  # type: ignore[assignment]
+    # 菜单当前高亮项下标（-1 表示屏幕上看不出选中在哪）。
+    choice_selected: int = -1
+    # 菜单种类：confirm（[Y/n]）/ numbered（带编号）/ list（无编号列表）。
+    # list 必须用方向键移动光标，发数字会被当成搜索词——这是"看得到选项
+    # 却选不中"的根因。
+    choice_kind: str = "numbered"
     # 是否已收到过任何输出：用于区分"CLI 没输出"与"读取环节坏了"。
     received_output: bool = False
     # 上一次已自动应答过的选项签名，避免同一菜单被反复自动选择。

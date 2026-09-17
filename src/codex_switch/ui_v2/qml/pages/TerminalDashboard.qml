@@ -335,16 +335,43 @@ Item {
                     }
 
                     TerminalView {
+                        id: mainTerminal
+
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: terminalModel.activeId !== "" && !page.showTimeline
                         screenText: terminalModel.screen
                         awaitingChoice: terminalModel.awaitingChoice
                         choices: terminalModel.choices
+                        choiceKind: terminalModel.choiceKind
+                        selectedIndex: terminalModel.selectedIndex
+                        hintVisible: terminalModel.hintVisible
+                        hintItems: terminalModel.hintItems
+                        hintSelected: terminalModel.hintSelected
                         inputEnabled: terminalModel.activeId !== ""
                         onInputSubmitted: function (text) { terminalModel.sendInput(text) }
                         onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
                         onKeySent: function (key) { terminalModel.sendKey(key) }
+                        onInputEdited: function (text) { terminalModel.updateInputHints(text) }
+                        onHistoryRequested: function (older) {
+                            var value = older
+                                ? terminalModel.historyPrevious(mainTerminal.currentDraft())
+                                : terminalModel.historyNext()
+                            if (value !== "" || !older)
+                                mainTerminal.applyHistory(value)
+                            terminalModel.resetHistoryCursor()
+                        }
+                        onHintMoved: function (index) {
+                            terminalModel.selectHint(index)
+                        }
+                        onHintAccepted: function (index) {
+                            var value = terminalModel.applyHint(index)
+                            if (value !== "")
+                                mainTerminal.applyHintText(value)
+                        }
+                        onHintsClosed: function () {
+                            terminalModel.hideHints()
+                        }
                     }
 
                     // ---- 时间线：带时间戳的输出段落 ----
@@ -801,15 +828,38 @@ Item {
             }
 
             TerminalView {
+                id: zoomTerminal
+
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 screenText: terminalModel.zoomedScreen
                 awaitingChoice: terminalModel.zoomedAwaiting
                 choices: terminalModel.zoomedChoices
+                choiceKind: terminalModel.zoomedChoiceKind
+                selectedIndex: terminalModel.zoomedSelectedIndex
+                hintVisible: terminalModel.hintVisible
+                hintItems: terminalModel.hintItems
+                hintSelected: terminalModel.hintSelected
                 inputEnabled: terminalModel.zoomedId !== ""
                 onInputSubmitted: function (text) { terminalModel.sendZoomInput(text) }
                 onChoiceSelected: function (index) { terminalModel.sendZoomChoice(index) }
                 onKeySent: function (key) { terminalModel.sendZoomKey(key) }
+                onInputEdited: function (text) { terminalModel.updateInputHints(text) }
+                onHistoryRequested: function (older) {
+                    var value = older
+                        ? terminalModel.zoomHistoryPrevious(zoomTerminal.currentDraft())
+                        : terminalModel.zoomHistoryNext()
+                    if (value !== "" || !older)
+                        zoomTerminal.applyHistory(value)
+                    terminalModel.resetHistoryCursor()
+                }
+                onHintMoved: function (index) { terminalModel.selectHint(index) }
+                onHintAccepted: function (index) {
+                    var value = terminalModel.applyHint(index)
+                    if (value !== "")
+                        zoomTerminal.applyHintText(value)
+                }
+                onHintsClosed: function () { terminalModel.hideHints() }
             }
         }
     }

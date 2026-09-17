@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .completion import detect_choice
+from .completion import detect_menu
 from .logging_setup import get_logger
 from .pty_session import (
     PtySession,
@@ -86,6 +86,9 @@ class SessionSummary:
     finished_at: str = ""
     awaiting_choice: bool = False
     choices: list[str] = field(default_factory=list)
+    # 菜单当前高亮项下标（-1 表示看不出）；以及菜单种类。
+    selected_index: int = -1
+    kind: str = "numbered"
     last_line: str = ""
     # 运行时长（毫秒）：运行中为"至今"，结束后为总时长。由 manager 计算，
     # 避免 QML 侧做时间运算。
@@ -106,6 +109,8 @@ class SessionSummary:
             "finishedAt": self.finished_at,
             "awaitingChoice": self.awaiting_choice,
             "choices": list(self.choices),
+            "selectedIndex": self.selected_index,
+            "kind": self.kind,
             "lastLine": self.last_line,
             "elapsedMs": self.elapsed_ms,
             "elapsedLabel": _format_elapsed(self.elapsed_ms),
@@ -163,9 +168,11 @@ class TerminalManager:
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        # 待发送的行队列，由独立写入线程按"先文本、后回车"的顺序处理。
+        # 待发送的动作队列，由独立写入线程按顺序处理。
+        # 元素是 ("line", 文本) 或 ("key", 按键名)——按键必须与文本行走同一条
+        # 队列，否则"先发数字再发方向键"这类顺序会被打乱。
         # 放在队列里而不是在调用方 sleep，是为了不阻塞 GUI 线程。
-        self._pending: list[tuple[str, str]] = []
+        self._pending: list[tuple[str, str, str]] = []
         self._pending_lock = threading.Lock()
         self._pending_event = threading.Event()
         self._writer: threading.Thread | None = None
@@ -187,9 +194,11 @@ class TerminalManager:
         log.info("轮询线程已启动 interval=%ss", self._poll_interval)
 
     def _write_loop(self) -> None:
-        """按序处理待发送的行：先写文本，停顿后再写回车。
+        """按序处理待发送的动作：文本行补回车，按键序列逐个发。
 
         停顿必须发生在这里（后台线程），不能在 UI 线程 sleep，否则界面会卡住。
+        队列里存的是 ``("line", 文本)`` 或 ``("key", 按键名)``：
+        按键之间的间隔同样重要，TUI 会把连续写入合并成一次读取，导致只移动一格。
         """
         while not self._stop.is_set():
             if not self._pending_event.wait(0.1):
@@ -199,16 +208,23 @@ class TerminalManager:
                     if not self._pending:
                         self._pending_event.clear()
                         break
-                    session_id, text = self._pending.pop(0)
+                    session_id, kind, payload = self._pending.pop(0)
                 backend = self._backends.get(session_id)
                 if backend is None:
                     continue
                 try:
-                    backend.write(text)
-                    time.sleep(_ENTER_DELAY_S)
-                    backend.write("\r")
+                    if kind == "key":
+                        sequence = SPECIAL_KEYS.get(payload)
+                        if sequence is None:
+                            continue
+                        backend.write(sequence)
+                        time.sleep(_ENTER_DELAY_S)
+                    else:
+                        backend.write(payload)
+                        time.sleep(_ENTER_DELAY_S)
+                        backend.write("\r")
                 except Exception:  # noqa: BLE001 - 写入失败不应终止写入线程
-                    log.exception("发送输入失败 id=%s", session_id)
+                    log.exception("发送失败 id=%s kind=%s", session_id, kind)
 
     def shutdown(self) -> None:
         """停止全部会话（整树回收）并结束轮询线程。"""
@@ -314,7 +330,20 @@ class TerminalManager:
         if not text:
             return
         with self._pending_lock:
-            self._pending.append((session_id, text))
+            self._pending.append((session_id, "line", text))
+        self._pending_event.set()
+
+    def _queue_keys(self, session_id: str, keys: list[str]) -> None:
+        """把一串按键排入写入队列，由写入线程逐个、带间隔地发出。
+
+        与 :meth:`send_key`（立即写单个键）不同：这里用于"移动若干格再确认"
+        这类多步操作，必须保证顺序与间隔，且不能阻塞调用方。
+        """
+        usable = [key for key in keys if key in SPECIAL_KEYS]
+        if not usable:
+            return
+        with self._pending_lock:
+            self._pending.extend((session_id, "key", key) for key in usable)
         self._pending_event.set()
 
     def send_key(self, session_id: str, key: str) -> bool:
@@ -335,6 +364,59 @@ class TerminalManager:
         except Exception:  # noqa: BLE001 - 发送失败不应影响上层
             log.exception("发送按键失败 id=%s key=%s", session_id, key)
             return False
+        return True
+
+    def select_choice(self, session_id: str, index: int) -> bool:
+        """选中菜单里的第 ``index`` 项（0 起）。
+
+        分两种情况：
+
+        * **编号菜单**：直接发编号（1 起）。TUI 的编号菜单普遍接受数字直选。
+        * **无编号菜单**（如 codex 的 resume 列表）：不能发数字——那会被当成
+          搜索关键词，菜单内容会被过滤掉。必须用方向键把光标从当前高亮项
+          移到目标项，再按回车。若屏幕上看不出当前高亮位置，则先发一串 ↑
+          回到首项，再从首项往下走，保证结果确定。
+
+        所有按键排进写入队列，由后台线程带间隔逐个发出。方向键之间必须留间隔，
+        但**绝不能在本方法里 sleep**：本方法由界面线程调用，阻塞几秒会让整个
+        窗口卡死。
+
+        Returns:
+            是否成功排入队列。
+        """
+        session = self._sessions.get(session_id)
+        if session is None or not session.choices:
+            return False
+        if not (0 <= index < len(session.choices)):
+            return False
+        if session_id not in self._backends:
+            return False
+
+        if session.choice_kind == "confirm":
+            # 确认提示要发 y / n 这两个字符，不是数字也不是方向键。
+            self._queue_input(session_id, "y" if index == 0 else "n")
+            return True
+
+        if session.choice_kind == "numbered":
+            self._queue_input(session_id, str(index + 1))
+            return True
+
+        # 无编号列表菜单：用方向键移动。
+        current = session.choice_selected
+        keys: list[str] = []
+        if current < 0:
+            # 看不出高亮位置：先回到顶部再往下，避免"少按/多按"。
+            keys.extend(["up"] * len(session.choices))
+            current = 0
+        if index > current:
+            keys.extend(["down"] * (index - current))
+        elif index < current:
+            keys.extend(["up"] * (current - index))
+        keys.append("enter")
+
+        self._queue_keys(session_id, keys)
+        # 乐观更新本地高亮位置，避免下一次点击基于过期状态计算移动量。
+        session.choice_selected = index
         return True
 
     def remove_session(self, session_id: str) -> None:
@@ -365,6 +447,8 @@ class TerminalManager:
                     finished_at=s.finished_at,
                     awaiting_choice=s.awaiting_choice,
                     choices=list(s.choices),
+                    selected_index=s.choice_selected,
+                    kind=s.choice_kind,
                     last_line=last,
                     elapsed_ms=_elapsed_ms(s),
                     auto_answered=bool(s.choices) and tuple(s.choices) == s.auto_answered,
@@ -445,14 +529,28 @@ class TerminalManager:
                 # 每轮调用两次会让 4Hz 轮询随历史增长而变慢。
                 rendered = screen.tail()
                 self._emit(session_id, EVENT_OUTPUT, {"text": rendered})
-                awaiting, choices = detect_choice(rendered)
-                if awaiting != session.awaiting_choice or choices != session.choices:
-                    session.awaiting_choice = awaiting
-                    session.choices = choices
+                menu = detect_menu(rendered)
+                state = (menu.awaiting, menu.choices, menu.selected, menu.kind)
+                previous = (
+                    session.awaiting_choice,
+                    session.choices,
+                    session.choice_selected,
+                    session.choice_kind,
+                )
+                if state != previous:
+                    session.awaiting_choice = menu.awaiting
+                    session.choices = list(menu.choices)
+                    session.choice_selected = menu.selected
+                    session.choice_kind = menu.kind
                     self._emit(
                         session_id,
                         EVENT_CHOICE,
-                        {"awaitingChoice": awaiting, "choices": list(choices)},
+                        {
+                            "awaitingChoice": menu.awaiting,
+                            "choices": list(menu.choices),
+                            "selectedIndex": menu.selected,
+                            "kind": menu.kind,
+                        },
                     )
             # 输出停顿一段时间后，把这一屏记入带时间戳的时间线。
             # 必须每轮都检查：停顿意味着"本轮没有数据"，若只在收到数据时才判断，
@@ -492,6 +590,13 @@ class TerminalManager:
         """
         if not self.auto_answer:
             return
+        # 列表菜单（如 codex 的 resume 会话选择器）**不自动应答**。
+        # 自动选第一项等于替用户随便恢复一个历史会话，属于有副作用的误操作；
+        # 这类菜单必须由用户自己挑。自动应答只用于确认提示与编号菜单。
+        if session.choice_kind == "list":
+            return
+        if not session.choices:
+            return
         signature = tuple(session.choices)
         now = time.monotonic()
         if signature != session.auto_answered:
@@ -505,8 +610,11 @@ class TerminalManager:
             return
         session.auto_answer_last_at = now
         session.auto_answer_attempts += 1
-        index = _auto_choice_index(session.choices)
-        payload = str(index + 1)
+        if session.choice_kind == "confirm":
+            # 确认提示发 y（首项）或 n。
+            payload = "y" if _auto_choice_index(session.choices) == 0 else "n"
+        else:
+            payload = str(_auto_choice_index(session.choices) + 1)
         log.info(
             "自动应答会话 id=%s 第 %d/%d 次尝试 -> 发送 %r（选项=%s）",
             session.session_id,
@@ -515,8 +623,8 @@ class TerminalManager:
             payload,
             [c.strip()[:24] for c in session.choices],
         )
-        # 重试发送同一个编号：只有"菜单仍被检测到"时才会走到这里，
-        # 因此不会在菜单已关闭后误把编号打进输入框。
+        # 重试发送同一个应答：只有"菜单仍被检测到"时才会走到这里，
+        # 因此不会在菜单已关闭后误把内容打进输入框。
         self._queue_input(session.session_id, payload)
 
     def _finish(self, session_id: str, session: PtySession, backend: _Backend) -> None:

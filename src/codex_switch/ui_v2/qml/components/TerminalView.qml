@@ -13,12 +13,29 @@ Item {
     property string screenText: ""
     property bool awaitingChoice: false
     property var choices: []
+    // 菜单种类：confirm / numbered / list。list（如 codex resume）只能用
+    // 方向键选，点按钮时界面要发 ↑↓ 而不是数字。
+    property string choiceKind: "numbered"
+    // 菜单当前高亮项下标；-1 表示看不出。
+    property int selectedIndex: -1
     property bool inputEnabled: true
     property string placeholder: "输入并回车发送给 AI CLI …"
+
+    // 指令候选（斜杠命令）。由上层（view model）算好，这里只负责显示与选择。
+    property bool hintVisible: false
+    property var hintItems: []
+    property int hintSelected: -1
 
     signal inputSubmitted(string text)
     signal choiceSelected(int index)
     signal keySent(string key)
+    // 输入框内容变化 / 需要历史翻页时回传上层。
+    signal inputEdited(string text)
+    signal historyRequested(bool older)
+    // 候选条：移动高亮 与 确认补全 是两件事，分开表达避免语义混淆。
+    signal hintMoved(int index)
+    signal hintAccepted(int index)
+    signal hintsClosed()
 
     ColumnLayout {
         anchors.fill: parent
@@ -54,7 +71,11 @@ Item {
 
                     Text {
                         Layout.fillWidth: true
-                        text: "等待你的选择（点按钮直接选定；也可用下方 ↑↓ 移动、Enter 确认）"
+                        // list 类菜单（如 codex 的 resume 会话列表）不能靠发数字选中，
+                        // 必须用方向键把光标移过去，所以提示文案要跟着变。
+                        text: root.choiceKind === "list"
+                            ? "等待选择（列表菜单：点选项会自动用 ↑↓ 移动光标后回车）"
+                            : "等待你的选择（点按钮直接选定；也可用下方 ↑↓ 移动、Enter 确认）"
                         color: Theme.accent
                         font.pixelSize: Theme.fontCaption
                         wrapMode: Text.WordWrap
@@ -99,8 +120,11 @@ Item {
                             required property var modelData
                             required property int index
 
+                            // 菜单当前高亮项用主色实心按钮标出，其余用描边样式：
+                            // 用户一眼能看出"现在按回车会选中哪个"。
                             text: (index + 1) + ". " + modelData
-                            variant: "primary"
+                                + (index === root.selectedIndex ? "  ← 当前" : "")
+                            variant: index === root.selectedIndex ? "primary" : "secondary"
                             onClicked: root.choiceSelected(index)
                         }
                     }
@@ -150,6 +174,80 @@ Item {
             }
         }
 
+        // ---- 指令候选条：输入 "/" 时浮出 ----
+        Rectangle {
+            id: hintBar
+
+            Layout.fillWidth: true
+            Layout.topMargin: visible ? Theme.space2 : 0
+            visible: root.hintVisible && root.hintItems.length > 0
+            implicitHeight: visible ? hintColumn.implicitHeight + Theme.space2 * 2 : 0
+            radius: Theme.radiusSm
+            color: Theme.surfaceAlt
+            border.width: Theme.borderWidth
+            border.color: Theme.border
+
+            ColumnLayout {
+                id: hintColumn
+
+                anchors.fill: parent
+                anchors.margins: Theme.space2
+                spacing: 2
+
+                Text {
+                    Layout.fillWidth: true
+                    text: "AI 指令（↑↓ 选择，Tab 补全，Esc 关闭）"
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fontCaption
+                }
+
+                Repeater {
+                    model: root.hintItems
+
+                    delegate: Rectangle {
+                        required property var modelData
+                        required property int index
+
+                        Layout.fillWidth: true
+                        implicitHeight: hintRow.implicitHeight + 6
+                        radius: Theme.radiusSm
+                        color: index === root.hintSelected ? Theme.accentSoft : "transparent"
+
+                        RowLayout {
+                            id: hintRow
+
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.space2
+                            anchors.rightMargin: Theme.space2
+                            spacing: Theme.space2
+
+                            Text {
+                                text: modelData.name
+                                color: index === root.hintSelected ? Theme.accent : Theme.text
+                                font.family: "Consolas, Menlo, Monaco, monospace"
+                                font.pixelSize: Theme.fontCaption
+                                font.weight: Font.DemiBold
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.description || ""
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontCaption
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.hintChosen(index)
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- 输入栏 ----
         RowLayout {
             Layout.fillWidth: true
@@ -168,6 +266,63 @@ Item {
                         text = ""
                     }
                 }
+
+                // 内容变化时通知上层刷新指令候选；程序化填入历史时不触发，
+                // 否则翻历史会被当成"用户在编辑"而立刻退出翻页状态。
+                property bool suppressEdit: false
+
+                onTextChanged: {
+                    if (!suppressEdit)
+                        root.inputEdited(text)
+                }
+
+                // ↑↓ 翻历史、Tab 补全、Esc 关提示。
+                // 用 Keys 处理器而不是 TextField 自带的历史逻辑，
+                // 因为历史由 Python 侧按会话维护。
+                Keys.onUpPressed: function (event) {
+                    if (root.hintVisible) {
+                        // 候选条开着时，↑↓ 用来在候选之间移动更符合直觉。
+                        var count = root.hintItems.length
+                        if (count > 0)
+                            root.hintMoved(((root.hintSelected - 1) + count) % count)
+                        event.accepted = true
+                        return
+                    }
+                    root.historyRequested(true)
+                    event.accepted = true
+                }
+
+                Keys.onDownPressed: function (event) {
+                    if (root.hintVisible) {
+                        var count = root.hintItems.length
+                        if (count > 0)
+                            root.hintMoved((root.hintSelected + 1) % count)
+                        event.accepted = true
+                        return
+                    }
+                    root.historyRequested(false)
+                    event.accepted = true
+                }
+
+                Keys.onTabPressed: function (event) {
+                    // Tab 确认补全；Enter 交给 TextField 正常发送。
+                    if (root.hintVisible && root.hintSelected >= 0)
+                        root.hintAccepted(root.hintSelected)
+                    event.accepted = true
+                }
+
+                Keys.onEscapePressed: function (event) {
+                    root.hintsClosed()
+                    event.accepted = true
+                }
+
+                // 供上层把历史内容填回输入框（不触发 inputEdited）。
+                function setTextQuietly(value) {
+                    suppressEdit = true
+                    text = value
+                    cursorPosition = text.length
+                    suppressEdit = false
+                }
             }
 
             AppButton {
@@ -181,5 +336,24 @@ Item {
                 }
             }
         }
+    }
+
+    // 上层调用：把历史内容填进输入框并聚焦。
+    function applyHistory(value) {
+        inputField.setTextQuietly(value)
+        inputField.forceActiveFocus()
+    }
+
+    // 输入框当前内容（开始翻历史前作为草稿保存）。
+    function currentDraft() {
+        return inputField.text
+    }
+
+    // 上层调用：把补全的指令填进输入框。
+    function applyHintText(value) {
+        inputField.setTextQuietly(value)
+        inputField.forceActiveFocus()
+        // 补全后重新计算候选（例如 /model 补全后不再需要提示）。
+        root.inputEdited(value)
     }
 }

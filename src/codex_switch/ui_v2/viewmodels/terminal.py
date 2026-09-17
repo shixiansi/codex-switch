@@ -12,8 +12,10 @@ from ..terminal import (
     EVENT_CHOICE,
     EVENT_STATUS,
     EVENT_TIMELINE,
+    InputHistory,
     TerminalManager,
     check_pty_backend,
+    command_hints,
 )
 from ..terminal.logging_setup import get_logger, log_path
 from .base import BaseViewModel
@@ -32,6 +34,7 @@ class TerminalViewModel(BaseViewModel):
     zoomChanged = Signal()
     timelineChanged = Signal()
     autoAnswerChanged = Signal()
+    inputAssistChanged = Signal()
 
     def __init__(self, controller, parent=None) -> None:
         self._controller = controller
@@ -41,15 +44,24 @@ class TerminalViewModel(BaseViewModel):
         self._screen = ""
         self._awaiting_choice = False
         self._choices: list[str] = []
+        self._selected_index = -1
+        self._choice_kind = "numbered"
         self._running_count = 0
         self._zoomed_id = ""
         self._zoomed_screen = ""
         self._zoomed_choices: list[str] = []
         self._zoomed_awaiting = False
+        self._zoomed_selected_index = -1
+        self._zoomed_choice_kind = "numbered"
         # 自动应答开关：默认开启，检测到选择菜单时自动选第一项。
         self._auto_answer = True
         self._manager.auto_answer = True
         self._active_timeline = ""
+        # 输入历史与指令提示（纯逻辑，见 terminal/input_assist.py）。
+        self._history = InputHistory()
+        self._hint_visible = False
+        self._hint_items: list[dict[str, str]] = []
+        self._hint_selected = -1
         super().__init__(parent)
         self._manager.start()
 
@@ -88,6 +100,20 @@ class TerminalViewModel(BaseViewModel):
     def choices(self) -> list[str]:
         return list(self._choices)
 
+    @Property(int, notify=choiceChanged)
+    def selectedIndex(self) -> int:
+        """菜单当前高亮项下标；-1 表示看不出选中在哪。"""
+        return self._selected_index
+
+    @Property(str, notify=choiceChanged)
+    def choiceKind(self) -> str:
+        """菜单种类：confirm / numbered / list。
+
+        页面据此决定提示文案：list 类菜单（codex resume）只能用方向键选，
+        点按钮时界面要发 ↑↓ 而不是数字。
+        """
+        return self._choice_kind
+
     # 放大浮窗使用的独立会话视图（不抢占主区 activeId）。
     @Property(str, notify=zoomChanged)
     def zoomedId(self) -> str:
@@ -105,6 +131,14 @@ class TerminalViewModel(BaseViewModel):
     def zoomedChoices(self) -> list[str]:
         return list(self._zoomed_choices)
 
+    @Property(int, notify=zoomChanged)
+    def zoomedSelectedIndex(self) -> int:
+        return self._zoomed_selected_index
+
+    @Property(str, notify=zoomChanged)
+    def zoomedChoiceKind(self) -> str:
+        return self._zoomed_choice_kind
+
     @Property(int, notify=runningCountChanged)
     def runningCount(self) -> int:
         return self._running_count
@@ -117,6 +151,25 @@ class TerminalViewModel(BaseViewModel):
     def logPath(self) -> str:
         """终端日志文件路径，供界面"打开日志"排查问题。"""
         return str(log_path())
+
+    # -- 输入辅助（历史 / 指令提示）------------------------------------
+    @Property(bool, notify=inputAssistChanged)
+    def hintVisible(self) -> bool:
+        """是否应该显示指令候选条。"""
+        return self._hint_visible
+
+    @Property("QVariantList", notify=inputAssistChanged)
+    def hintItems(self) -> list[dict[str, str]]:
+        return [dict(item) for item in self._hint_items]
+
+    @Property(int, notify=inputAssistChanged)
+    def hintSelected(self) -> int:
+        return self._hint_selected
+
+    @Property(int, notify=inputAssistChanged)
+    def historyLength(self) -> int:
+        """当前会话已记录的历史条数，供界面提示 ↑ 可用。"""
+        return len(self._history.entries(self._active_id))
 
     @Property(str, constant=True)
     def backendIssue(self) -> str:
@@ -256,13 +309,111 @@ class TerminalViewModel(BaseViewModel):
     def sendInput(self, text: str) -> None:
         if not self._active_id:
             return
+        # 记入历史后再发送：失败也要记，用户会想重试同一条。
+        self._history.record(self._active_id, text)
+        self._update_hints("")
         # 行结束的 CRLF 由 manager 统一追加，保持业务层单一职责。
         self._manager.send_input(self._active_id, str(text or ""))
+
+    # -- 输入辅助 ------------------------------------------------------
+    @Slot(str)
+    def updateInputHints(self, text: str) -> None:
+        """输入框内容变化时刷新指令候选。"""
+        self._update_hints(text)
+
+    def _update_hints(self, text: str) -> None:
+        hint = command_hints(text)
+        if (
+            hint.visible == self._hint_visible
+            and hint.items == self._hint_items
+            and hint.selected == self._hint_selected
+        ):
+            return
+        self._hint_visible = hint.visible
+        self._hint_items = [dict(item) for item in hint.items]
+        self._hint_selected = hint.selected
+        self.inputAssistChanged.emit()
+
+    @Slot(str, result=str)
+    def historyPrevious(self, draft: str) -> str:
+        """↑：把更早的一条历史填回输入框（当前会话）。
+
+        返回空字符串表示"没有更早的了"，调用方据此保持输入框不变。
+        用返回值而不是直接改输入框：QML 的 TextField 由界面掌控，
+        业务层只负责算出该显示什么。
+        """
+        return self._history_previous_for(self._active_id, draft)
+
+    @Slot(result=str)
+    def historyNext(self) -> str:
+        """↓：回到更近的一条；已到最新则回到开始翻历史前的草稿。"""
+        return self._history_next_for(self._active_id)
+
+    def _history_previous_for(self, session_id: str, draft: str) -> str:
+        if not session_id:
+            return ""
+        value = self._history.previous(session_id, str(draft or ""))
+        self.inputAssistChanged.emit()
+        return value if value is not None else ""
+
+    def _history_next_for(self, session_id: str) -> str:
+        if not session_id:
+            return ""
+        value = self._history.next(session_id)
+        self.inputAssistChanged.emit()
+        return value if value is not None else ""
+
+    @Slot(str, result=str)
+    def zoomHistoryPrevious(self, draft: str) -> str:
+        """↑（放大浮窗）：历史必须取自被放大的那个会话。
+
+        早期实现统一用 activeId，结果放大窗口里按 ↑ 翻到的是另一个会话的
+        消息——发出去就串了会话。
+        """
+        return self._history_previous_for(self._zoomed_id, draft)
+
+    @Slot(result=str)
+    def zoomHistoryNext(self) -> str:
+        return self._history_next_for(self._zoomed_id)
+
+    @Slot()
+    def resetHistoryCursor(self) -> None:
+        """用户手动编辑输入框：退出翻历史状态。"""
+        if self._active_id:
+            self._history.reset_cursor(self._active_id)
+
+    @Slot(int, result=str)
+    def applyHint(self, index: int) -> str:
+        """把第 index 个候选补全进输入框（Tab 或点击候选）。
+
+        返回补全后的文本；空字符串表示没有该候选，调用方保持输入框不变。
+        """
+        if not self._hint_visible or not (0 <= index < len(self._hint_items)):
+            return ""
+        return str(self._hint_items[index].get("name") or "")
+
+    @Slot(int)
+    def selectHint(self, index: int) -> None:
+        """在候选条里上下移动高亮。"""
+        if not self._hint_items:
+            return
+        count = len(self._hint_items)
+        value = int(index) % count
+        if value == self._hint_selected:
+            return
+        self._hint_selected = value
+        self.inputAssistChanged.emit()
+
+    @Slot()
+    def hideHints(self) -> None:
+        self._update_hints("")
 
     @Slot(str)
     def sendZoomInput(self, text: str) -> None:
         if not self._zoomed_id:
             return
+        # 历史按会话记录，放大窗口发的消息也该进它自己的历史。
+        self._history.record(self._zoomed_id, text)
         self._manager.send_input(self._zoomed_id, str(text or ""))
 
     @Slot(str)
@@ -297,18 +448,15 @@ class TerminalViewModel(BaseViewModel):
         self._send_choice(self._zoomed_id, self._zoomed_choices, int(index))
 
     def _send_choice(self, session_id: str, choices: list[str], idx: int) -> None:
+        """选中某个选项。
+
+        交给 manager 决定发送方式：编号菜单直接发编号，无编号菜单（如 codex 的
+        resume 列表）必须用方向键移动——发数字会被 TUI 当成搜索关键词，
+        结果就是"能看到选项却选不中"。
+        """
         if not (0 <= idx < len(choices)):
             return
-        label = choices[idx]
-        if label == "是":
-            payload = "y"
-        elif label == "否":
-            payload = "n"
-        else:
-            # 编号选项：发送对应编号（1 起），这是 TUI 选择菜单的通用约定；
-            # 发送标签文本往往不会被识别。
-            payload = str(idx + 1)
-        self._manager.send_input(session_id, payload)
+        self._manager.select_choice(session_id, int(idx))
 
     @Slot(str)
     def sendKey(self, key: str) -> None:
@@ -345,6 +493,8 @@ class TerminalViewModel(BaseViewModel):
     def removeSession(self, session_id: str) -> None:
         target = str(session_id or "")
         self._manager.remove_session(target)
+        # 会话没了，它的输入历史也没有意义；不清会随长时间使用越堆越多。
+        self._history.forget(target)
         if self._active_id == target:
             self._active_id = ""
             self.activeIdChanged.emit()
@@ -417,14 +567,25 @@ class TerminalViewModel(BaseViewModel):
         # 同步"等待选择"态
         awaiting = False
         choices: list[str] = []
+        selected = -1
+        kind = "numbered"
         for row in self._sessions:
             if row["sessionId"] == self._active_id:
                 awaiting = row.get("awaitingChoice", False)
                 choices = list(row.get("choices", []))
+                selected = int(row.get("selectedIndex", -1))
+                kind = str(row.get("kind", "numbered"))
                 break
-        if awaiting != self._awaiting_choice or choices != self._choices:
+        if (
+            awaiting != self._awaiting_choice
+            or choices != self._choices
+            or selected != self._selected_index
+            or kind != self._choice_kind
+        ):
             self._awaiting_choice = awaiting
             self._choices = choices
+            self._selected_index = selected
+            self._choice_kind = kind
             self.choiceChanged.emit()
 
     def _refresh_timeline(self) -> None:
@@ -440,15 +601,27 @@ class TerminalViewModel(BaseViewModel):
         text = self._manager.screen_text(self._zoomed_id)
         awaiting = False
         choices: list[str] = []
+        selected = -1
+        kind = "numbered"
         for row in self._sessions:
             if row["sessionId"] == self._zoomed_id:
                 awaiting = row.get("awaitingChoice", False)
                 choices = list(row.get("choices", []))
+                selected = int(row.get("selectedIndex", -1))
+                kind = str(row.get("kind", "numbered"))
                 break
-        if text != self._zoomed_screen or awaiting != self._zoomed_awaiting or choices != self._zoomed_choices:
+        if (
+            text != self._zoomed_screen
+            or awaiting != self._zoomed_awaiting
+            or choices != self._zoomed_choices
+            or selected != self._zoomed_selected_index
+            or kind != self._zoomed_choice_kind
+        ):
             self._zoomed_screen = text
             self._zoomed_awaiting = awaiting
             self._zoomed_choices = choices
+            self._zoomed_selected_index = selected
+            self._zoomed_choice_kind = kind
             self.zoomChanged.emit()
 
     def _on_manager_event(self, session_id: str, event: str, payload: dict[str, Any]) -> None:
