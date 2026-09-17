@@ -25,6 +25,7 @@ from ..plugins import (
     unload_plugin,
 )
 from ..storage import ProfileStore
+from .plugin_bridge import PluginCallBridge
 from .theme import ThemeController
 from .qt_compat import Property, QObject, QTimer, Signal, Slot
 from .viewmodels import (
@@ -1166,6 +1167,9 @@ class AppController(QObject):
             for item in sorted(entry.manifest.permissions)
         ]
         row["actions"] = [dict(item) for item in entry.manifest.actions]
+        # 插件自带页面的绝对路径；QML 侧据此动态创建组件。
+        row["pageUrl"] = str(entry.page_path) if entry.page_path else ""
+        row["loaded"] = entry.instance is not None
         return row
 
     @Slot()
@@ -1215,6 +1219,33 @@ class AppController(QObject):
         message = str(result) if result else "动作已完成。"
         self.showToast(message, "success")
 
+    @Slot(str, result="QVariant")
+    def pluginInstance(self, plugin_id: str):
+        """把插件实例交给宿主的调用桥，而不是直接交给 QML。
+
+        返回的是 :class:`PluginCallBridge`——一个真正的 QObject。
+        直接把插件的普通 Python 对象塞给 QML 是不行的：QML 只对注册过的
+        QObject 类型调用方法，拿到 ``QVariant`` 包装的普通对象时，
+        任何 ``instance.foo()`` 都会报 "is not a function"。
+        """
+        entry = self._plugin_registry.get(str(plugin_id))
+        if entry is None or entry.instance is None:
+            return None
+        return PluginCallBridge(entry.instance, self)
+
+    @Slot(result="QVariantList")
+    def pluginPageEntries(self) -> list[dict[str, Any]]:
+        """带页面的插件列表，供宿主控件挑出要渲染的页面。"""
+        return [
+            {
+                "id": entry.id,
+                "name": entry.manifest.name,
+                "pageUrl": str(entry.page_path) if entry.page_path else "",
+            }
+            for entry in self._plugin_registry.entries
+            if entry.manifest.has_page and entry.page_path is not None
+        ]
+
     @Slot()
     def openPluginFolder(self) -> None:
         """打开插件目录；不存在时先建出来，避免用户面对一个空对话框。"""
@@ -1225,7 +1256,6 @@ class AppController(QObject):
             self.showToast(f"无法创建插件目录：{exc}", "error")
             return
         from .qt_compat import QDesktopServices, QUrl
-
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def load_plugins(self) -> list[str]:

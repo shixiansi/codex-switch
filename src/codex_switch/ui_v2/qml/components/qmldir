@@ -15,6 +15,7 @@ EmptyState 1.0 EmptyState.qml
 FormRenderer 1.0 FormRenderer.qml
 ListRow 1.0 ListRow.qml
 LoadingState 1.0 LoadingState.qml
+PluginHost 1.0 PluginHost.qml
 SearchField 1.0 SearchField.qml
 SectionHeader 1.0 SectionHeader.qml
 StatCard 1.0 StatCard.qml

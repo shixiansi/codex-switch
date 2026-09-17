@@ -140,7 +140,7 @@ Item {
                 }
             }
 
-            // ---------- 右：插件详情 ----------
+            // ---------- 右：插件详情 / 插件页面 ----------
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -148,6 +148,20 @@ Item {
                 color: Theme.surface
                 border.width: Theme.borderWidth
                 border.color: Theme.border
+
+                // 选中的插件带页面时，整块区域交给它自己的页面渲染。
+                PluginHost {
+                    id: pluginHost
+                    anchors.fill: parent
+                    anchors.margins: Theme.space2
+                    visible: hasPage
+                    pluginId: pluginsModel.selectedId
+                    pageUrl: pluginsModel.selectedDetail.pageUrl || ""
+                    instance: pluginsModel.selectedPluginInstance
+
+                    readonly property bool hasPage: pluginsModel.selectedDetail.loaded === true
+                        && (pluginsModel.selectedDetail.pageUrl || "") !== ""
+                }
 
                 EmptyState {
                     anchors.fill: parent
@@ -160,7 +174,7 @@ Item {
                 ScrollView {
                     anchors.fill: parent
                     anchors.margins: Theme.space4
-                    visible: pluginsModel.selectedId !== ""
+                    visible: pluginsModel.selectedId !== "" && !pluginHost.hasPage
                     clip: true
                     contentWidth: availableWidth
                     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff

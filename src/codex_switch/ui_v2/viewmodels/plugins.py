@@ -46,6 +46,16 @@ class PluginsViewModel(SnapshotViewModel):
     def pluginRoot(self) -> str:
         return str(self._controller.plugin_root())
 
+    @Property("QVariant", notify=detailChanged)
+    def selectedPluginInstance(self):
+        """选中插件的实例，注入给插件自己的页面。
+
+        返回 None 是正常的：插件未加载、未选中等情况下页面会显示占位内容。
+        """
+        if not self._selected_id:
+            return None
+        return self._controller.pluginInstance(self._selected_id)
+
     @Property(int, notify=issuesChanged)
     def issueCount(self) -> int:
         return len(self._issues)
