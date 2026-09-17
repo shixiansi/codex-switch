@@ -17,6 +17,7 @@ from ..terminal import (
     TerminalManager,
     check_pty_backend,
     command_hints,
+    detect_cli,
 )
 from ..terminal.logging_setup import get_logger, log_path
 from .base import BaseViewModel
@@ -288,8 +289,8 @@ class TerminalViewModel(BaseViewModel):
     def _seed_project_history(self, session_id: str) -> int:
         """把会话所在目录的项目级历史接进输入历史。
 
-        读的是 CLI 自己存的会话记录（当前支持 codex）。读不到时静默跳过——
-        历史只是便利功能，绝不该影响终端本身可用。
+        读的是 CLI 自己存的会话记录（codex 与 claude 各有一套存储）。
+        读不到时静默跳过——历史只是便利功能，绝不该影响终端本身可用。
         """
         session = self._manager.session(session_id)
         if session is None:
@@ -297,14 +298,18 @@ class TerminalViewModel(BaseViewModel):
         cwd = str(session.cwd or "").strip()
         if not cwd:
             return 0
+        cli = detect_cli(str(session.command or ""))
         try:
-            prompts = self._cli_history.prompts_for(cwd)
+            prompts = self._cli_history.prompts_for(cwd, cli)
         except Exception:  # noqa: BLE001 - 读历史失败不该影响终端
-            log.exception("读取项目历史失败 cwd=%s", cwd)
+            log.exception("读取项目历史失败 cwd=%s cli=%s", cwd, cli)
             return 0
         added = self._history.seed(session_id, prompts)
         if added:
-            log.info("已接入项目历史 id=%s 条数=%s cwd=%s", session_id, added, cwd)
+            log.info(
+                "已接入项目历史 id=%s 条数=%s cli=%s cwd=%s",
+                session_id, added, cli or "(未知)", cwd,
+            )
             self.inputAssistChanged.emit()
         return added
 

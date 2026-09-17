@@ -75,8 +75,17 @@ class PromptExtractionTests(unittest.TestCase):
     """从会话文件里提取提示词。"""
 
     def setUp(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import (
+            ClaudeHistorySource,
+            CodexHistorySource,
+            PromptHistoryReader,
+        )
+
         self.root = make_root(self)
-        self.reader = PromptHistoryReader(self.root)
+        self.reader = PromptHistoryReader(
+            codex=CodexHistorySource(self.root),
+            claude=ClaudeHistorySource(self.root / "no-such-history.jsonl"),
+        )
 
     def test_reads_prompts_for_matching_cwd(self) -> None:
         write_session(self.root, r"F:\proj", ["第一条", "第二条"])
@@ -154,8 +163,10 @@ class PromptExtractionTests(unittest.TestCase):
         self.assertEqual(self.reader.prompts_for(""), [])
 
     def test_missing_root_returns_empty(self) -> None:
-        reader = PromptHistoryReader(self.root / "does-not-exist")
-        self.assertEqual(reader.prompts_for(r"F:\p"), [])
+        from codex_switch.ui_v2.terminal.cli_history import CodexHistorySource
+
+        source = CodexHistorySource(self.root / "does-not-exist")
+        self.assertEqual(source.prompts_for(r"F:\p"), [])
 
     def test_corrupt_lines_do_not_break_reading(self) -> None:
         path = write_session(self.root, r"F:\p", ["好的"])
@@ -180,8 +191,17 @@ class PromptExtractionTests(unittest.TestCase):
 
 class CacheTests(unittest.TestCase):
     def setUp(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import (
+            ClaudeHistorySource,
+            CodexHistorySource,
+            PromptHistoryReader,
+        )
+
         self.root = make_root(self)
-        self.reader = PromptHistoryReader(self.root)
+        self.reader = PromptHistoryReader(
+            codex=CodexHistorySource(self.root),
+            claude=ClaudeHistorySource(self.root / "no-such-history.jsonl"),
+        )
 
     def test_repeated_reads_use_cache(self) -> None:
         """第二次读取应命中缓存，不再重新解析会话文件。
@@ -197,7 +217,8 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(self.reader.prompts_for(r"F:\p"), ["消息"])
 
         with mock.patch.object(
-            module, "_prompts_from_file", wraps=module._prompts_from_file
+            module, "_prompts_from_codex_file",
+            wraps=module._prompts_from_codex_file,
         ) as spy:
             again = self.reader.prompts_for(r"F:\p")
         self.assertEqual(again, ["消息"])
@@ -270,6 +291,156 @@ class SeedingTests(unittest.TestCase):
         history = InputHistory()
         history.seed("s", [f"第 {i} 条" for i in range(MAX_HISTORY + 100)])
         self.assertEqual(len(history.entries("s")), MAX_HISTORY)
+
+
+class ClaudeHistoryTests(unittest.TestCase):
+    """claude 的历史存在单个 history.jsonl 里，每行带 project 字段。"""
+
+    def setUp(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import ClaudeHistorySource
+
+        self.root = make_root(self)
+        self.path = self.root / "history.jsonl"
+        self.source = ClaudeHistorySource(self.path)
+
+    def _write(self, records: list[dict]) -> None:
+        self.path.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+            encoding="utf-8",
+        )
+
+    def _record(self, project: str, display: str, session: str = "s1") -> dict:
+        return {
+            "display": display,
+            "pastedContents": {},
+            "timestamp": 1775467751074,
+            "project": project,
+            "sessionId": session,
+        }
+
+    def test_reads_prompts_for_project(self) -> None:
+        self._write([
+            self._record(r"E:\proj", "第一条"),
+            self._record(r"E:\proj", "第二条"),
+        ])
+        self.assertEqual(self.source.prompts_for(r"E:\proj"), ["第一条", "第二条"])
+
+    def test_filters_by_project(self) -> None:
+        self._write([
+            self._record(r"E:\a", "A 项目的"),
+            self._record(r"E:\b", "B 项目的"),
+        ])
+        self.assertEqual(self.source.prompts_for(r"E:\a"), ["A 项目的"])
+        self.assertEqual(self.source.prompts_for(r"E:\b"), ["B 项目的"])
+
+    def test_path_normalisation(self) -> None:
+        self._write([self._record(r"E:\Proj\Sub", "消息")])
+        for variant in (r"E:\Proj\Sub", r"e:\proj\sub", "E:/Proj/Sub", "E:\\Proj\\Sub\\"):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.source.prompts_for(variant), ["消息"])
+
+    def test_skips_command_markup(self) -> None:
+        """斜杠命令的包装标记不是用户敲的自然语言。"""
+        self._write([
+            self._record(r"E:\p", "<command-name>/model</command-name>"),
+            self._record(r"E:\p", "<local-command-stdout>输出</local-command-stdout>"),
+            self._record(r"E:\p", "真正的问题"),
+        ])
+        self.assertEqual(self.source.prompts_for(r"E:\p"), ["真正的问题"])
+
+    def test_skips_very_long_and_blank(self) -> None:
+        self._write([
+            self._record(r"E:\p", "x" * 5000),
+            self._record(r"E:\p", "   "),
+            self._record(r"E:\p", "正常"),
+        ])
+        self.assertEqual(self.source.prompts_for(r"E:\p"), ["正常"])
+
+    def test_handles_corrupt_lines(self) -> None:
+        self.path.write_text(
+            "不是 JSON\n"
+            + json.dumps(self._record(r"E:\p", "好的"), ensure_ascii=False) + "\n"
+            + "[1,2,3]\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.source.prompts_for(r"E:\p"), ["好的"])
+
+    def test_missing_file_returns_empty(self) -> None:
+        self.assertEqual(self.source.prompts_for(r"E:\p"), [])
+
+    def test_cache(self) -> None:
+        self._write([self._record(r"E:\p", "消息")])
+        self.assertEqual(self.source.prompts_for(r"E:\p"), ["消息"])
+        self.source.invalidate()
+        self.assertEqual(self.source.prompts_for(r"E:\p"), ["消息"])
+
+
+class CliDetectionTests(unittest.TestCase):
+    """从启动命令认出是哪个 CLI。"""
+
+    def test_recognises_bare_names(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import detect_cli
+
+        self.assertEqual(detect_cli("codex"), "codex")
+        self.assertEqual(detect_cli("claude"), "claude")
+
+    def test_ignores_arguments(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import detect_cli
+
+        self.assertEqual(detect_cli("codex --model gpt-5"), "codex")
+        self.assertEqual(detect_cli("claude --resume"), "claude")
+
+    def test_handles_paths_and_suffixes(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import detect_cli
+
+        self.assertEqual(detect_cli(r"C:\tools\codex.exe"), "codex")
+        self.assertEqual(detect_cli("claude.cmd"), "claude")
+        self.assertEqual(detect_cli(r"D:\a\b\codex"), "codex")
+
+    def test_unknown_returns_empty(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import detect_cli
+
+        for command in ("node", "", "   ", "python main.py"):
+            with self.subTest(command=command):
+                self.assertEqual(detect_cli(command), "")
+
+
+class ReaderDispatchTests(unittest.TestCase):
+    """统一入口按 CLI 分派，未知时合并所有源。"""
+
+    def setUp(self) -> None:
+        from codex_switch.ui_v2.terminal.cli_history import (
+            ClaudeHistorySource,
+            CodexHistorySource,
+            PromptHistoryReader,
+        )
+
+        self.root = make_root(self)
+        self.codex_root = self.root / "codex"
+        self.claude_path = self.root / "history.jsonl"
+        write_session(self.codex_root, r"F:\p", ["codex 的"])
+        self.claude_path.write_text(json.dumps({
+            "display": "claude 的",
+            "project": r"F:\p",
+            "sessionId": "s",
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        self.reader = PromptHistoryReader(
+            codex=CodexHistorySource(self.codex_root),
+            claude=ClaudeHistorySource(self.claude_path),
+        )
+
+    def test_dispatches_by_cli(self) -> None:
+        self.assertEqual(self.reader.prompts_for(r"F:\p", "codex"), ["codex 的"])
+        self.assertEqual(self.reader.prompts_for(r"F:\p", "claude"), ["claude 的"])
+
+    def test_merges_when_cli_unknown(self) -> None:
+        merged = self.reader.prompts_for(r"F:\p", "")
+        self.assertIn("codex 的", merged)
+        self.assertIn("claude 的", merged)
+
+    def test_source_for_unknown_kind_is_none(self) -> None:
+        self.assertIsNone(self.reader.source_for("node"))
 
 
 if __name__ == "__main__":
