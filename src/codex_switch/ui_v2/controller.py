@@ -1157,6 +1157,23 @@ class AppController(QObject):
     def plugin_issue_rows(self) -> list[dict[str, Any]]:
         return self._plugin_registry.issue_rows()
 
+    @staticmethod
+    def _plugin_page_url(entry: Any) -> str:
+        """把插件页面路径转成 QML 能加载的 ``file://`` URL。
+
+        不能直接把 Windows 原生路径交给 QML：``Qt.createComponent("F:\\...")``
+        会把盘符 ``F:`` 当成 **URL 协议名**，于是报
+        ``f:%5C...: Network error`` 而加载失败——文件明明就在那里。
+        这是 QML 侧的解析行为，Python 侧 ``QQmlComponent(engine, path)``
+        不会触发，所以只测 Python 是发现不了的。
+        """
+        path = getattr(entry, "page_path", None)
+        if path is None:
+            return ""
+        from .qt_compat import QUrl
+
+        return QUrl.fromLocalFile(str(path)).toString()
+
     def plugin_detail(self, plugin_id: str) -> dict[str, Any]:
         entry = self._plugin_registry.get(str(plugin_id))
         if entry is None:
@@ -1167,8 +1184,8 @@ class AppController(QObject):
             for item in sorted(entry.manifest.permissions)
         ]
         row["actions"] = [dict(item) for item in entry.manifest.actions]
-        # 插件自带页面的绝对路径；QML 侧据此动态创建组件。
-        row["pageUrl"] = str(entry.page_path) if entry.page_path else ""
+        # 插件自带页面的 URL；QML 侧据此动态创建组件。
+        row["pageUrl"] = self._plugin_page_url(entry)
         row["loaded"] = entry.instance is not None
         return row
 
@@ -1240,7 +1257,7 @@ class AppController(QObject):
             {
                 "id": entry.id,
                 "name": entry.manifest.name,
-                "pageUrl": str(entry.page_path) if entry.page_path else "",
+                "pageUrl": self._plugin_page_url(entry),
             }
             for entry in self._plugin_registry.entries
             if entry.manifest.has_page and entry.page_path is not None

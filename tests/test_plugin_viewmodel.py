@@ -323,6 +323,84 @@ class PluginSlotSignatureAuditTests(unittest.TestCase):
         )
 
 
+class PluginPageUrlTests(unittest.TestCase):
+    """插件页面必须以 ``file://`` URL 交给 QML。
+
+    真实缺陷：``pageUrl`` 曾经直接传 Windows 原生路径
+    （``F:\\编程\\...\\page.qml``）。QML 的 ``Qt.createComponent`` 会把盘符
+    ``F:`` 当成 **URL 协议名**，于是报 ``f:%5C...: Network error``——
+    文件明明存在，页面却永远加载不出来，插件中心只显示一行错误。
+
+    这个错误只在 QML 侧出现：Python 的 ``QQmlComponent(engine, path)``
+    接受原生路径，所以"只测 Python"的验证会全绿却漏掉它。
+    因此这里既要测 URL 形态，也要真的把组件创建出来。
+    """
+
+    def test_native_path_would_be_misread_as_url_scheme(self) -> None:
+        """反例：原生路径确实会被当成协议名（解释为什么必须转换）。"""
+        from codex_switch.ui_v2.qt_compat import QUrl
+
+        native = r"F:\编程\codex-switch\page.qml"
+        self.assertEqual(QUrl(native).scheme(), "f",
+                         "前提变了：QML 不再把盘符当协议，可以重新评估这个修复")
+
+    def test_page_path_is_converted_to_file_url(self) -> None:
+        """控制器输出的 pageUrl 必须是合法的 file:// URL。"""
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        loaded = controller.load_plugins()
+        self.assertIn("codebuddy-accounts", loaded)
+
+        detail = controller.plugin_detail("codebuddy-accounts")
+        page_url = detail["pageUrl"]
+        self.assertTrue(page_url.startswith("file:"),
+                        f"pageUrl 不是 file URL：{page_url!r}")
+
+        from codex_switch.ui_v2.qt_compat import QUrl
+
+        parsed = QUrl(page_url)
+        self.assertTrue(parsed.isLocalFile(), f"不是本地文件 URL：{page_url!r}")
+        self.assertTrue(Path(parsed.toLocalFile()).is_file(),
+                        f"URL 指向的文件不存在：{parsed.toLocalFile()}")
+
+    def test_component_actually_instantiates(self) -> None:
+        """端到端：按这个 URL 真的能把插件页面创建出来。
+
+        这条是本类里最重要的一条——它盯的是 **QML 对象**，
+        而不是 Python 侧的数据。之前的验收只查了 bridge.accounts()，
+        于是页面根本没渲染出来也照样"通过"。
+
+        引擎必须带上与应用一致的导入路径：插件页面 ``import components`` /
+        ``import theme``，没有这些路径就会以 "module ... is not installed"
+        失败。这里刻意复用 ``app.QML_IMPORT_PATHS``，避免测试与真实启动
+        用的导入路径漂移——两者不一致时测试就失去意义了。
+        """
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+        from codex_switch.ui_v2.app import QML_IMPORT_PATHS, configure_style
+        from codex_switch.ui_v2.controller import AppController
+
+        configure_style()
+        controller = AppController()
+        controller.load_plugins()
+        page_url = controller.plugin_detail("codebuddy-accounts")["pageUrl"]
+
+        engine = QQmlEngine()
+        self.addCleanup(engine.deleteLater)
+        for path in QML_IMPORT_PATHS:
+            engine.addImportPath(str(path))
+
+        component = QQmlComponent(engine, page_url)
+        self.assertEqual(
+            component.status(), QQmlComponent.Status.Ready,
+            f"插件页面加载失败：{component.errorString()}",
+        )
+
+
 class PluginsPageQmlTests(unittest.TestCase):
     """插件中心页面本身的静态检查。"""
 
