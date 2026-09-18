@@ -216,6 +216,47 @@ Item {
                                 selectable: true
                                 wrap: true
                             }
+                            DetailRow {
+                                label: "路由代理"
+                                value: projectsModel.selectedDetail.routeProxyEnabled
+                                    ? "已启用（项目指向本地代理）"
+                                    : "未启用（直连本站）"
+                                tone: projectsModel.selectedDetail.routeProxyEnabled ? "success" : ""
+                            }
+
+                            // 项目级路由代理开关。
+                            //
+                            // 以前只能去「网络与监控」页操作，项目页看不到也改不了；
+                            // 而它直接决定 config.toml 的 base_url 指向哪里，所以
+                            // 放在项目详情里最合适。切换后会立即写入项目配置文件。
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.topMargin: Theme.space1
+                                spacing: Theme.space2
+
+                                AppSwitch {
+                                    id: routeProxySwitch
+
+                                    text: projectsModel.selectedDetail.routeProxyEnabled
+                                        ? "关闭项目路由代理"
+                                        : "启用项目路由代理"
+                                    checked: !!projectsModel.selectedDetail.routeProxyEnabled
+                                    enabled: !app.busy
+                                    // 回写由 workspace 完成，这里只发意图，避免
+                                    // "界面先跳、配置没写"的不一致。
+                                    onToggled: projectsModel.setRouteProxyEnabled(checked)
+                                }
+
+                                Item { Layout.fillWidth: true }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "启用后项目的 base_url 指向本地代理；关闭则恢复直连本站。切换会立即写入项目配置文件。"
+                                color: Theme.textFaint
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.WordWrap
+                            }
 
                             Flow {
                                 Layout.fillWidth: true

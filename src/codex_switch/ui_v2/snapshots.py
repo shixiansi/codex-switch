@@ -166,7 +166,13 @@ def project_row(project: ProjectRecord) -> dict[str, Any]:
     }
 
 
-def project_detail(project: ProjectRecord, *, codex_profile: Profile | None, claude_profile: Profile | None) -> dict[str, Any]:
+def project_detail(
+    project: ProjectRecord,
+    *,
+    codex_profile: Profile | None,
+    claude_profile: Profile | None,
+    route_proxy_enabled: bool = False,
+) -> dict[str, Any]:
     snapshot = project_row(project)
     snapshot.update(
         {
@@ -179,6 +185,8 @@ def project_detail(project: ProjectRecord, *, codex_profile: Profile | None, cla
             "mcpText": ", ".join(project.mcp_server_names or []) or "未选择",
             "skillsText": ", ".join(item.name for item in (project.skills or [])) or "未选择",
             "githubText": _github_label(project),
+            # 项目级路由代理：决定 config.toml 的 base_url 指向本地代理还是直连本站。
+            "routeProxyEnabled": bool(route_proxy_enabled),
         }
     )
     return snapshot

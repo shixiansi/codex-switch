@@ -370,6 +370,7 @@ class Workspace:
                     selected_project,
                     codex_profile=session.profile_by_id(project_codex_profile_id(selected_project)),
                     claude_profile=session.profile_by_id(project_claude_profile_id(selected_project)),
+                    route_proxy_enabled=session.route_proxy.project_enabled(selected_project.id),
                 )
                 if selected_project
                 else {}
@@ -1559,6 +1560,13 @@ class Workspace:
         return self.start_proxy()
 
     def set_project_proxy_enabled(self, enabled: bool, project_id: str = "") -> ActionResult:
+        """启用/停用项目的路由代理，并把结果写进项目配置。
+
+        **必须同步落盘**：路由代理决定 config.toml 里的 base_url 是直连本站
+        还是指向本地代理（http://127.0.0.1:<port>/project/<id>）。只改内存里的
+        规则会让界面显示"已同步配置"，而项目文件毫无变化——用户看到的正是
+        "提示同步了，但 config.toml 根本没变"。
+        """
         session = self.session
         project = session.project_by_id(project_id) or session.selected_project()
         if project is None:
@@ -1580,7 +1588,15 @@ class Workspace:
             message = plan.success_status
 
         self.persist()
-        return ActionResult(message=message)
+
+        # 关键一步：把新的 base_url 写进项目内的配置文件。
+        # 两种客户端都同步（开关影响 Codex 与 Claude 两侧）。
+        if self._sync_project_api_binding(project, sync_codex=True, sync_claude=True):
+            return ActionResult(message=message)
+        return ActionResult(
+            message=f"{message}（但写入项目配置失败，请检查 API 绑定）",
+            level="warning",
+        )
 
     def clear_events(self) -> ActionResult:
         self.session.clear_events()

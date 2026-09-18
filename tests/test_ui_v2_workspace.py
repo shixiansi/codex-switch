@@ -1038,6 +1038,73 @@ class ProjectOperationTests(WorkspaceTestCase):
         )
         self.assertEqual(config.read_text(encoding="utf-8"), marker + 'model = "SAME"\n')
 
+    # -- 项目路由代理开关必须落盘 ----------------------------------------
+
+    def _route_proxy_project(self) -> tuple[Path, str, Path]:
+        """建一个带 config.toml 的项目，绑定可用的 Codex + Claude 配置。"""
+        codex = self.add_profile(name="codex 本站")
+        claude = self.add_profile(name="claude 本站", vendor=VENDOR_CLAUDE)
+        project_dir = self.root / "route-proj"
+        (project_dir / ".codex" / "home").mkdir(parents=True, exist_ok=True)
+        config = project_dir / ".codex" / "home" / "config.toml"
+        config.write_text(
+            'model = "gpt-5"\n'
+            "\n[model_providers.project_api]\n"
+            'name = "OpenAI"\n'
+            f'base_url = "{codex.base_url}"\n'
+            'env_key = "PROJECT_API_KEY"\n',
+            encoding="utf-8",
+        )
+        self.workspace.save_project(
+            {
+                "name": "路由项目",
+                "projectDir": str(project_dir),
+                "codexProfileId": codex.id,
+                "claudeProfileId": claude.id,
+            }
+        )
+        return project_dir, self.workspace.session.projects[0].id, config
+
+    def test_enabling_project_route_proxy_rewrites_config(self) -> None:
+        """启用路由代理必须把 base_url 改成本地代理地址。
+
+        真实缺陷：新版界面的 set_project_proxy_enabled 只改了内存里的路由规则，
+        从不落盘到项目配置。界面提示"已启用项目路由代理并同步配置"，而
+        config.toml 纹丝不动——用户看到的正是"提示同步了但配置没变"。
+        旧版界面有这一步（ui/app.py 的 enable_route_proxy_for_project）。
+        """
+        project_dir, project_id, config = self._route_proxy_project()
+        codex = self.workspace.session.profiles[0]
+
+        result = self.workspace.set_project_proxy_enabled(True, project_id)
+        self.assertIn("路由代理", result.message)
+
+        text = config.read_text(encoding="utf-8")
+        self.assertIn(
+            "127.0.0.1", text, f"启用路由代理后 config.toml 没指向本地代理：\n{text}"
+        )
+        self.assertIn(project_id, text, "代理地址里应包含项目 id")
+        self.assertNotIn(codex.base_url, text, "base_url 没有从直连地址切换掉")
+
+    def test_disabling_project_route_proxy_restores_direct_url(self) -> None:
+        """停用后必须恢复直连地址，不能残留本地代理地址。
+
+        残留的后果很严重：终端会一直请求 127.0.0.1:15721，而代理没启动，
+        于是报 502 Bad Gateway。用户实测就是这个现象。
+        """
+        project_dir, project_id, config = self._route_proxy_project()
+        codex = self.workspace.session.profiles[0]
+
+        self.workspace.set_project_proxy_enabled(True, project_id)
+        self.assertIn("127.0.0.1", config.read_text(encoding="utf-8"))
+
+        self.workspace.set_project_proxy_enabled(False, project_id)
+        text = config.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "127.0.0.1", text, f"停用后仍残留代理地址，终端会 502：\n{text}"
+        )
+        self.assertIn(codex.base_url, text, "base_url 没有恢复成直连地址")
+
     # -- script centre ---------------------------------------------------
     def _save_script(self, **overrides: Any) -> str:
         payload = {

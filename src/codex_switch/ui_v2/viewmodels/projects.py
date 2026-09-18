@@ -174,5 +174,14 @@ class ProjectsViewModel(SnapshotViewModel):
     def setProjectBinding(self, target: str, profile_id: str) -> None:
         self._controller.setProjectBinding(str(target), str(profile_id))
 
+    @Slot(bool)
+    def setRouteProxyEnabled(self, enabled: bool) -> None:
+        """切换项目级路由代理。
+
+        不能只改内存里的规则：它决定 config.toml 的 base_url 指向本地代理还是
+        直连本站，必须落盘（workspace.set_project_proxy_enabled 负责同步）。
+        """
+        self._controller.setProjectProxyEnabled(bool(enabled), self.selectedId)
+
 
 __all__ = ["ProjectsViewModel"]
