@@ -134,9 +134,13 @@ Item {
 
             // 方向键用 compact：单个箭头放进标准宽度按钮里会变成一个空荡荡的方框，
             // 四个键连排也很松散。compact 让它成为紧凑的方形键帽，更像键盘。
+            //
+            // 变体用 soft 而不是 secondary：这一条位于白色卡片上，而 secondary 的
+            // 底色就是卡片白，只剩一圈极淡的描边——远看就是几个纯文字符号，
+            // 完全不像按钮。soft 用略深一档的底色，可点性一眼可见。
             AppButton {
                 text: "↑"
-                variant: "secondary"
+                variant: "soft"
                 compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("up")
@@ -147,7 +151,7 @@ Item {
             }
             AppButton {
                 text: "↓"
-                variant: "secondary"
+                variant: "soft"
                 compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("down")
@@ -158,7 +162,7 @@ Item {
             }
             AppButton {
                 text: "←"
-                variant: "secondary"
+                variant: "soft"
                 compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("left")
@@ -169,7 +173,7 @@ Item {
             }
             AppButton {
                 text: "→"
-                variant: "secondary"
+                variant: "soft"
                 compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("right")
@@ -180,7 +184,7 @@ Item {
             }
             AppButton {
                 text: "Enter"
-                variant: "secondary"
+                variant: "soft"
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("enter")
 
@@ -190,7 +194,7 @@ Item {
             }
             AppButton {
                 text: "Esc"
-                variant: "ghost"
+                variant: "soft"
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("esc")
 
@@ -403,7 +407,8 @@ Item {
                 text: "图片"
                 iconName: "image"
                 trailingIconName: "chevron-down"
-                variant: "secondary"
+                // soft：贴在输入栏的白色卡片上，secondary 的白底会与背景糊在一起。
+                variant: "soft"
                 enabled: root.inputEnabled
                 onClicked: imageMenu.open()
 
@@ -411,19 +416,23 @@ Item {
                 ToolTip.delay: 400
                 ToolTip.text: "把图片附加到 AI CLI 的输入框（不会自动发送）"
 
-                Menu {
+                AppMenu {
                     id: imageMenu
 
-                    // 让菜单贴着按钮下沿弹出，而不是出现在鼠标位置。
-                    y: parent.height + 4
-                    width: Math.max(220, parent.width)
+                    // 向上弹出：这个按钮位于窗口最底部，向下弹（y = height + 4）
+                    // 会直接落到窗口外面——那正是菜单溢出的原因。
+                    // x 让菜单右缘与按钮右缘对齐，向左展开，避免超出右边界。
+                    y: -height - Theme.space1
+                    x: parent.width - width
 
-                    MenuItem {
+                    AppMenuItem {
                         text: "选择图片文件…"
+                        iconName: "folder"
                         onTriggered: imageDialog.open()
                     }
-                    MenuItem {
+                    AppMenuItem {
                         text: "附加剪贴板中的图片"
+                        iconName: "restore"
                         onTriggered: root.clipboardImageRequested()
                     }
                 }

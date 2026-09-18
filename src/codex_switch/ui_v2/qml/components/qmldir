@@ -5,6 +5,8 @@ AppCard 1.0 AppCard.qml
 AppComboBox 1.0 AppComboBox.qml
 AppDrawer 1.0 AppDrawer.qml
 AppIcon 1.0 AppIcon.qml
+AppMenu 1.0 AppMenu.qml
+AppMenuItem 1.0 AppMenuItem.qml
 AppSwitch 1.0 AppSwitch.qml
 AppTextArea 1.0 AppTextArea.qml
 AppTextField 1.0 AppTextField.qml

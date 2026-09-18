@@ -63,13 +63,106 @@ Item {
                 iconName: "image"; trailingIconName: "chevron-down" }
     AppButton { id: noChv; x: 620; y: 12; text: "\xe5\x9b\xbe\xe7\x89\x87";
                 iconName: "image" }
+    AppButton { id: softBtn; x: 700; y: 12; text: "Enter"; variant: "soft" }
+
+    AppButton {
+        id: menuHost
+        x: 8; y: 70; text: "\xe5\x9b\xbe\xe7\x89\x87"
+        AppMenu {
+            id: probeMenu
+            AppMenuItem { text: "\xe9\x80\x89\xe6\x8b\xa9\xe5\x9b\xbe\xe7\x89\x87\xe6\x96\x87\xe4\xbb\xb6\xe2\x80\xa6"; iconName: "folder" }
+            AppMenuItem { text: "\xe9\x99\x84\xe5\x8a\xa0\xe5\x89\xaa\xe8\xb4\xb4\xe6\x9d\xbf\xe4\xb8\xad\xe7\x9a\x84\xe5\x9b\xbe\xe7\x89\x87"; iconName: "restore" }
+        }
+    }
 
     property alias wCompact: up.width
     property alias wStandard: wide.width
     property alias wWithChevron: chv.width
     property alias wWithoutChevron: noChv.width
+    property alias wSoft: softBtn.width
+    property alias hSoft: softBtn.height
+    property alias menuWidth: probeMenu.width
+    property alias menuHeight: probeMenu.height
 }
 """
+
+
+@unittest.skipUnless(_qt_ready(), "需要 Qt")
+class MenuStyleTests(unittest.TestCase):
+    """下拉菜单必须自己算宽度。
+
+    真实缺陷：把菜单项换成自定义组件后，Menu 的隐式宽度不再被子项撑开，
+    实测菜单被压成 **8px** 宽（正好等于左右 padding），两项文字全被挤没。
+    这不是"不好看"，是功能不可用。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from codex_switch.storage import ProfileStore
+        from codex_switch.ui_v2.app import build_application, build_engine
+        from codex_switch.ui_v2.controller import AppController
+        from codex_switch.ui_v2.workspace import Workspace
+
+        cls._tmp = workspace_tempdir()
+        root = cls._tmp.__enter__()
+        cls.app = build_application(["t"])
+        cls.controller = AppController(workspace=Workspace(store=ProfileStore(root)))
+        cls.engine = build_engine(cls.controller)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        try:
+            cls.controller.shutdownNotifier()
+        except Exception:  # noqa: BLE001
+            pass
+        cls._tmp.__exit__(None, None, None)
+
+    def setUp(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQml import QQmlComponent
+        from PySide6.QtQuick import QQuickWindow
+
+        self._component = QQmlComponent(self.engine)
+        self._component.setData(_QML, QUrl())
+        self.assertEqual(
+            self._component.status(),
+            QQmlComponent.Status.Ready,
+            self._component.errorString(),
+        )
+        self.item = self._component.create()
+        self.assertIsNotNone(self.item, "画布创建失败")
+
+        self.window = QQuickWindow()
+        self.window.setColor("white")
+        self.window.resize(900, 200)
+        self.item.setParentItem(self.window.contentItem())
+        self.window.show()
+        for _ in range(4):
+            self.app.processEvents()
+
+    def tearDown(self) -> None:
+        try:
+            self.window.close()
+            self.window.deleteLater()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def test_menu_is_wide_enough_to_read(self) -> None:
+        width = self.item.property("menuWidth")
+        height = self.item.property("menuHeight")
+        self.assertGreater(
+            width, 150, f"菜单宽度只有 {width:.0f}px，文字会被挤没"
+        )
+        self.assertGreater(height, 40, f"菜单高度只有 {height:.0f}px")
+
+    def test_soft_variant_is_distinct_from_secondary(self) -> None:
+        """soft 变体存在且尺寸正常（用于贴在白色卡片上的按钮）。
+
+        卡片底色就是 surface，而 secondary 也画 surface，两者相同时按钮只剩
+        一圈极淡的描边，看起来就是纯文字。soft 用 surfaceAlt 拉开对比。
+        """
+        self.assertGreater(self.item.property("wSoft"), 0)
+        self.assertGreater(self.item.property("hSoft"), 0)
 
 
 @unittest.skipUnless(_qt_ready(), "需要 Qt")

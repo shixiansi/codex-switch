@@ -167,7 +167,9 @@ Item {
                 text: terminalModel.reviewPendingCount > 0
                     ? "待授权 (" + terminalModel.reviewPendingCount + ")" : "载入项目历史"
                 iconName: terminalModel.reviewPendingCount > 0 ? "alert" : "refresh"
-                variant: terminalModel.reviewPendingCount > 0 ? "danger" : "ghost"
+                // 不用 ghost：ghost 没有任何底色与描边，在页面背景上就是一段纯文字，
+                // 看不出是个按钮。secondary 有卡片底色，轮廓清楚。
+                variant: terminalModel.reviewPendingCount > 0 ? "danger" : "secondary"
                 enabled: terminalModel.reviewPendingCount > 0 || terminalModel.activeId !== ""
                 onClicked: {
                     if (terminalModel.reviewPendingCount > 0) {

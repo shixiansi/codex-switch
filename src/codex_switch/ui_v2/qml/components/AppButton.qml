@@ -10,7 +10,13 @@ Button {
     // Optional trailing glyph meaning "this opens something" (a menu / a
     // dialog). Empty by default, so every existing button is unchanged.
     property string trailingIconName: ""
-    property string variant: "secondary"   // primary | secondary | danger | ghost
+    // primary | secondary | soft | danger | ghost
+    //
+    // `soft` fills with surfaceAlt instead of surface. Needed because cards use
+    // Theme.surface, so a `secondary` button sitting inside a card was white on
+    // white: only a 1px hairline distinguished it, and it read as plain text
+    // rather than a button.
+    property string variant: "secondary"
     property int iconSize: 16
     // Compact square-ish button for single-glyph content (↑ ↓ ← →): a
     // full-width button around one arrow looks like an empty box.
@@ -25,6 +31,7 @@ Button {
     readonly property bool isPrimary: variant === "primary"
     readonly property bool isDanger: variant === "danger"
     readonly property bool isGhost: variant === "ghost"
+    readonly property bool isSoft: variant === "soft"
 
     // Disabled state must be *visible*.
     //
@@ -43,7 +50,12 @@ Button {
         return control.hovered || control.down ? Theme.text : Theme.textMuted
     }
 
-    readonly property color _borderColor: isPrimary || isDanger ? "transparent" : Theme.border
+    readonly property color _borderColor: {
+        if (isPrimary || isDanger)
+            return "transparent"
+        // soft 需要更明显的描边，否则同样是"浅底+浅边"的低对比问题。
+        return isSoft ? Theme.borderStrong : Theme.border
+    }
 
     // The painted colour and its opacity are separated so the ghost variant can
     // fade in instead of animating `color` from "transparent". "transparent" is
@@ -57,6 +69,10 @@ Button {
         if (isGhost)
             // Faded in/out via opacity, so a hover tone is always painted.
             return control.down ? Theme.surfaceActive : Theme.surfaceHover
+        if (isSoft)
+            // 比卡片底色略深一档，才看得出是一个"可按的块"。
+            return control.down ? Theme.surfaceActive
+                : (control.hovered ? Theme.surfaceHover : Theme.surfaceAlt)
         // Secondary: an opaque card surface at rest.
         return control.down ? Theme.surfaceActive : (control.hovered ? Theme.surfaceHover : Theme.surface)
     }
