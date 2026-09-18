@@ -683,6 +683,68 @@ class CompletionTests(unittest.TestCase):
         self.assertTrue(awaiting)
         self.assertEqual(choices, ["Yes", "No", "Cancel"])
 
+    def test_wrapped_option_text_is_not_read_as_extra_options(self) -> None:
+        """回归：长选项折行后，折出来的片段不能被当成新选项。
+
+        真实故障（用户截图：菜单里出现 7 个选项，真实只有 3 个）：
+        codex 的授权菜单第 2 项是一整段超长命令，终端按窗口宽度折断，其中
+        一段恰好以 ``8.7-all: ...`` 开头（``gradle-`` + ``8.7-all`` 被切断）。
+        编号正则把 ``8.7`` 读成"第 8 项"，编号序列变成 1,2,8,3 而不连续。
+
+        后果有两层，都会让用户觉得"自动选择坏了"：
+        1. 编号菜单识别失败，退回到"无编号列表"分支，把每个折行片段都当成
+           一个选项 → 界面显示一堆对不上的假选项；
+        2. 于是菜单被归为 ``list`` 类型，而 ``_rule_list_menu`` 对列表菜单
+           **永不自动应答**（连完全放行也绕不过），表现为"完全放行也不会
+           自动点击"。
+        """
+        menu = (
+            "› 1. Yes, proceed (y)\n"
+            "  2. Yes, and don't ask again for commands that start with 'gradle-root'\n"
+            "     C:\\Users\\fan\\gradle\\wrapper\\dists\\gradle-\n"
+            "8.7-all: if (Test-Path $gradleRoot) { Get-ChildItem -LiteralPath $gradleRoot }\n"
+            "Object FullName,Length,LastWriteTime } else { Write-Output 'GRADLE_DIST_NOT_FOUND'\n"
+            "-ErrorAction SilentlyContinue | Select-Object FullName} (y)\n"
+            "  3. No, and tell Codex what to do differently (esc)\n"
+            "Press enter to confirm or esc to cancel"
+        )
+        result = detect_menu(menu)
+        self.assertTrue(result.awaiting, "菜单没有被识别出来")
+        self.assertEqual(
+            result.kind,
+            "numbered",
+            f"菜单被误判成 {result.kind}，列表菜单不会自动应答",
+        )
+        self.assertEqual(
+            len(result.choices),
+            3,
+            f"选项数不对（真实 3 项，折行片段被当成了选项）：{result.choices}",
+        )
+        self.assertTrue(result.choices[0].startswith("Yes, proceed"))
+        self.assertTrue(result.choices[2].startswith("No, and tell Codex"))
+
+    def test_version_like_text_is_not_an_option_number(self) -> None:
+        """回归：``8.7`` / ``9.0.1`` / ``2.5x`` 这类版本号不是选项编号。
+
+        编号选项的分隔符后必须跟空白：``8. 是`` 是选项，``8.7-all`` 不是。
+        """
+        from codex_switch.ui_v2.terminal.completion import _OPTION_LINE_RE
+
+        for text in ("8.7-all: x", "9.0.1 release notes", "2.5x faster", "8.7/foo"):
+            self.assertIsNone(
+                _OPTION_LINE_RE.match(text), f"{text!r} 被误判成编号选项"
+            )
+        # 真正的选项仍要命中。
+        for text, number in (
+            ("1. Yes", "1"),
+            ("› 2. No, thanks", "2"),
+            ("  3) Cancel", "3"),
+            ("4、确定", "4"),
+        ):
+            match = _OPTION_LINE_RE.match(text)
+            self.assertIsNotNone(match, f"{text!r} 应被识别为编号选项")
+            self.assertEqual(match.group(4), number)
+
     def test_real_codex_menu_with_wrapped_description(self) -> None:
         """回归：codex 登录菜单的选项说明会换行成缩进续行。
 
