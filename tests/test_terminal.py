@@ -332,74 +332,119 @@ class TimelineLayoutTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("annotated_text", vm, "视图模型没有使用带时间戳的输出")
 
-    def test_annotated_text_carries_timestamps_and_live_tail(self) -> None:
-        """带时间戳的输出：已打点内容有时间戳，实时尾部仍即时可见。"""
+    def test_every_tool_call_gets_its_own_timestamp(self) -> None:
+        """回归：连续的工具调用必须**每一行**都有时间戳。
+
+        真实缺陷：早期只在检测到"输出停顿"时才打点，而 CLI 是连续流式输出——
+        一条消息后紧接着五六次工具调用，中间没有停顿，于是这些行全部落在
+        "未打点的实时尾部"，界面上一个时间戳都没有（用户报的正是这个：
+        截图里 15:08:40 之后一整片 `• Called ...` 全无时间戳）。
+
+        这里刻意**不 sleep**：全部行在同一秒内到达，也必须各自成块。
+        """
         screen = TerminalScreen()
-        screen.feed("第一段\r\n".encode())
-        screen.mark_segment()
-        screen.feed("第二段\r\n".encode())
-        screen.mark_segment()
-        # 尚未打点的实时输出
-        screen.feed("正在输出\r\n".encode())
+        screen.feed(b">_ OpenAI Codex (v0.155.0)\r\n\r\n")
+        screen.feed("\u203a \u73b0\u5728\u9879\u76ee\u505a\u5230\u54ea\u4e86\r\n".encode())
+        for index in range(1, 6):
+            screen.feed(f'\u2022 serena.call_{index}({{"i":{index}}})\r\n'.encode())
+
+        blocks = screen.annotated_blocks()
+        event_blocks = [
+            b for b in blocks if b["lines"] and b["lines"][0].lstrip()[:1] in ("\u203a", "\u2022")
+        ]
+        self.assertEqual(
+            len(event_blocks), 6, f"6 个事件应各成一块：{[(b['stamp'], b['lines']) for b in blocks]}"
+        )
+        for block in event_blocks:
+            self.assertRegex(
+                block["stamp"],
+                r"^\d{2}:\d{2}:\d{2}$",
+                f"事件块没有时间戳：{block}",
+            )
+
+    def test_annotated_text_marks_every_event_line(self) -> None:
+        """纯文本视图同样每行都带时间戳，且不会漏掉任何一行。"""
+        screen = TerminalScreen()
+        screen.feed(b"alpha\r\n")
+        screen.feed("\u2022 call-one\r\n".encode())
+        screen.feed("\u2022 call-two\r\n".encode())
 
         text = screen.annotated_text()
-        self.assertRegex(text, r"\[\d{2}:\d{2}:\d{2}\] 第一段")
-        self.assertRegex(text, r"\[\d{2}:\d{2}:\d{2}\] 第二段")
-        self.assertIn("正在输出", text, "实时尾部必须保留，否则流式期间主界面会僵住")
-        # 实时部分尚未结算，因此不应带时间戳。
-        self.assertNotRegex(text, r"\[\d{2}:\d{2}:\d{2}\] 正在输出")
+        for needle in ("alpha", "call-one", "call-two"):
+            self.assertIn(needle, text, f"{needle} 没有出现在时间线里：\n{text}")
+        # 每个事件行都必须带时间戳。
+        self.assertRegex(text, r"\[\d{2}:\d{2}:\d{2}\] \u2022 call-one", text)
+        self.assertRegex(text, r"\[\d{2}:\d{2}:\d{2}\] \u2022 call-two", text)
+
+    def test_continuation_lines_join_their_event_block(self) -> None:
+        """一次工具调用的续行应并入同一块，不被时间戳切碎。"""
+        screen = TerminalScreen()
+        screen.feed(b"\u2022 Called filesystem.read_text_file(...)\r\n")
+        screen.feed(b"    name: skill-creator\r\n")
+        screen.feed(b"    description: Create or update a Skill\r\n")
+
+        blocks = screen.annotated_blocks()
+        self.assertEqual(len(blocks), 1, f"续行不该另起一块：{blocks}")
+        self.assertEqual(len(blocks[0]["lines"]), 3)
+        self.assertRegex(blocks[0]["stamp"], r"^\d{2}:\d{2}:\d{2}$")
+
+    def test_growing_last_line_keeps_its_original_timestamp(self) -> None:
+        """流式补齐的同一行要保留首次出现的时刻，而不是每段都重新盖章。
+
+        CLI 会把一行逐字补全（``• Call`` → ``• Called filesystem...``）。
+        若每来一段就重新计时，时间戳会一直往后跳。
+        """
+        screen = TerminalScreen()
+        screen.feed(b"\u2022 Call")
+        first = screen.annotated_blocks()[0]["stamp"]
+        time.sleep(1.2)
+        screen.feed(b"ed filesystem.read\r\n")
+        after = screen.annotated_blocks()[0]["stamp"]
+        self.assertEqual(first, after, "同一行被重新盖了时间戳（时间戳会一直跳）")
 
     def test_annotated_text_is_incremental(self) -> None:
-        """固定内容（banner）只带一个时间戳，不能每段重印。"""
+        """固定内容（banner）只出现一次，不能每行重印。"""
         screen = TerminalScreen()
         screen.feed(b">_ OpenAI Codex (v0.154.0)\r\nmodel: x\r\n\r\n")
-        screen.mark_segment()
         screen.feed(b"\xe2\x80\x9a hello\r\n")
-        screen.mark_segment()
         screen.feed(b"\xe2\x80\x9a world\r\n")
-        screen.mark_segment()
 
         text = screen.annotated_text()
         self.assertEqual(text.count("OpenAI Codex (v0.154.0)"), 1)
         self.assertEqual(text.count("model: x"), 1)
 
     def test_annotated_blocks_structure(self) -> None:
-        """结构化输出块：已打点块带 stamp，实时尾部 stamp 为空。
+        """结构化输出块：每块都有 stamp，且内容与屏幕一致。
 
         界面靠这个结构把时间戳单独上色（与正文同色等宽文本"太丑"）。
         """
         screen = TerminalScreen()
         screen.feed(b">_ OpenAI Codex\r\n")
-        screen.mark_segment()
         screen.feed("\u203a \u4f60\u597d\r\n".encode())
-        screen.mark_segment()
-        # 尚未打点的实时输出
         screen.feed("\u2022 \u6b63\u5728\u56de\u590d\r\n".encode())
 
         blocks = screen.annotated_blocks()
-        self.assertEqual(len(blocks), 3, f"应有 3 块，实际 {blocks}")
-        for block in blocks[:2]:
-            self.assertRegex(block["stamp"], r"^\d{2}:\d{2}:\d{2}$")
+        self.assertTrue(blocks, "没有任何输出块")
+        for block in blocks:
+            self.assertRegex(
+                block["stamp"], r"^\d{2}:\d{2}:\d{2}$", f"块缺少时间戳：{block}"
+            )
             self.assertTrue(block["lines"], "每个块都要有内容")
-        self.assertEqual(blocks[-1]["stamp"], "", "实时块不应带时间戳")
-        self.assertTrue(any("\u6b63\u5728\u56de\u590d" in line for line in blocks[-1]["lines"]))
+        flat = [line for block in blocks for line in block["lines"]]
+        self.assertTrue(any("\u6b63\u5728\u56de\u590d" in line for line in flat))
 
     def test_annotated_blocks_match_annotated_text(self) -> None:
         """结构化块与纯文本视图必须描述同一份内容（两者不能漂移）。"""
         screen = TerminalScreen()
         screen.feed(b"alpha\r\n")
-        screen.mark_segment()
         screen.feed(b"beta\r\n")
-        screen.mark_segment()
 
         blocks = screen.annotated_blocks()
         text = screen.annotated_text()
         for block in blocks:
             for line in block["lines"]:
                 self.assertIn(line, text)
-            if block["stamp"]:
-                self.assertIn(block["stamp"], text)
-
+            self.assertIn(block["stamp"], text)
 
 
 class AltScreenTests(unittest.TestCase):

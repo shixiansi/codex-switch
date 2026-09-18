@@ -83,6 +83,13 @@ class TerminalScreen:
         self._segments: list[tuple[float, str]] = []
         # 上一次打点时的完整屏幕行，用于算出"这一段新增了什么"。
         self._prev_lines: list[str] = []
+        # 每一行首次出现的时刻：[(时间戳秒, 行文本)]，按屏幕顺序排列。
+        #
+        # 这是给主输出打时间戳用的**唯一依据**，刻意不依赖"输出停顿"。
+        # 早期实现只在检测到停顿（idle）时打点，而真实 CLI 是连续流式输出：
+        # 一条消息后紧接着五六次工具调用，中间根本没有停顿，于是这些行永远
+        # 进不了打点列表，界面上一个时间戳都没有（用户报的正是这个）。
+        self._line_stamps: list[tuple[float, str]] = []
         # 本段**第一份新输出**到达的时刻；0 表示当前没有正在累积的段落。
         #
         # 时间戳取"开始"而不是"停顿被发现的时刻"：工具调用可能跑很久，
@@ -119,6 +126,43 @@ class TerminalScreen:
                     self._stream.feed(chunk)
         except Exception:  # noqa: BLE001 - 渲染失败绝不应中断会话
             pass
+        # 渲染后再按行打时间戳：这是主输出时间戳的来源，不依赖输出停顿。
+        self._record_line_stamps(now)
+
+    def _record_line_stamps(self, now: float) -> None:
+        """给每一行记下它**首次出现**的时刻。
+
+        为什么不按"输出停顿"打点：真实 CLI 是连续流式输出——一条消息后紧接着
+        五六次工具调用，中间根本没有停顿。原先只在检测到 idle 时才打点，结果
+        这些行永远进不了时间线，界面上一个时间戳都没有（用户报的正是这个）。
+
+        为什么保留"正在增长的最后一行"的原始时刻：流式输出会把一行逐字补齐
+        （``• Call`` → ``• Called filesystem...``）。若每来一段就重新盖章，
+        时间戳会一直往后跳；记首次出现的时刻才符合"这件事什么时候发生"。
+        """
+        current = self._all_lines()
+        previous = [text for _stamp, text in self._line_stamps]
+
+        common = 0
+        limit = min(len(previous), len(current))
+        while common < limit and previous[common] == current[common]:
+            common += 1
+
+        # 只有"仅最后一行在变长"时，才沿用它的原始时刻。
+        keep: float | None = None
+        if (
+            common == len(previous) - 1
+            and len(current) >= len(previous)
+            and previous
+            and previous[-1].strip()
+            and current[common].startswith(previous[common])
+        ):
+            keep = self._line_stamps[-1][0]
+
+        self._line_stamps = self._line_stamps[:common]
+        for index in range(common, len(current)):
+            stamp = keep if (keep is not None and index == len(previous) - 1) else now
+            self._line_stamps.append((stamp, current[index]))
 
     # -- 备用屏幕 ------------------------------------------------------
     def _split_alt_screen(self, text: str) -> list[str]:
@@ -283,35 +327,45 @@ class TerminalScreen:
     # -- 带时间戳的输出视图 --------------------------------------------
     #
     # 用户要的是"每一次工具调用、每一次对话前面带时间戳"，而且要在**主输出框**里
-    # 直接看到——不是另开一个面板。所以这里直接把时间戳并进主输出的文本流。
+    # 直接看到——不是另开一个面板。
     #
-    # 关键取舍：已经打点的内容带时间戳（历史，稳定），**最后一段尚未打点的实时
-    # 输出原样附在后面**（不带时间戳）。否则流式输出期间主界面会一直不动，
-    # 直到出现一次停顿才刷新——那是比"没时间戳"更糟的体验。
+    # 时间戳来自 `_line_stamps`（每行首次出现的时刻），**不依赖输出停顿**：
+    # 真实 CLI 连续流式输出，工具调用一条接一条，若按停顿打点就永远打不上。
     _STAMP_WIDTH = len("[00:00:00] ")
+
+    # 事件起始标记：工具调用、用户消息、警告。
+    # 见到这些前缀就另起一块，**即使与上一行在同一秒**——否则同一秒内发生的
+    # 多次工具调用会挤成一块、只显示一个时间戳，看起来就像"后面的没有时间戳"。
+    _EVENT_MARKERS = ("\u203a", "\u2022", "\u26a0")
 
     def annotated_blocks(self, max_segments: int = 200) -> list[dict[str, Any]]:
         """把输出切成"事件块"，供界面按块渲染。
 
-        每块形如 ``{"stamp": "14:06:47", "lines": [...]}``；最后一块是尚未打点的
-        实时输出，``stamp`` 为空串。
+        每块形如 ``{"stamp": "14:06:47", "lines": [...]}``。
+
+        分块规则（两条，都必要）：
+        1. 遇到事件标记（``›`` 对话 / ``•`` 工具调用 / ``⚠`` 警告）就另起一块；
+        2. 否则时间戳秒数变化时另起一块。
+
+        规则 1 保证"每一次工具调用都有自己的时间戳"，哪怕它们同秒发生；
+        规则 2 让一次长时间输出里陆续出现的行各归其位。
+        一次工具调用的续行（缩进的参数、结果）自然并入该块，不会被切碎。
 
         为什么不在 Python 侧直接拼成一个字符串：时间戳需要和正文用**不同的颜色
         与字号**呈现（否则整块就是一段没有层次的等宽文本，也就是用户说的"太丑"）。
         而配色属于主题，只有 QML 知道。因此这里只给出结构，样式交给界面。
         """
+        stamps = self._line_stamps[-max_segments:] if max_segments > 0 else self._line_stamps
         blocks: list[dict[str, Any]] = []
-        segments = self._segments[-max_segments:] if max_segments > 0 else self._segments
-        for timestamp, delta in segments:
-            body = [line for line in delta.split("\n") if line.strip()]
-            if not body:
+        for timestamp, line in stamps:
+            if not line.strip():
                 continue
-            blocks.append(
-                {"stamp": time.strftime("%H:%M:%S", time.localtime(timestamp)), "lines": body}
-            )
-        live = self.live_lines()
-        if live:
-            blocks.append({"stamp": "", "lines": live})
+            label = time.strftime("%H:%M:%S", time.localtime(timestamp))
+            starts_event = line.lstrip()[:1] in self._EVENT_MARKERS
+            if not blocks or starts_event or blocks[-1]["stamp"] != label:
+                blocks.append({"stamp": label, "lines": [line]})
+            else:
+                blocks[-1]["lines"].append(line)
         return blocks
 
     def annotated_lines(self, max_segments: int = 200) -> list[str]:
