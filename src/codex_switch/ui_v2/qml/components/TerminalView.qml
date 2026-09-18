@@ -123,6 +123,10 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: visible ? Theme.space2 : 0
+            // 下边距不能省。外层 ColumnLayout 的 spacing 是 0，各区块只靠自己的
+            // margin 撑开间距；这里原先只有 topMargin（管上方），下方又没有任何
+            // 区块补 topMargin，于是按键条与输出框直接贴在一起。
+            Layout.bottomMargin: visible ? Theme.space2 : 0
             visible: root.inputEnabled
             spacing: Theme.space2
 

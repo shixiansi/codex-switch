@@ -164,6 +164,68 @@ class TerminalViewKeyTests(unittest.TestCase):
                 found[text] = item
         return found
 
+    def _key_row(self):
+        """定位按键条那个 RowLayout（以其中的"按键"标签为锚点）。"""
+        from PySide6.QtQuick import QQuickItem
+
+        for item in self.view.findChildren(QQuickItem):
+            try:
+                if not item.metaObject().className().startswith("QQuickRowLayout"):
+                    continue
+                for child in item.children():
+                    if hasattr(child, "property") and child.property("text") == "按键":
+                        return item
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    def test_key_row_has_bottom_margin(self) -> None:
+        """回归：按键条与下方输出框之间必须有间距，不能贴死。
+
+        外层 ColumnLayout 的 spacing 是 0，各区块只靠自己的 margin 撑开间距。
+        按键条原先只有 topMargin（管上方），下方没有任何区块补 topMargin，
+        于是按键与内容框直接贴在一起——用户一眼就看出来了。
+
+        这里断言真实几何（按键条底边与输出框顶边之间的空隙），而不是只看
+        属性值，因为"属性写了但布局没生效"正是这个坑的形态。
+        """
+        self.view.setProperty("inputEnabled", True)
+        # QQuickItem 没有 resize()；用宽高属性给布局一个确定的尺寸，
+        # 否则各区块高度为 0，几何断言没有意义。
+        self.view.setWidth(900)
+        self.view.setHeight(700)
+        for _ in range(6):
+            self.app.processEvents()
+
+        row = self._key_row()
+        self.assertIsNotNone(row, "没找到按键条")
+
+        # 输出框：ColumnLayout 里紧跟在按键条之后的那个矩形。
+        #
+        # 按"颜色 == codeBg"去找并不可靠：这个用例只创建 TerminalView 本身，
+        # 主题色在不同上下文下的取值/命名可能不同。改为按布局顺序定位——
+        # 结构关系才是这里真正要断言的东西。
+        from PySide6.QtQuick import QQuickItem
+
+        output_box = None
+        siblings = [
+            ch
+            for ch in row.parent().children()
+            if isinstance(ch, QQuickItem) and ch.metaObject().className().startswith("QQuickRectangle")
+        ]
+        # 取 y 坐标在按键条之下、且最靠近的那个矩形。
+        row_bottom_y = row.y() + row.height()
+        below = [s for s in siblings if s.y() >= row_bottom_y - 1 and s.height() > 40]
+        if below:
+            output_box = min(below, key=lambda s: s.y())
+        self.assertIsNotNone(output_box, "按键条下方没找到输出框")
+
+        row_bottom = row.y() + row.height()
+        gap = output_box.y() - row_bottom
+        self.assertGreaterEqual(
+            gap, 4, f"按键条与输出框之间只有 {gap:.0f}px，几乎贴在一起"
+        )
+
     def test_key_buttons_visible_even_without_a_detected_menu(self) -> None:
         """回归：识别不出菜单时，用户仍必须能手动发方向键与回车。
 
