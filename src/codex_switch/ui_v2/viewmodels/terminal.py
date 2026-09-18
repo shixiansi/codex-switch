@@ -37,6 +37,7 @@ from ..terminal import (
     save_config,
 )
 from ..terminal.logging_setup import get_logger, log_path
+from ..terminal.image_attach import FILE_DIALOG_FILTER, prepare_image
 from .base import BaseViewModel
 
 log = get_logger()
@@ -712,6 +713,167 @@ class TerminalViewModel(BaseViewModel):
         if not self._zoomed_id:
             return
         self._manager.send_key(self._zoomed_id, str(key or ""))
+
+    # -- 附加图片 ------------------------------------------------------
+    #
+    # AI CLI 收图只有一条通道：**图片进系统剪贴板 + 向 PTY 发 Ctrl+V**，
+    # 由 CLI 自己读剪贴板（codex 实测会随即显示 `[Image #1]`）。
+    # PTY 是纯文本流，无法直接传二进制，所以"发送图片"本质上就是这两步。
+    #
+    # 剪贴板的读写是 Qt 的事，因此集中在这里；业务层只负责发键。
+    @Slot(str, result=bool)
+    def attachImage(self, file_path: str) -> bool:
+        """把一张图片附加到当前会话（先校验，再写剪贴板，最后发 Ctrl+V）。"""
+        return self._attach_image(self._active_id, file_path)
+
+    @Slot(result=bool)
+    def attachImageFromClipboard(self, ) -> bool:
+        """直接把剪贴板里已有的图片附加过去（例如刚截图）。
+
+        这条路径**不改写剪贴板**，适合"我刚截了图"的常见场景。
+        """
+        return self._attach_clipboard(self._active_id)
+
+    @Slot(str, result=bool)
+    def attachZoomImage(self, file_path: str) -> bool:
+        """放大窗口的附加图片（放大视图是独立会话视图）。"""
+        return self._attach_image(self._zoomed_id, file_path)
+
+    @Slot(result=bool)
+    def attachZoomImageFromClipboard(self) -> bool:
+        return self._attach_clipboard(self._zoomed_id)
+
+    @Slot(str, result=bool)
+    def attachImageFromDataUrl(self, data_url: str) -> bool:
+        """从拖拽/粘贴进来的 data: URL 附加图片。
+
+        QML 的 DropArea 给出的通常是 ``data:image/png;base64,...``，
+        这里解码后**直接放进剪贴板**（不落临时文件，避免留下一堆垃圾）。
+        """
+        return self._attach_data_url(self._active_id, data_url)
+
+    @Slot(str, result=bool)
+    def attachZoomImageFromDataUrl(self, data_url: str) -> bool:
+        return self._attach_data_url(self._zoomed_id, data_url)
+
+    @Slot(result=str)
+    def imageFileFilter(self) -> str:
+        """文件对话框的过滤器（供 QML 的 FileDialog 使用）。"""
+        return FILE_DIALOG_FILTER
+
+    def _attach_image(self, session_id: str, file_path: str) -> bool:
+        """校验文件 → 写入剪贴板 → 发 Ctrl+V。"""
+        target = str(session_id or "")
+        if not target:
+            self._controller.showToast("请先选择一个会话。", "warning")
+            return False
+        try:
+            image = prepare_image(file_path)
+        except ValueError as exc:
+            # 校验失败给出明确原因，而不是让用户面对"点了没反应"。
+            self._controller.showToast(str(exc), "error")
+            log.info("附加图片被拒绝：%s", exc)
+            return False
+        if not self._write_clipboard_file(image):
+            return False
+        return self._finish_attach(target, image.name)
+
+    def _attach_clipboard(self, session_id: str) -> bool:
+        """直接附加剪贴板里已有的图片（不改写剪贴板）。"""
+        target = str(session_id or "")
+        if not target:
+            self._controller.showToast("请先选择一个会话。", "warning")
+            return False
+        if not self._clipboard_has_image():
+            self._controller.showToast("剪贴板里没有图片。可先复制或截图，或点「选择图片」。", "warning")
+            return False
+        return self._finish_attach(target, "剪贴板图片")
+
+    def _attach_data_url(self, session_id: str, data_url: str) -> bool:
+        """把 data: URL 解码后放进剪贴板再附加（拖拽/粘贴场景）。"""
+        target = str(session_id or "")
+        if not target:
+            self._controller.showToast("请先选择一个会话。", "warning")
+            return False
+        if not self._write_clipboard_data_url(data_url):
+            return False
+        return self._finish_attach(target, "拖入的图片")
+
+    def _finish_attach(self, session_id: str, label: str) -> bool:
+        """发 Ctrl+V 让 CLI 取走剪贴板里的图片。"""
+        if not self._manager.paste_clipboard_image(session_id):
+            self._controller.showToast("会话已结束，无法附加图片。", "error")
+            return False
+        self._controller.showToast(f"已附加图片：{label}", "success")
+        log.info("已请求 CLI 从剪贴板附加图片 id=%s label=%s", session_id, label)
+        return True
+
+    # -- 剪贴板（唯一接触 QClipboard 的地方）---------------------------
+    def _clipboard(self):
+        """取系统剪贴板；不可用时返回 None。"""
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            app = QGuiApplication.instance()
+            return app.clipboard() if app is not None else None
+        except Exception:  # noqa: BLE001 - 无 Qt 环境下静默降级
+            return None
+
+    def _clipboard_has_image(self) -> bool:
+        clipboard = self._clipboard()
+        if clipboard is None:
+            return False
+        try:
+            return bool(clipboard.mimeData().hasImage())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _write_clipboard_file(self, image) -> bool:
+        """把磁盘上的图片读进剪贴板。"""
+        from PySide6.QtGui import QImage
+
+        try:
+            data = QImage(str(image.path))
+        except Exception:  # noqa: BLE001
+            data = QImage()
+        if data.isNull():
+            self._controller.showToast(f"无法解码这张图片：{image.name}", "error")
+            return False
+        return self._set_clipboard_image(data, image.name)
+
+    def _write_clipboard_data_url(self, data_url: str) -> bool:
+        """把 data: URL 解码成图片放进剪贴板。"""
+        from PySide6.QtCore import QByteArray
+        from PySide6.QtGui import QImage
+
+        text = str(data_url or "")
+        if not text.startswith("data:image/"):
+            # 必须给出提示：静默返回 False 会让拖入文本文件的用户毫无头绪。
+            self._controller.showToast("只支持图片文件。", "error")
+            return False
+        try:
+            _, _, payload = text.partition(",")
+            raw = QByteArray.fromBase64(payload.encode("ascii"))
+            data = QImage()
+            if not data.loadFromData(raw):
+                self._controller.showToast("无法解码拖入的图片。", "error")
+                return False
+        except Exception as exc:  # noqa: BLE001
+            self._controller.showToast(f"无法解码拖入的图片：{exc}", "error")
+            return False
+        return self._set_clipboard_image(data, "拖入的图片")
+
+    def _set_clipboard_image(self, data, label: str) -> bool:
+        clipboard = self._clipboard()
+        if clipboard is None:
+            self._controller.showToast("当前环境无法访问系统剪贴板，无法附加图片。", "error")
+            return False
+        try:
+            clipboard.setImage(data)
+        except Exception as exc:  # noqa: BLE001
+            self._controller.showToast(f"写入剪贴板失败：{exc}", "error")
+            return False
+        return True
 
     @Slot(str)
     def stopSession(self, session_id: str) -> None:

@@ -418,6 +418,10 @@ Item {
                         onInputSubmitted: function (text) { terminalModel.sendInput(text) }
                         onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
                         onKeySent: function (key) { terminalModel.sendKey(key) }
+                        onImageFilePicked: function (path) { terminalModel.attachImage(path) }
+                        onClipboardImageRequested: function () {
+                            terminalModel.attachImageFromClipboard()
+                        }
                         onInputEdited: function (text) {
                             // 用户手动打字：刷新候选，并退出"正在翻历史"状态——
                             // 否则翻到一半再编辑，光标位置与实际内容会脱节。
@@ -1125,6 +1129,10 @@ Item {
                 onInputSubmitted: function (text) { terminalModel.sendZoomInput(text) }
                 onChoiceSelected: function (index) { terminalModel.sendZoomChoice(index) }
                 onKeySent: function (key) { terminalModel.sendZoomKey(key) }
+                onImageFilePicked: function (path) { terminalModel.attachZoomImage(path) }
+                onClipboardImageRequested: function () {
+                    terminalModel.attachZoomImageFromClipboard()
+                }
                 onInputEdited: function (text) {
                     terminalModel.updateInputHints(text)
                     terminalModel.resetHistoryCursor()

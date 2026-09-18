@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import theme
 
@@ -39,6 +40,10 @@ Item {
     signal hintMoved(int index)
     signal hintAccepted(int index)
     signal hintsClosed()
+    // 附加图片：选文件 / 用剪贴板里已有的图 / 拖入的 data URL。
+    signal imageFilePicked(string path)
+    signal clipboardImageRequested()
+    signal imageDropped(string dataUrl)
 
     ColumnLayout {
         anchors.fill: parent
@@ -365,6 +370,31 @@ Item {
             }
 
             AppButton {
+                text: "图片"
+                iconName: "image"
+                variant: "secondary"
+                enabled: root.inputEnabled
+                onClicked: imageMenu.open()
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "把图片附加到 AI CLI 的输入框（不会自动发送）"
+
+                Menu {
+                    id: imageMenu
+
+                    MenuItem {
+                        text: "选择图片文件…"
+                        onTriggered: imageDialog.open()
+                    }
+                    MenuItem {
+                        text: "附加剪贴板中的图片"
+                        onTriggered: root.clipboardImageRequested()
+                    }
+                }
+            }
+
+            AppButton {
                 text: "发送"
                 iconName: "chevron-right"
                 variant: "primary"
@@ -373,6 +403,42 @@ Item {
                     root.inputSubmitted(root.payloadFor(inputField.text))
                     inputField.text = ""
                 }
+            }
+        }
+    }
+
+    // ---- 拖入图片：把图片文件拖到终端上即可附加 ----
+    //
+    // 只接受图片。QLabel/QML 的拖拽给出 data: URL，交给 Python 解码后写剪贴板。
+    DropArea {
+        anchors.fill: parent
+        // 会话未就绪时不接受拖拽，避免"拖进去没反应"的困惑。
+        enabled: root.inputEnabled
+
+        onDropped: function (drop) {
+            if (!drop.hasUrls || drop.urls.length === 0) {
+                drop.acceptProposedAction()
+                return
+            }
+            // 逐个附加；多图时 CLI 会依次显示 [Image #1] [Image #2]…
+            for (var i = 0; i < drop.urls.length; i++)
+                root.imageFilePicked(drop.urls[i].toString())
+            drop.acceptProposedAction()
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: parent.containsDrag
+            color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.08)
+            border.width: Theme.borderWidth
+            border.color: Theme.accent
+
+            Text {
+                anchors.centerIn: parent
+                text: "松开即可附加图片"
+                color: Theme.accent
+                font.pixelSize: Theme.fontBody
+                font.weight: Font.DemiBold
             }
         }
     }
@@ -399,6 +465,19 @@ Item {
     // 输入框当前内容（开始翻历史前作为草稿保存）。
     function currentDraft() {
         return inputField.text
+    }
+
+    // 选图对话框（系统原生）。
+    //
+    // 用 QtQuick.Dialogs 的 FileDialog：它给出的是本地路径，可以直接交给
+    // Python 校验并读图。选完**不自动发送**——图片只被附加到 CLI 的输入框，
+    // 发不发、配什么文字由用户决定。
+    FileDialog {
+        id: imageDialog
+
+        title: "选择要附加的图片"
+        nameFilters: [ "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.tif *.tiff)" ]
+        onAccepted: root.imageFilePicked(selectedFile.toString())
     }
 
     // 上层调用：把补全的指令填进输入框。

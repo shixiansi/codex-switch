@@ -61,6 +61,11 @@ SPECIAL_KEYS: dict[str, str] = {
     "tab": "\t",
     "backspace": "\x7f",
     "ctrl-c": "\x03",
+    # 粘贴。AI CLI 的图片输入走"系统剪贴板 + Ctrl+V"这条通道：
+    # codex 与 claude 都在按 Ctrl+V 时自己去读剪贴板里的 PNG（实测 codex
+    # 会随即在输入框显示 `[Image #1]`）。PTY 是纯文本流，传不了二进制，
+    # 所以附加图片 = 写剪贴板 + 发这个键，由 CLI 自己取。
+    "ctrl-v": "\x16",
 }
 
 # 文本与回车之间的写入间隔。
@@ -440,7 +445,7 @@ class TerminalManager:
         self._pending_event.set()
 
     def send_key(self, session_id: str, key: str) -> bool:
-        """发送一个特殊按键（方向键 / Enter / Esc / Tab / Ctrl-C）。
+        """发送一个特殊按键（方向键 / Enter / Esc / Tab / Ctrl-C / Ctrl-V）。
 
         与 send_input 不同，控制键要**立即单次写入**：它们本身就是终端的按键序列，
         没有"文本 + 回车被当成粘贴"的问题。返回是否识别并发送了该键。
@@ -458,6 +463,20 @@ class TerminalManager:
             log.exception("发送按键失败 id=%s key=%s", session_id, key)
             return False
         return True
+
+    def paste_clipboard_image(self, session_id: str) -> bool:
+        """让 CLI 从系统剪贴板粘贴一张图片。
+
+        这是 AI CLI 收图的**唯一**通道：它们按 Ctrl+V 时自己去读操作系统
+        剪贴板（codex 会随即在输入框显示 ``[Image #1]``）。因此"附加图片"
+        分两步——先把图片放进剪贴板，再发 Ctrl+V。
+
+        **本方法不碰剪贴板**（那是 Qt 的事，见 viewmodels/terminal.py），
+        只负责发键。这样业务层继续保持无 Qt 依赖，剪贴板的读写集中在一处。
+
+        刻意**不自动回车**：附加图片只是把附件放进输入框，发不发由用户决定。
+        """
+        return self.send_key(session_id, "ctrl-v")
 
     def select_choice(self, session_id: str, index: int) -> bool:
         """选中菜单里的第 ``index`` 项（0 起）。

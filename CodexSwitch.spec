@@ -152,6 +152,8 @@ TERMINAL_HIDDENIMPORTS = [
     "codex_switch.ui_v2.terminal.policy_store",
     "codex_switch.ui_v2.terminal.notifier",
     "codex_switch.ui_v2.terminal.sound",
+    # 附加图片：校验层只被 view model 按需导入。
+    "codex_switch.ui_v2.terminal.image_attach",
     "codex_switch.ui_v2.viewmodels.terminal",
     # pywinpty 3.x 的真实模块名；旧名一并列出以兼容 2.x 环境。
     "winpty",
