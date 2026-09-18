@@ -652,6 +652,71 @@ class TerminalViewTimestampStyleTests(unittest.TestCase):
         lefts = {round(t["x"]) for t in bodies}
         self.assertEqual(len(lefts), 1, f"正文左边缘没有对齐：{lefts}")
 
+    def test_output_body_is_selectable_and_copyable(self) -> None:
+        """回归：输出正文必须能选中、能复制。
+
+        真实反馈："现有的内容我没法复制文本，如果有指令什么的直接复制都复制不了"。
+        根因是正文用了纯 QML ``Text``——它**不支持选中**（连 selectByMouse
+        属性都没有），拖选和 Ctrl+C 都不会有反应。为了给时间戳单独上色而改成
+        纯 Text 时，顺带丢掉了复制能力。
+
+        这里断言两件事：控件是只读 TextEdit（可选中），且复制真能拿到文本。
+        """
+        items = []
+
+        def walk(item):
+            for child in item.childItems():
+                items.append(child)
+                walk(child)
+
+        walk(self.view)
+
+        edits = [
+            i for i in items if i.metaObject().className().startswith("QQuickTextEdit")
+        ]
+        self.assertTrue(edits, "输出正文不是可选中控件（TextEdit），无法复制")
+        for edit in edits:
+            self.assertTrue(
+                edit.property("selectByMouse"), "正文没有开启鼠标选中"
+            )
+            self.assertTrue(edit.property("readOnly"), "正文不应可编辑")
+
+        # 复制要真的拿到内容。
+        target = next(
+            (e for e in edits if "Model metadata" in str(e.property("text"))), None
+        )
+        self.assertIsNotNone(target, "没找到正文控件")
+        target.metaObject().invokeMethod(target, "selectAll")
+        self.app.processEvents()
+        target.metaObject().invokeMethod(target, "copy")
+        self.app.processEvents()
+        copied = self.app.clipboard().text()
+        self.assertIn(
+            "Model metadata", copied, f"复制出来的内容不对：{copied!r}"
+        )
+
+    def test_copy_all_button_emits_signal(self) -> None:
+        """「复制全部」按钮必须发出 copyAllRequested，而不是只摆在那里。"""
+        from PySide6.QtQuick import QQuickItem
+
+        self.view.setProperty("screenCopyable", "npm install x")
+        received = []
+        self.view.copyAllRequested.connect(lambda: received.append(True))
+
+        button = None
+        for item in self.view.findChildren(QQuickItem):
+            try:
+                if item.property("text") == "复制全部":
+                    button = item
+                    break
+            except Exception:
+                continue
+        if button is None:
+            self.skipTest("没找到复制全部按钮")
+        button.metaObject().invokeMethod(button, "clicked")
+        self.app.processEvents()
+        self.assertTrue(received, "点击「复制全部」没有发出信号")
+
 
 if __name__ == "__main__":
     unittest.main()

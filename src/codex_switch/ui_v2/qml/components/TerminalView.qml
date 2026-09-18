@@ -15,6 +15,9 @@ Item {
     // 结构化输出块：每块 { stamp, lines }。有它就用它渲染（时间戳单独上色），
     // 没有则退回纯文本 screenText。
     property var screenBlocks: []
+    // "复制全部"要放进剪贴板的内容：**不带时间戳**的纯输出，
+    // 这样复制出来可以直接粘去执行（时间戳会破坏命令）。
+    property string screenCopyable: ""
     property bool awaitingChoice: false
     property var choices: []
     // 菜单种类：confirm / numbered / list。list（如 codex resume）只能用
@@ -70,6 +73,8 @@ Item {
     signal imageFilePicked(string path)
     signal clipboardImageRequested()
     signal imageDropped(string dataUrl)
+    // 请求把全部输出复制到剪贴板（由上层写系统剪贴板，界面不直接碰）。
+    signal copyAllRequested()
 
     ColumnLayout {
         anchors.fill: parent
@@ -234,6 +239,25 @@ Item {
             }
 
             Item { Layout.fillWidth: true }
+
+            // 复制全部输出。
+            //
+            // 正文虽然已经可以拖选，但一条命令常常被折行拆进多个事件块，
+            // 跨块拖选很不方便（用户反馈"有指令什么的直接复制都复制不了"）。
+            // 这个按钮把整屏内容一次放进剪贴板，且**不带时间戳**，
+            // 方便直接粘去执行。
+            AppButton {
+                text: "复制全部"
+                iconName: "copy"
+                variant: "soft"
+                implicitHeight: Theme.controlHeightSm
+                enabled: root.screenCopyable !== ""
+                onClicked: root.copyAllRequested()
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "把当前输出全部复制到剪贴板（不含时间戳）"
+            }
         }
 
         // ---- 输出区 ----
@@ -333,7 +357,7 @@ Item {
                                 color: Theme.border
                             }
 
-                            Text {
+                            TextEdit {
                                 id: bodyText
 
                                 width: blockRow.width - stampCol.width - divider.width
@@ -342,8 +366,18 @@ Item {
                                 color: Theme.text
                                 font.family: root.monoFamily
                                 font.pixelSize: root.outputFontSize
-                                wrapMode: Text.WrapAnywhere
-                                textFormat: Text.PlainText
+                                wrapMode: TextEdit.WrapAnywhere
+                                textFormat: TextEdit.PlainText
+                                // 只读但**可选中、可复制**。纯 Text 不支持选中，
+                                // 用户反馈"内容没法复制文本，有指令也复制不了"。
+                                // 用只读 TextEdit 才能拖选 + Ctrl+C。
+                                readOnly: true
+                                selectByMouse: true
+                                activeFocusOnPress: true
+                                // 让点击输出区不再把输入框的焦点抢走之后无处可去：
+                                // 选中本身就是这里的目的，所以允许获得焦点。
+                                persistentSelection: true
+                                cursorVisible: false
                             }
                         }
                     }

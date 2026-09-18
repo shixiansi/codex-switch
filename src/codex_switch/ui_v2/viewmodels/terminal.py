@@ -884,6 +884,52 @@ class TerminalViewModel(BaseViewModel):
             return False
         return True
 
+    # -- 复制输出 ---------------------------------------------------------
+    @Slot(result=str)
+    def copyableText(self) -> str:
+        """当前会话**不含时间戳**的纯净输出，供"复制全部"使用。
+
+        不复制带时间戳的版面：那串 ``[14:39:00]`` 混在命令里会让粘贴出来的
+        内容无法直接执行。用户要复制的是命令本身。
+        """
+        if not self._active_id:
+            return ""
+        return self._manager.screen_text(self._active_id)
+
+    @Slot(result=str)
+    def zoomedCopyableText(self) -> str:
+        """放大浮窗所显示会话的纯净输出（无时间戳）。"""
+        if not self._zoomed_id:
+            return ""
+        return self._manager.screen_text(self._zoomed_id)
+
+    @Slot(result=bool)
+    def copyOutput(self) -> bool:
+        """把当前会话的输出全部复制到系统剪贴板。"""
+        return self._copy_text(self.activeId)
+
+    @Slot(result=bool)
+    def copyZoomOutput(self) -> bool:
+        """把放大浮窗会话的输出全部复制到系统剪贴板。"""
+        return self._copy_text(self._zoomed_id)
+
+    def _copy_text(self, session_id: str) -> bool:
+        text = self._manager.screen_text(session_id) if session_id else ""
+        if not text.strip():
+            self._controller.showToast("当前没有可复制的内容。", "info")
+            return False
+        clipboard = self._clipboard()
+        if clipboard is None:
+            self._controller.showToast("当前环境无法访问系统剪贴板。", "error")
+            return False
+        try:
+            clipboard.setText(text)
+        except Exception as exc:  # noqa: BLE001
+            self._controller.showToast(f"写入剪贴板失败：{exc}", "error")
+            return False
+        self._controller.showToast("已复制全部输出到剪贴板。", "success")
+        return True
+
     @Slot(str)
     def stopSession(self, session_id: str) -> None:
         """停止会话并从列表中清除。

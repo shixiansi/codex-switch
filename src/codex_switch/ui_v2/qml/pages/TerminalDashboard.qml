@@ -409,6 +409,8 @@ Item {
                         visible: terminalModel.activeId !== ""
                         screenText: terminalModel.screen
                         screenBlocks: terminalModel.screenBlocks
+                        screenCopyable: terminalModel.copyableText()
+                        onCopyAllRequested: terminalModel.copyOutput()
                         awaitingChoice: terminalModel.awaitingChoice
                         choices: terminalModel.choices
                         choiceKind: terminalModel.choiceKind
@@ -1050,6 +1052,9 @@ Item {
                 Layout.fillHeight: true
                 screenText: terminalModel.zoomedScreen
                 screenBlocks: terminalModel.zoomedBlocks
+                // 放大视图复制的是它自己会话的内容。
+                screenCopyable: terminalModel.zoomedCopyableText()
+                onCopyAllRequested: terminalModel.copyZoomOutput()
                 awaitingChoice: terminalModel.zoomedAwaiting
                 choices: terminalModel.zoomedChoices
                 choiceKind: terminalModel.zoomedChoiceKind
