@@ -780,18 +780,24 @@ class TerminalManager:
         if now - session.auto_answer_last_at < _AUTO_ANSWER_RETRY_S:
             return
 
-        # 这一屏已经处理过了（自动应答过，或用户刚授权/拒绝过）。
-        #
-        # 必要性：按键要经写入队列延迟约 0.25s 才真正发出，而轮询间隔也是
-        # 0.25s。没有这个标记时，菜单在屏幕上多停留一拍就会被**再问一次**，
-        # 用户会看到同一个菜单连续弹两遍。菜单消失后标记会被清空。
-        if signature in session.answered_menus or signature in session.declined_menus:
+        # 用户明确拒绝过的菜单：不再自动应答，交给人工处理。
+        if signature in session.declined_menus:
             return
 
         # 用户点过"本会话允许此类"：同种类的菜单不再询问，直接按策略执行。
         # 注意"这类"是按菜单**种类**（confirm / numbered）判定的，与按钮字面一致；
         # 列表菜单永远排除在外。
         skip_ask = session.choice_kind in session.approved_kinds and session.choice_kind != "list"
+
+        # 这一屏已经给过结论（自动答过，或用户刚批准过）：**不再询问**，
+        # 但**必须继续重试按键**。
+        #
+        # 早期实现直接在标记命中时 return，把重试一并挡掉了：第一次应答被
+        # TUI 丢弃（菜单刚出现时它还没开始读输入）后就再也不会补发，于是
+        # 日志显示"已自动应答"、菜单却永远停在屏幕上等人工点击。
+        # 现在改为把"已答过"降级为免询问，写入路径照常走重试。
+        if signature in session.answered_menus:
+            skip_ask = True
         request = self._build_request(session, now)
         decision = self._policy.evaluate(request, skip_ask=skip_ask)
         self._record_review(session, request, decision)

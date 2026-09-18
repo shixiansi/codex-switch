@@ -120,6 +120,29 @@ class ScreenTests(unittest.TestCase):
         screen.feed("第一行\n第二行\n".encode())
         self.assertEqual(screen.last_line, "第二行")
 
+    def test_wide_char_stub_corruption_does_not_break_rendering(self) -> None:
+        """回归：宽字符桩单元损坏后，渲染必须继续可用。
+
+        真实故障（terminal.log 里 215 次"轮询单次失败"）：pyte 用"本格 + 一个
+        data 为空字符串的桩单元"表示宽字符（中文）。TUI 光标定位重绘时可能把本格
+        覆盖成窄字符，桩单元却留下来，于是 pyte 的 ``display`` 执行 ``char[0]``
+        抛 ``IndexError``。实测**不会自愈**——此后每轮轮询都在这里抛错，屏幕彻底
+        不再刷新。这里要求：不抛错、内容仍可读、后续输出继续可见。
+        """
+        screen = TerminalScreen()
+        screen.feed("中文测试\n".encode())
+        screen.feed(b"\x1b[1;1H")  # 光标回第一行第一列
+        screen.feed(b"a")          # 覆盖宽字符首格，留下空桩单元
+
+        # 原崩溃点：tail/annotated 都经由 _all_lines -> _visible_lines -> display。
+        text = screen.tail(10)
+        self.assertIn("a", text, "损坏后仍应能导出屏幕文本")
+
+        # 关键：后续输出必须继续可见（旧实现此后永久刷不出来）。
+        screen.feed("RECOVERED LINE\n".encode())
+        self.assertIn("RECOVERED LINE", screen.tail(10))
+        self.assertTrue(screen.annotated_text(), "带时间戳视图也应可用")
+
 
 class _ManagerBackedTest(unittest.TestCase):
     """需要假 PTY 后端的测试基类。"""
@@ -631,6 +654,81 @@ class AutoAnswerTests(_ManagerBackedTest):
             submissions = [c for c in calls if c == "1"]
             self.assertGreaterEqual(
                 len(submissions), 2, f"菜单持续存在时应重试，实际写入 {calls}"
+            )
+        finally:
+            mgr.shutdown()
+
+    def test_auto_answer_retries_even_after_screen_marked_answered(self) -> None:
+        """回归：菜单已在屏幕上、但应答被丢弃时必须继续重试。
+
+        与上一个用例的区别：这里每轮推送**完全相同**的屏幕内容，因此菜单签名
+        始终不变。旧实现把签名记进 ``answered_menus`` 后就直接 return，把重试
+        一并挡掉了——第一次应答被 TUI 丢弃（菜单刚出现时它还没开始读输入）后
+        再也不会补发，于是日志显示"已自动应答"、菜单却永远停在屏幕上。
+
+        上一个用例之所以测不出这个缺陷，是因为它推送的片段会让菜单签名来回
+        变化（``'No, quit'`` → ``'No,'`` → ``'No, quit'``），签名一变就重置了
+        守卫，于是"重试"被误当成正常行为蒙混过关。
+        """
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager()
+        mgr.auto_answer = True
+        mgr.start()
+        try:
+            sid = mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            backend = store["last"]
+            menu = b"\x1b[2J\x1b[H\xe2\x80\xba 1. Yes, continue\n  2. No, quit\n"
+            deadline = time.time() + 4.0
+            while time.time() < deadline:
+                # 每轮整屏重绘同样内容：签名恒定，专测"已在 answered_menus 里"这条路。
+                backend.push(menu)
+                time.sleep(0.25)
+            session = mgr.session(sid)
+            self.assertIn(
+                tuple(session.choices),
+                session.answered_menus,
+                "前置条件：这一屏应已被标记为答过",
+            )
+            submissions = [c for c in backend.write_calls() if c == "1"]
+            self.assertGreaterEqual(
+                len(submissions),
+                2,
+                f"同一屏应答被丢弃后仍应重试，实际写入 {backend.write_calls()}",
+            )
+        finally:
+            mgr.shutdown()
+
+    def test_auto_answer_retries_in_balanced_mode(self) -> None:
+        """回归：默认 balanced 模式下，通知过的菜单同样要重试。
+
+        该模式下认不出的菜单走 NOTIFY（只提示、不拦截）。审查层的
+        ``already_asked`` 规则早期把 NOTIFY 也一并 BLOCK，等于在默认模式下
+        复现了"只发一次"的故障。
+        """
+        from codex_switch.ui_v2.terminal.review import (
+            MODE_BALANCED,
+            PolicyConfig,
+            ReviewPolicy,
+        )
+
+        store: dict[str, _FakeBackend] = {}
+        mgr = TerminalManager(policy=ReviewPolicy(PolicyConfig(mode=MODE_BALANCED)))
+        mgr.auto_answer = True
+        mgr.start()
+        try:
+            mgr.create_session("t", "codex", "", backend_factory=self._factory(store))
+            backend = store["last"]
+            # 认不出的菜单 => WATCH => balanced 下为 NOTIFY。
+            menu = b"\x1b[2J\x1b[H\xe2\x80\xba 1. Foo the widget\n  2. Bar the widget\n"
+            deadline = time.time() + 4.0
+            while time.time() < deadline:
+                backend.push(menu)
+                time.sleep(0.25)
+            submissions = [c for c in backend.write_calls() if c == "1"]
+            self.assertGreaterEqual(
+                len(submissions),
+                2,
+                f"balanced 模式下也应重试，实际写入 {backend.write_calls()}",
             )
         finally:
             mgr.shutdown()

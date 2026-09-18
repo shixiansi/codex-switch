@@ -363,14 +363,27 @@ def _rule_declined(request: AnswerRequest, policy: "ReviewPolicy", base: Decisio
 
 
 def _rule_already_asked(request: AnswerRequest, policy: "ReviewPolicy", base: Decision) -> Decision | None:
-    """这个菜单本次已经问过用户了，不要再问第二遍。
+    """这个菜单本次已经有过结论了：**不再打扰用户，但要继续重试按键**。
 
     必要性：应答要经写入队列延迟约 0.25s 才发出，而轮询间隔也是 0.25s。
     没有这条规则时，菜单在屏幕上多停一拍就会再弹一次授权框。
+
+    关键区分（早期实现把两者混为一谈，导致故障）：
+
+    * ``ASK``：确实不该问第二遍，挂起/阻塞等待答复；
+    * ``NOTIFY``：只是"别再重复通知"，**按键必须照常重试**——菜单刚出现时
+      TUI 还没开始读输入，第一次应答可能被丢弃。若在这里 BLOCK，日志会显示
+      "已自动应答"、菜单却永远停在屏幕上（用户报的正是这个）。
     """
-    if not request.asked or not base.notifies:
+    if not request.asked:
         return None
-    return Decision(Action.BLOCK, "already_asked", "该菜单本次已询问过，等待你的答复", base.risk)
+    if base.action is Action.NOTIFY:
+        return Decision(
+            Action.SILENT, "already_asked", "该菜单本次已通知过，继续重试应答", base.risk
+        )
+    if base.action is Action.ASK:
+        return Decision(Action.BLOCK, "already_asked", "该菜单本次已询问过，等待你的答复", base.risk)
+    return None
 
 
 def _rule_budget(request: AnswerRequest, policy: "ReviewPolicy", base: Decision) -> Decision | None:

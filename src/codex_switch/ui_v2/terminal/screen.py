@@ -449,9 +449,32 @@ class TerminalScreen:
     def _visible_lines(self) -> list[str]:
         # display 每行定宽，右补空格；去掉行尾空白并丢弃完全空白的尾部行，
         # 避免界面上出现大片空白。
-        rows = [line.rstrip() for line in self._screen.display]
+        rows = [line.rstrip() for line in self._display_rows()]
         while rows and rows[-1] == "":
             rows.pop()
+        return rows
+
+    def _display_rows(self) -> list[str]:
+        """导出屏幕行文本。
+
+        pyte 的 ``display`` 会对每个单元执行 ``char[0]``；而宽字符（中文）在
+        屏幕网格里是"本格 + 一个 data 为空字符串的桩单元"。TUI 用光标定位重绘时
+        可能把本格覆盖成窄字符，桩单元却留了下来，于是 ``char[0]`` 抛
+        ``IndexError``。实测一旦发生就**不会自愈**，此后每轮轮询都在这里抛错，
+        屏幕再也刷不出来（日志里 215 次"轮询单次失败"正是它）。
+
+        这里自己按单元拼接：既绕开该缺陷，也保留了"空单元当空格"的正确语义。
+        """
+        try:
+            return self._screen.display
+        except IndexError:
+            return self._render_buffer_rows()
+
+    def _render_buffer_rows(self) -> list[str]:
+        """按字符网格自行渲染一行行文本（``display`` 不可用时使用）。"""
+        rows: list[str] = []
+        for index in range(self._screen.lines):
+            rows.append(_row_text(self._screen.buffer[index].values()))
         return rows
 
 
