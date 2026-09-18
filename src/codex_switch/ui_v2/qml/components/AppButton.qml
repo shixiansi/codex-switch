@@ -7,16 +7,33 @@ Button {
     id: control
 
     property string iconName: ""
+    // Optional trailing glyph meaning "this opens something" (a menu / a
+    // dialog). Empty by default, so every existing button is unchanged.
+    property string trailingIconName: ""
     property string variant: "secondary"   // primary | secondary | danger | ghost
     property int iconSize: 16
+    // Compact square-ish button for single-glyph content (↑ ↓ ← →): a
+    // full-width button around one arrow looks like an empty box.
+    property bool compact: false
 
     implicitHeight: Theme.controlHeight
-    implicitWidth: Math.max(Theme.controlHeight * 2, contentRow.implicitWidth + Theme.space3 * 2)
+    implicitWidth: compact
+        ? Theme.controlHeight
+        : Math.max(Theme.controlHeight * 2, contentRow.implicitWidth + Theme.space3 * 2)
     padding: 0
 
     readonly property bool isPrimary: variant === "primary"
     readonly property bool isDanger: variant === "danger"
     readonly property bool isGhost: variant === "ghost"
+
+    // Disabled state must be *visible*.
+    //
+    // Previously neither the label colour nor the fill consulted `enabled`, so
+    // a disabled button was pixel-identical to an enabled one: "发送" with an
+    // empty box, and "载入项目历史" without a session, both looked clickable.
+    // Opacity is the reliable lever — it dims fill, border and text at once
+    // without having to restate every colour per state.
+    readonly property real _disabledOpacity: 0.45
 
     readonly property color _fg: {
         if (isPrimary)
@@ -45,6 +62,11 @@ Button {
     }
 
     readonly property real _bgOpacity: (isGhost && !control.hovered && !control.down) ? 0 : 1
+
+    // The two independent opacity needs are kept separate: `opacity` dims the
+    // whole control (used for the disabled state), while the background keeps
+    // its own `_bgOpacity` so the ghost fade animation stays untouched.
+    opacity: control.enabled ? 1.0 : _disabledOpacity
 
     background: Rectangle {
         radius: Theme.radiusSm
@@ -97,6 +119,18 @@ Button {
                 font.weight: control.isPrimary ? Font.DemiBold : Font.Normal
                 anchors.verticalCenter: parent.verticalCenter
                 elide: Text.ElideRight
+            }
+
+            // Trailing chevron: signals "opens a menu / dialog". A QML Row skips
+            // items with visible:false entirely (verified), so an empty name
+            // leaves the layout byte-for-byte as before.
+            AppIcon {
+                name: control.trailingIconName
+                color: control._fg
+                size: control.iconSize - 2
+                opacity: 0.7
+                visible: control.trailingIconName !== ""
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
     }

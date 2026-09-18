@@ -152,8 +152,11 @@ Item {
                 text: "自动应答：" + terminalModel.reviewModeLabel
                 iconName: terminalModel.reviewMode === "full" ? "alert"
                     : terminalModel.reviewMode === "off" ? "close" : "check"
-                variant: terminalModel.reviewMode === "full" ? "danger"
-                    : terminalModel.reviewMode === "off" ? "ghost" : "primary"
+                // 刻意**不用** primary：它只是打开一个选择弹窗，而这一排右侧的
+                // "新建会话"才是真正的主动作。两个实心主色按钮并排会互相抢注意力，
+                // 也让用户分不清哪个是主操作。模式用前置图标 + 尾部下拉箭头表达。
+                variant: terminalModel.reviewMode === "full" ? "danger" : "secondary"
+                trailingIconName: "chevron-down"
                 onClicked: modeDialog.open()
 
                 ToolTip.visible: hovered
@@ -195,6 +198,10 @@ Item {
                 iconName: "plus"
                 variant: "primary"
                 onClicked: createDialog.open()
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "按项目打开，或运行自定义命令"
             }
         }
 

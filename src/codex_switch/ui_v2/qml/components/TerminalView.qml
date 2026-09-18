@@ -132,41 +132,71 @@ Item {
                 font.pixelSize: Theme.fontCaption
             }
 
+            // 方向键用 compact：单个箭头放进标准宽度按钮里会变成一个空荡荡的方框，
+            // 四个键连排也很松散。compact 让它成为紧凑的方形键帽，更像键盘。
             AppButton {
                 text: "↑"
                 variant: "secondary"
+                compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("up")
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "上：菜单里向上移动 / 翻历史"
             }
             AppButton {
                 text: "↓"
                 variant: "secondary"
+                compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("down")
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "下：菜单里向下移动 / 翻历史"
             }
             AppButton {
                 text: "←"
                 variant: "secondary"
+                compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("left")
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "左：切换选项（部分菜单的 ←/→ change option）"
             }
             AppButton {
                 text: "→"
                 variant: "secondary"
+                compact: true
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("right")
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "右：切换选项（部分菜单的 ←/→ change option）"
             }
             AppButton {
                 text: "Enter"
                 variant: "secondary"
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("enter")
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "确认当前选项"
             }
             AppButton {
                 text: "Esc"
                 variant: "ghost"
                 implicitHeight: Theme.controlHeightSm
                 onClicked: root.keySent("esc")
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "返回 / 取消当前菜单"
             }
 
             Item { Layout.fillWidth: true }
@@ -372,6 +402,7 @@ Item {
             AppButton {
                 text: "图片"
                 iconName: "image"
+                trailingIconName: "chevron-down"
                 variant: "secondary"
                 enabled: root.inputEnabled
                 onClicked: imageMenu.open()
@@ -382,6 +413,10 @@ Item {
 
                 Menu {
                     id: imageMenu
+
+                    // 让菜单贴着按钮下沿弹出，而不是出现在鼠标位置。
+                    y: parent.height + 4
+                    width: Math.max(220, parent.width)
 
                     MenuItem {
                         text: "选择图片文件…"
@@ -403,6 +438,10 @@ Item {
                     root.inputSubmitted(root.payloadFor(inputField.text))
                     inputField.text = ""
                 }
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 400
+                ToolTip.text: "发送给 AI CLI（Enter 同效）"
             }
         }
     }
