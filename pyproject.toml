@@ -4,13 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-switch"
-version = "0.2.2"
+# 版本号只有一个来源：src/codex_switch/__init__.py 的 __version__。
+# 以前这里和那里各写一份，结果两处一起停在 0.2.2 长达三个月、203 个提交
+# 都没反映出来。改为动态读取，从根上避免再次漂移。
+dynamic = ["version"]
 description = "Local desktop tool for switching Codex API profiles."
 requires-python = ">=3.11"
 dependencies = [
   "PySide6-Essentials>=6.8,<6.12",
   "ttkbootstrap>=1.10,<2",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "codex_switch.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

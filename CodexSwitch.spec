@@ -23,6 +23,73 @@ BUILTIN_PLUGINS_ROOT = SRC_ROOT / "codex_switch" / "builtin_plugins"
 sys.path.insert(0, str(SRC_ROOT))
 
 
+def _app_version() -> str:
+    """版本号唯一来源：codex_switch.__version__。
+
+    以前 exe 完全没有版本资源（文件属性里 FileVersion/ProductVersion 全是空的），
+    只能靠界面里的文字判断版本，排查问题时分不清手上的 exe 对应哪份代码。
+    """
+    try:
+        from codex_switch import __version__
+
+        return __version__
+    except Exception:  # noqa: BLE001 - 打包不应因为读版本失败而中断
+        return "0.0.0"
+
+
+APP_VERSION = _app_version()
+# Windows 版本资源要求四段数字，形如 0.3.0.0；不足补 0。
+_VERSION_PARTS = (APP_VERSION.split("-")[0].split(".") + ["0", "0", "0", "0"])[:4]
+VERSION_TUPLE = tuple(int(part) if part.isdigit() else 0 for part in _VERSION_PARTS)
+VERSION_STRING = ".".join(str(part) for part in VERSION_TUPLE)
+
+
+def _write_version_file() -> Path:
+    """生成 PyInstaller 需要的 Windows 版本资源文件。
+
+    在 spec 里生成而不是另建一个需要手工同步的文件：版本号只有一个来源
+    （``codex_switch.__version__``），不会出现"版本号改了、资源没改"。
+    """
+    target = ROOT / "build" / "version_info.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={VERSION_TUPLE},
+    prodvers={VERSION_TUPLE},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '080404B0',
+        [StringStruct('CompanyName', 'Codex Switch'),
+         StringStruct('FileDescription', 'Codex Switch'),
+         StringStruct('FileVersion', '{VERSION_STRING}'),
+         StringStruct('InternalName', 'CodexSwitch'),
+         StringStruct('OriginalFilename', 'CodexSwitch.exe'),
+         StringStruct('ProductName', 'Codex Switch'),
+         StringStruct('ProductVersion', '{VERSION_STRING}'),
+         StringStruct('LegalCopyright', '')])
+    ]),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)
+""",
+        encoding="utf-8",
+    )
+    return target
+
+
+VERSION_FILE = _write_version_file()
+
+
+
 def _collect_tree(source: Path, target_root: str) -> list[tuple[str, str]]:
     if not source.exists():
         return []
@@ -216,4 +283,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # 写入 Windows 版本资源：文件属性里能直接看到版本，
+    # 不必启动程序、也不用靠界面文字判断手上是哪一版。
+    version=str(VERSION_FILE),
 )
