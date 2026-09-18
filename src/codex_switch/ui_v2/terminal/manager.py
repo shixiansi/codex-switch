@@ -585,6 +585,16 @@ class TerminalManager:
         screen = self._screens.get(session_id)
         return screen.timeline(max_segments) if screen is not None else ""
 
+    def annotated_text(self, session_id: str, max_lines: int = 400) -> str:
+        """主输出框用的文本：每条新增内容前带时间戳，并保留实时尾部。
+
+        与 :meth:`screen_text` 的区别是**加了时间戳**。两者分开，
+        因为 ``screen_text`` 还被风险审查用作 ``screen_tail``（拿去判定菜单风险），
+        那里需要的是屏幕原文，掺入时间戳会干扰判定。
+        """
+        screen = self._screens.get(session_id)
+        return screen.annotated_text(max_lines) if screen is not None else ""
+
     def screen_text(self, session_id: str) -> str:
         screen = self._screens.get(session_id)
         return screen.tail() if screen is not None else ""

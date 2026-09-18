@@ -278,39 +278,90 @@ class TimelineTests(_ManagerBackedTest):
 
 
 class TimelineLayoutTests(unittest.TestCase):
-    """时间线面板必须与终端**并存**，不能把输入框一起顶掉。
+    """时间戳要显示在**主输出里**，不另开面板。
 
-    真实缺陷：时间线原先与终端互斥（同一位置二选一），而输入栏在 TerminalView
-    内部，于是打开时间线时输入框随之消失——用户看着时间戳却没法继续操作。
-    这里做**结构性检查**（源码断言），因为它约束的是 QML 布局关系，
-    渲染快照无法稳定表达"两者同时存在"。
+    演变过程（值得记下来，避免再走回头路）：
+    1. 最初时间线与终端互斥，打开时输入框一起消失；
+    2. 后来改成右侧 380px 侧栏并存；
+    3. 用户明确要求的是"每一次工具调用、每一次对话前面显示时间戳"，
+       而且强调"不是单独新开一个界面"——所以最终把时间戳**并进主输出文本**
+       （TerminalScreen.annotated_text），并把侧栏整个去掉。
     """
 
     def _page_source(self) -> str:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
-        path = root / "src" / "codex_switch" / "ui_v2" / "qml" / "pages" / "TerminalDashboard.qml"
+        path = (
+            root
+            / "src"
+            / "codex_switch"
+            / "ui_v2"
+            / "qml"
+            / "pages"
+            / "TerminalDashboard.qml"
+        )
         return path.read_text(encoding="utf-8")
 
-    def test_timeline_shares_a_row_with_the_terminal(self) -> None:
-        src = self._page_source()
-        self.assertIn(
-            "终端 + 时间线：并排而非互相替换",
-            src,
-            "时间线应改为与终端并排（右侧面板）",
-        )
-        # 时间线用固定宽度的侧栏，而不是 fillWidth 抢满整行。
-        self.assertIn("Layout.preferredWidth: page.showTimeline ? 380 : 0", src)
-
-    def test_terminal_stays_visible_when_timeline_is_open(self) -> None:
-        """TerminalView 的 visible 不能再依赖 showTimeline。"""
+    def test_no_separate_timeline_panel_remains(self) -> None:
+        """不该再有独立的时间线面板 / 切换按钮。"""
         src = self._page_source()
         self.assertNotIn(
-            'visible: terminalModel.activeId !== "" && !page.showTimeline',
+            "Layout.preferredWidth: page.showTimeline ? 380 : 0",
             src,
-            "终端仍被时间线互斥隐藏，输入框会跟着消失",
+            "独立时间线侧栏应已移除（时间戳改为并进主输出）",
         )
+        self.assertNotIn(
+            'text: page.showTimeline ? "隐藏时间线" : "时间线"',
+            src,
+            "时间线切换按钮应已移除",
+        )
+
+    def test_main_output_uses_annotated_text(self) -> None:
+        """主输出必须走带时间戳的 annotated_text，而不是裸 screen_text。"""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        vm = (
+            root
+            / "src"
+            / "codex_switch"
+            / "ui_v2"
+            / "viewmodels"
+            / "terminal.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("annotated_text", vm, "视图模型没有使用带时间戳的输出")
+
+    def test_annotated_text_carries_timestamps_and_live_tail(self) -> None:
+        """带时间戳的输出：已打点内容有时间戳，实时尾部仍即时可见。"""
+        screen = TerminalScreen()
+        screen.feed("第一段\r\n".encode())
+        screen.mark_segment()
+        screen.feed("第二段\r\n".encode())
+        screen.mark_segment()
+        # 尚未打点的实时输出
+        screen.feed("正在输出\r\n".encode())
+
+        text = screen.annotated_text()
+        self.assertRegex(text, r"\[\d{2}:\d{2}:\d{2}\] 第一段")
+        self.assertRegex(text, r"\[\d{2}:\d{2}:\d{2}\] 第二段")
+        self.assertIn("正在输出", text, "实时尾部必须保留，否则流式期间主界面会僵住")
+        # 实时部分尚未结算，因此不应带时间戳。
+        self.assertNotRegex(text, r"\[\d{2}:\d{2}:\d{2}\] 正在输出")
+
+    def test_annotated_text_is_incremental(self) -> None:
+        """固定内容（banner）只带一个时间戳，不能每段重印。"""
+        screen = TerminalScreen()
+        screen.feed(b">_ OpenAI Codex (v0.154.0)\r\nmodel: x\r\n\r\n")
+        screen.mark_segment()
+        screen.feed(b"\xe2\x80\x9a hello\r\n")
+        screen.mark_segment()
+        screen.feed(b"\xe2\x80\x9a world\r\n")
+        screen.mark_segment()
+
+        text = screen.annotated_text()
+        self.assertEqual(text.count("OpenAI Codex (v0.154.0)"), 1)
+        self.assertEqual(text.count("model: x"), 1)
 
 
 

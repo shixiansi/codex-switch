@@ -52,7 +52,6 @@ class TerminalViewModel(BaseViewModel):
     choiceChanged = Signal()
     runningCountChanged = Signal()
     zoomChanged = Signal()
-    timelineChanged = Signal()
     autoAnswerChanged = Signal()
     inputAssistChanged = Signal()
     reviewChanged = Signal()
@@ -84,7 +83,6 @@ class TerminalViewModel(BaseViewModel):
         enabled = self._policy_config.mode != MODE_OFF
         self._auto_answer = enabled
         self._manager.auto_answer = enabled
-        self._active_timeline = ""
         # 待授权项：按会话 id 索引当前等待用户决定的菜单。
         self._reviews: dict[str, dict[str, Any]] = {}
         # 最近一次"仅通知"的审查结果，供界面提示条展示。
@@ -138,12 +136,8 @@ class TerminalViewModel(BaseViewModel):
 
     @Property(str, notify=screenChanged)
     def screen(self) -> str:
+        """主输出文本：已打点的段落带 [HH:MM:SS] 前缀，末尾接实时输出。"""
         return self._screen
-
-    @Property(str, notify=timelineChanged)
-    def activeTimeline(self) -> str:
-        """当前会话带时间戳的输出时间线。"""
-        return self._active_timeline
 
     @Property(bool, notify=autoAnswerChanged)
     def autoAnswer(self) -> bool:
@@ -981,11 +975,13 @@ class TerminalViewModel(BaseViewModel):
         self._sync_review_prompt()
 
     def _refresh_screen(self) -> None:
-        text = self._manager.screen_text(self._active_id) if self._active_id else ""
+        # 主输出框显示**带时间戳**的内容：每一段新增输出前面贴一个 [HH:MM:SS]，
+        # 并在末尾接上尚未打点的实时输出。用户要的正是"每次工具调用、每次对话
+        # 前面能看到时间"，而不是另开一个面板。
+        text = self._manager.annotated_text(self._active_id) if self._active_id else ""
         if text != self._screen:
             self._screen = text
             self.screenChanged.emit()
-        self._refresh_timeline()
         # 同步"等待选择"态
         awaiting = False
         choices: list[str] = []
@@ -1010,17 +1006,11 @@ class TerminalViewModel(BaseViewModel):
             self._choice_kind = kind
             self.choiceChanged.emit()
 
-    def _refresh_timeline(self) -> None:
-        """刷新当前会话的带时间戳时间线。"""
-        timeline = self._manager.timeline_text(self._active_id) if self._active_id else ""
-        if timeline != self._active_timeline:
-            self._active_timeline = timeline
-            self.timelineChanged.emit()
-
     def _refresh_zoom(self) -> None:
         if not self._zoomed_id:
             return
-        text = self._manager.screen_text(self._zoomed_id)
+        # 放大视图与主视图保持一致：同样带时间戳。
+        text = self._manager.annotated_text(self._zoomed_id)
         awaiting = False
         choices: list[str] = []
         selected = -1
@@ -1081,9 +1071,10 @@ class TerminalViewModel(BaseViewModel):
             if session_id == self._zoomed_id:
                 self._refresh_zoom()
         elif event == EVENT_TIMELINE:
-            # 时间线新增了一段：立即刷新，否则面板会慢一拍。
+            # 新增了一段（打上了时间戳）：主输出要立刻重画，
+            # 否则新段落的时间戳会晚一拍才出现。
             if session_id == self._active_id:
-                self._refresh_timeline()
+                self._refresh_screen()
         elif event == EVENT_REVIEW:
             self._handle_review_event(session_id, payload)
 

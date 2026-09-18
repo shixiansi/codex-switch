@@ -279,6 +279,53 @@ class TerminalScreen:
             out.append(f"[{stamp}] " + snapshot.replace("\n", "\n         "))
         return out
 
+    # -- 带时间戳的输出视图 --------------------------------------------
+    #
+    # 用户要的是"每一次工具调用、每一次对话前面带时间戳"，而且要在**主输出框**里
+    # 直接看到——不是另开一个面板。所以这里直接把时间戳并进主输出的文本流。
+    #
+    # 关键取舍：已经打点的内容带时间戳（历史，稳定），**最后一段尚未打点的实时
+    # 输出原样附在后面**（不带时间戳）。否则流式输出期间主界面会一直不动，
+    # 直到出现一次停顿才刷新——那是比"没时间戳"更糟的体验。
+    _STAMP_WIDTH = len("[00:00:00] ")
+
+    def annotated_lines(self, max_segments: int = 200) -> list[str]:
+        """已打点段落 + 实时尾部，构成主输出框要显示的行。"""
+        out: list[str] = []
+        segments = self._segments[-max_segments:] if max_segments > 0 else self._segments
+        for timestamp, delta in segments:
+            stamp = time.strftime("%H:%M:%S", time.localtime(timestamp))
+            body = [line for line in delta.split("\n") if line.strip()]
+            if not body:
+                continue
+            # 时间戳只贴在**该段第一行**前面，后续行缩进对齐，
+            # 这样一段里的多行仍然是一个整体，不会被时间戳切碎。
+            pad = " " * self._STAMP_WIDTH
+            out.append(f"[{stamp}] {body[0]}")
+            out.extend(pad + line for line in body[1:])
+        out.extend(self.live_lines())
+        return out
+
+    def live_lines(self) -> list[str]:
+        """自上一次打点之后新增、尚未带时间戳的行。
+
+        界面需要它来保持"实时"：不显示这部分，流式输出期间主视图就会僵住。
+        """
+        current = self._all_lines()
+        previous = self._prev_lines
+        common = 0
+        limit = min(len(previous), len(current))
+        while common < limit and previous[common] == current[common]:
+            common += 1
+        return [line for line in current[common:] if line.strip()]
+
+    def annotated_text(self, max_lines: int = 400, max_segments: int = 200) -> str:
+        """带时间戳的主输出文本（含实时尾部）。"""
+        lines = self.annotated_lines(max_segments)
+        if max_lines > 0 and len(lines) > max_lines:
+            return "… 仅显示最后 " + str(max_lines) + " 行 …\n" + "\n".join(lines[-max_lines:])
+        return "\n".join(lines)
+
     def _decode(self, data: bytes) -> str:
         """增量解码 PTY 字节，跨块保留未完成的多字节字符。"""
         if self._use_utf8:
