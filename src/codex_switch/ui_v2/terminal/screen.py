@@ -13,6 +13,7 @@ from __future__ import annotations
 import codecs
 import re
 import time
+from typing import Any
 
 import pyte
 
@@ -289,21 +290,41 @@ class TerminalScreen:
     # 直到出现一次停顿才刷新——那是比"没时间戳"更糟的体验。
     _STAMP_WIDTH = len("[00:00:00] ")
 
-    def annotated_lines(self, max_segments: int = 200) -> list[str]:
-        """已打点段落 + 实时尾部，构成主输出框要显示的行。"""
-        out: list[str] = []
+    def annotated_blocks(self, max_segments: int = 200) -> list[dict[str, Any]]:
+        """把输出切成"事件块"，供界面按块渲染。
+
+        每块形如 ``{"stamp": "14:06:47", "lines": [...]}``；最后一块是尚未打点的
+        实时输出，``stamp`` 为空串。
+
+        为什么不在 Python 侧直接拼成一个字符串：时间戳需要和正文用**不同的颜色
+        与字号**呈现（否则整块就是一段没有层次的等宽文本，也就是用户说的"太丑"）。
+        而配色属于主题，只有 QML 知道。因此这里只给出结构，样式交给界面。
+        """
+        blocks: list[dict[str, Any]] = []
         segments = self._segments[-max_segments:] if max_segments > 0 else self._segments
         for timestamp, delta in segments:
-            stamp = time.strftime("%H:%M:%S", time.localtime(timestamp))
             body = [line for line in delta.split("\n") if line.strip()]
             if not body:
                 continue
-            # 时间戳只贴在**该段第一行**前面，后续行缩进对齐，
-            # 这样一段里的多行仍然是一个整体，不会被时间戳切碎。
-            pad = " " * self._STAMP_WIDTH
-            out.append(f"[{stamp}] {body[0]}")
-            out.extend(pad + line for line in body[1:])
-        out.extend(self.live_lines())
+            blocks.append(
+                {"stamp": time.strftime("%H:%M:%S", time.localtime(timestamp)), "lines": body}
+            )
+        live = self.live_lines()
+        if live:
+            blocks.append({"stamp": "", "lines": live})
+        return blocks
+
+    def annotated_lines(self, max_segments: int = 200) -> list[str]:
+        """``annotated_blocks`` 的纯文本形式（非 QML 消费者与测试用）。"""
+        out: list[str] = []
+        pad = " " * self._STAMP_WIDTH
+        for block in self.annotated_blocks(max_segments):
+            lines = block["lines"]
+            if block["stamp"]:
+                out.append(f"[{block['stamp']}] {lines[0]}")
+                out.extend(pad + line for line in lines[1:])
+            else:
+                out.extend(lines)
         return out
 
     def live_lines(self) -> list[str]:

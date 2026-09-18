@@ -595,6 +595,11 @@ class TerminalManager:
         screen = self._screens.get(session_id)
         return screen.annotated_text(max_lines) if screen is not None else ""
 
+    def annotated_blocks(self, session_id: str, max_segments: int = 200) -> list[dict[str, Any]]:
+        """带时间戳的**结构化**输出块，供界面分别给时间戳和正文上色。"""
+        screen = self._screens.get(session_id)
+        return screen.annotated_blocks(max_segments) if screen is not None else []
+
     def screen_text(self, session_id: str) -> str:
         screen = self._screens.get(session_id)
         return screen.tail() if screen is not None else ""

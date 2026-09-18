@@ -12,6 +12,9 @@ Item {
     id: root
 
     property string screenText: ""
+    // 结构化输出块：每块 { stamp, lines }。有它就用它渲染（时间戳单独上色），
+    // 没有则退回纯文本 screenText。
+    property var screenBlocks: []
     property bool awaitingChoice: false
     property var choices: []
     // 菜单种类：confirm / numbered / list。list（如 codex resume）只能用
@@ -26,6 +29,29 @@ Item {
     property bool hintVisible: false
     property var hintItems: []
     property int hintSelected: -1
+
+    // -- 输出区排版（集中在这里，避免各处写死后样式不一致）--
+    readonly property string monoFamily: "Consolas, Menlo, Monaco, monospace"
+    readonly property int outputFontSize: 13
+    // 时间戳比正文小一号、颜色更淡：形成层次又不喧宾夺主。
+    readonly property int stampFontSize: Theme.fontCaption
+
+    // 时间戳列宽 = "00:00:00" 的实际像素宽。
+    //
+    // 不写死数字：等宽字体在缺字时会回退到别的字体，字符宽度随之变化。
+    // 实测回退字体下 8 个字符宽 96px，而写死的 62px 会让时间戳向左溢出到
+    // 容器外（x 变成负数）。用 TextMetrics 量出真实宽度就没有这个问题。
+    TextMetrics {
+        id: stampMetrics
+
+        font.family: root.monoFamily
+        font.pixelSize: root.stampFontSize
+        text: "00:00:00"
+    }
+
+    readonly property real stampWidth: Math.ceil(stampMetrics.advanceWidth)
+    // 事件块之间留白，让"每次工具调用/对话"在视觉上成为独立的一段。
+    readonly property real blockSpacing: Theme.space3
 
     // 风险审查的展示不在这里：主窗口由共享的 ConfirmDialog 弹窗承担，
     // 放大窗口由页面直接内嵌 ReviewBar（见 TerminalDashboard.qml）。
@@ -225,7 +251,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: Theme.space2
                 contentWidth: width
-                contentHeight: outputText.implicitHeight
+                contentHeight: outputColumn.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
@@ -239,15 +265,88 @@ Item {
                         contentY = Math.max(0, contentHeight - height)
                 }
 
+                // 空态：没有任何输出时给一句提示，而不是一片空白。
                 Text {
-                    id: outputText
+                    visible: root.screenBlocks.length === 0
+                    text: "（暂无输出）"
+                    color: Theme.textFaint
+                    font.family: root.monoFamily
+                    font.pixelSize: root.outputFontSize
+                }
+
+                Column {
+                    id: outputColumn
 
                     width: parent.width
-                    text: root.screenText !== "" ? root.screenText : "（暂无输出）"
-                    color: root.screenText !== "" ? Theme.text : Theme.textFaint
-                    font.family: "Consolas, Menlo, Monaco, monospace"
-                    font.pixelSize: 13
-                    wrapMode: Text.WrapAnywhere
+                    spacing: root.blockSpacing
+
+                    Repeater {
+                        model: root.screenBlocks
+
+                        // 一个事件块 = 「时间戳栏 + 分隔线 + 正文」。
+                        //
+                        // 之前时间戳和正文是同一段同色等宽文本，没有层次，
+                        // 看起来就是一段原始日志（用户评价"太丑"）。这里拆成三栏：
+                        // 时间戳弱化、右对齐，形成整齐的左侧时间栏；
+                        // 细线把时间与内容分开，正文左边缘因此始终对齐。
+                        //
+                        // 正文用**单个 Text**（多行靠 \n），而不是嵌套 Repeater 逐行
+                        // 渲染：逐行版本在实测里内层 Repeater 始终为 0（modelData
+                        // 绑定时机问题），而且 height 互相引用形成循环，整块高度为 0。
+                        // 单 Text 没有这些问题，也更简单。
+                        delegate: Row {
+                            id: blockRow
+
+                            required property var modelData
+
+                            width: outputColumn.width
+                            spacing: Theme.space2
+                            // 高度由正文决定，避免与下方子项互相引用形成循环。
+                            height: bodyText.implicitHeight
+
+                            // 时间戳栏：固定宽度、右对齐、弱化颜色、小一号字号。
+                            // 实时块（stamp 为空）宽度为 0，正文直接顶到左边。
+                            Item {
+                                id: stampCol
+
+                                width: blockRow.modelData.stamp ? root.stampWidth : 0
+                                height: blockRow.height
+
+                                Text {
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.topMargin: 1
+                                    text: blockRow.modelData.stamp || ""
+                                    color: Theme.textFaint
+                                    font.family: root.monoFamily
+                                    font.pixelSize: root.stampFontSize
+                                    textFormat: Text.PlainText
+                                }
+                            }
+
+                            // 分隔线：只在有时间戳的块出现，避免实时块出现悬空竖线。
+                            Rectangle {
+                                id: divider
+
+                                width: blockRow.modelData.stamp ? 1 : 0
+                                height: blockRow.height
+                                color: Theme.border
+                            }
+
+                            Text {
+                                id: bodyText
+
+                                width: blockRow.width - stampCol.width - divider.width
+                                       - blockRow.spacing * 2
+                                text: (blockRow.modelData.lines || []).join("\n")
+                                color: Theme.text
+                                font.family: root.monoFamily
+                                font.pixelSize: root.outputFontSize
+                                wrapMode: Text.WrapAnywhere
+                                textFormat: Text.PlainText
+                            }
+                        }
+                    }
                 }
             }
         }

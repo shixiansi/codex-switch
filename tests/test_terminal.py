@@ -363,6 +363,43 @@ class TimelineLayoutTests(unittest.TestCase):
         self.assertEqual(text.count("OpenAI Codex (v0.154.0)"), 1)
         self.assertEqual(text.count("model: x"), 1)
 
+    def test_annotated_blocks_structure(self) -> None:
+        """结构化输出块：已打点块带 stamp，实时尾部 stamp 为空。
+
+        界面靠这个结构把时间戳单独上色（与正文同色等宽文本"太丑"）。
+        """
+        screen = TerminalScreen()
+        screen.feed(b">_ OpenAI Codex\r\n")
+        screen.mark_segment()
+        screen.feed("\u203a \u4f60\u597d\r\n".encode())
+        screen.mark_segment()
+        # 尚未打点的实时输出
+        screen.feed("\u2022 \u6b63\u5728\u56de\u590d\r\n".encode())
+
+        blocks = screen.annotated_blocks()
+        self.assertEqual(len(blocks), 3, f"应有 3 块，实际 {blocks}")
+        for block in blocks[:2]:
+            self.assertRegex(block["stamp"], r"^\d{2}:\d{2}:\d{2}$")
+            self.assertTrue(block["lines"], "每个块都要有内容")
+        self.assertEqual(blocks[-1]["stamp"], "", "实时块不应带时间戳")
+        self.assertTrue(any("\u6b63\u5728\u56de\u590d" in line for line in blocks[-1]["lines"]))
+
+    def test_annotated_blocks_match_annotated_text(self) -> None:
+        """结构化块与纯文本视图必须描述同一份内容（两者不能漂移）。"""
+        screen = TerminalScreen()
+        screen.feed(b"alpha\r\n")
+        screen.mark_segment()
+        screen.feed(b"beta\r\n")
+        screen.mark_segment()
+
+        blocks = screen.annotated_blocks()
+        text = screen.annotated_text()
+        for block in blocks:
+            for line in block["lines"]:
+                self.assertIn(line, text)
+            if block["stamp"]:
+                self.assertIn(block["stamp"], text)
+
 
 
 class AltScreenTests(unittest.TestCase):

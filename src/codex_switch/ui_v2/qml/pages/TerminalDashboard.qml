@@ -408,6 +408,7 @@ Item {
                         Layout.fillHeight: true
                         visible: terminalModel.activeId !== ""
                         screenText: terminalModel.screen
+                        screenBlocks: terminalModel.screenBlocks
                         awaitingChoice: terminalModel.awaitingChoice
                         choices: terminalModel.choices
                         choiceKind: terminalModel.choiceKind
@@ -1048,6 +1049,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 screenText: terminalModel.zoomedScreen
+                screenBlocks: terminalModel.zoomedBlocks
                 awaitingChoice: terminalModel.zoomedAwaiting
                 choices: terminalModel.zoomedChoices
                 choiceKind: terminalModel.zoomedChoiceKind

@@ -994,13 +994,30 @@ class Workspace:
             session.selected_project_id = plan.collection.selected_project_id
             message = plan.status_text
 
+        # skills 是 skill_group_ids 展开后的缓存，而表单 payload 里的 skills 是空
+        # 列表。直接落盘会把缓存清空，于是左侧列表对同一个技能组有的显示 19 个、
+        # 有的显示 0 个。这里按技能组重新展开，保持"选择即缓存"的一致性。
+        session.projects, _skills_changed = sync_projects_from_skill_groups(
+            session.projects, session.skill_groups
+        )
         self.persist()
         # Both plan objects expose the saved record, so the env text is read
         # from it regardless of whether this was a create or an edit.
-        self._write_project_env(
-            getattr(plan, "project", None) or session.selected_project() or None,
-            previous_pairs=previous_pairs,
-        )
+        saved_project = getattr(plan, "project", None) or session.selected_project() or None
+        self._write_project_env(saved_project, previous_pairs=previous_pairs)
+
+        # 把项目级的 Codex / Claude 绑定写进项目的 .codex/config.toml 等文件。
+        # 旧版界面在保存后会做这一步（见 ui/app.py 的 set_project），新版迁移时
+        # 漏了，表现为"显示保存成功、绑定的 API 也显示同步了，但实际配置没变"。
+        sync_codex = bool(getattr(plan, "sync_codex", False))
+        sync_claude = bool(getattr(plan, "sync_claude", False))
+        if saved_project is not None and (sync_codex or sync_claude):
+            if self._sync_project_api_binding(
+                saved_project, sync_codex=sync_codex, sync_claude=sync_claude
+            ):
+                message = f"{message}（已同步项目配置）"
+            else:
+                message = f"{message}（但同步项目配置失败，请检查 API 绑定）"
         return ActionResult(message=message)
 
     def _project_env_pairs(self, project: ProjectRecord) -> dict[str, str]:
@@ -1325,7 +1342,18 @@ class Workspace:
 
         raise WorkspaceError(f"不支持的 AI 终端客户端：{client}")
 
-    def _sync_project_api_binding(self, project: ProjectRecord, *, sync_claude: bool) -> bool:
+    def _sync_project_api_binding(
+        self,
+        project: ProjectRecord,
+        *,
+        sync_claude: bool,
+        sync_codex: bool = True,
+    ) -> bool:
+        """把项目的 API 绑定写进项目内的配置文件。
+
+        ``sync_codex`` / ``sync_claude`` 由保存计划给出：只在对应绑定真的变了
+        时才需要重写，避免每次保存都无谓改动用户的 config.toml。
+        """
         session = self.session
         codex_profile = session.profile_by_id(project_codex_profile_id(project))
         claude_profile = session.profile_by_id(project_claude_profile_id(project))
@@ -1338,7 +1366,7 @@ class Workspace:
             claude_profile=claude_profile,
             claude_model_override=claude_model,
             claude_fallback_model_override=claude_fallback,
-            sync_codex=True,
+            sync_codex=sync_codex,
             sync_claude=sync_claude,
         )
         result = execute_project_binding_sync(

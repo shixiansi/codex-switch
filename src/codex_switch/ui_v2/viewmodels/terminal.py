@@ -68,6 +68,8 @@ class TerminalViewModel(BaseViewModel):
         self._sessions: list[dict[str, Any]] = []
         self._active_id = ""
         self._screen = ""
+        self._screen_blocks: list[dict[str, Any]] = []
+        self._zoomed_blocks: list[dict[str, Any]] = []
         self._awaiting_choice = False
         self._choices: list[str] = []
         self._selected_index = -1
@@ -138,6 +140,14 @@ class TerminalViewModel(BaseViewModel):
     def screen(self) -> str:
         """主输出文本：已打点的段落带 [HH:MM:SS] 前缀，末尾接实时输出。"""
         return self._screen
+
+    @Property("QVariantList", notify=screenChanged)
+    def screenBlocks(self) -> list[dict[str, Any]]:
+        """主输出的结构化形式：每块含 ``stamp`` 与 ``lines``。
+
+        界面用它把时间戳单独上色；纯文本 ``screen`` 仍保留给测试与非 QML 消费者。
+        """
+        return self._screen_blocks
 
     @Property(bool, notify=autoAnswerChanged)
     def autoAnswer(self) -> bool:
@@ -234,6 +244,11 @@ class TerminalViewModel(BaseViewModel):
     @Property(str, notify=zoomChanged)
     def zoomedScreen(self) -> str:
         return self._zoomed_screen
+
+    @Property("QVariantList", notify=zoomChanged)
+    def zoomedBlocks(self) -> list[dict[str, Any]]:
+        """放大视图的结构化输出块（与主视图同源，样式一致）。"""
+        return self._zoomed_blocks
 
     @Property(bool, notify=zoomChanged)
     def zoomedAwaiting(self) -> bool:
@@ -979,8 +994,10 @@ class TerminalViewModel(BaseViewModel):
         # 并在末尾接上尚未打点的实时输出。用户要的正是"每次工具调用、每次对话
         # 前面能看到时间"，而不是另开一个面板。
         text = self._manager.annotated_text(self._active_id) if self._active_id else ""
-        if text != self._screen:
+        blocks = self._manager.annotated_blocks(self._active_id) if self._active_id else []
+        if text != self._screen or blocks != self._screen_blocks:
             self._screen = text
+            self._screen_blocks = blocks
             self.screenChanged.emit()
         # 同步"等待选择"态
         awaiting = False
@@ -1011,6 +1028,7 @@ class TerminalViewModel(BaseViewModel):
             return
         # 放大视图与主视图保持一致：同样带时间戳。
         text = self._manager.annotated_text(self._zoomed_id)
+        blocks = self._manager.annotated_blocks(self._zoomed_id)
         awaiting = False
         choices: list[str] = []
         selected = -1
@@ -1024,12 +1042,14 @@ class TerminalViewModel(BaseViewModel):
                 break
         if (
             text != self._zoomed_screen
+            or blocks != self._zoomed_blocks
             or awaiting != self._zoomed_awaiting
             or choices != self._zoomed_choices
             or selected != self._zoomed_selected_index
             or kind != self._zoomed_choice_kind
         ):
             self._zoomed_screen = text
+            self._zoomed_blocks = blocks
             self._zoomed_awaiting = awaiting
             self._zoomed_choices = choices
             self._zoomed_selected_index = selected

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -502,6 +503,154 @@ class HistoryThroughUiTests(unittest.TestCase):
         self.assertIn("X", typed)
         self.assertEqual(self._press(Qt.Key.Key_Up), "第三",
                          "编辑后没有退出翻页状态")
+
+
+@unittest.skipUnless(_qt_ready(), "需要 Qt")
+class TerminalViewTimestampStyleTests(unittest.TestCase):
+    """时间戳的呈现：要能看出层次，且不能溢出。
+
+    真实反馈是"时间线样式太丑"。原因是时间戳和正文是**同一段同色等宽文本**，
+    没有任何视觉区分。这里断言的是真实渲染结果：
+      - 时间戳字号小于正文、颜色不同于正文；
+      - 正文左边缘对齐（时间戳列宽一致）；
+      - 时间戳不向左溢出（列宽按真实字宽测量，而非写死数字）。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+        from codex_switch.ui_v2.app import QML_IMPORT_PATHS, QML_ROOT
+
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+        cls.engine = QQmlEngine()
+        for path in QML_IMPORT_PATHS:
+            cls.engine.addImportPath(str(path))
+        component = QQmlComponent(cls.engine, QUrl.fromLocalFile(
+            str(QML_ROOT / "components" / "TerminalView.qml")
+        ))
+        assert component.status() == QQmlComponent.Status.Ready, component.errorString()
+        cls.component = component
+
+    def setUp(self) -> None:
+        self.view = self.component.create()
+        self.assertIsNotNone(self.view, "TerminalView 创建失败")
+        self.addCleanup(self.view.deleteLater)
+        self.view.setProperty("width", 900)
+        self.view.setProperty("height", 600)
+        self.view.setProperty(
+            "screenBlocks",
+            [
+                {"stamp": "14:06:47", "lines": [">_ OpenAI Codex", "model: grok-4.6"]},
+                {"stamp": "14:06:55", "lines": ["Model metadata not found."]},
+                {"stamp": "", "lines": ["（正在输出…）"]},
+            ],
+        )
+        # 布局是异步的：必须让事件循环跑几轮，Repeater 才会实例化代理。
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            self.app.processEvents()
+            time.sleep(0.02)
+            if self._texts():
+                break
+
+    def _texts(self) -> list[dict]:
+        """递归遍历可视子项，收集带 text 的项。
+
+        不能用 findChildren(QQuickItem)：它不会返回 Repeater 实例化出来的代理，
+        于是"什么都没渲染"——我最初就被这个假象误导过。
+        """
+
+        out: list[dict] = []
+
+        def walk(item) -> None:
+            for child in item.childItems():
+                try:
+                    text = child.property("text")
+                except Exception:
+                    text = None
+                if text:
+                    font = child.property("font")
+                    color = child.property("color")
+                    out.append(
+                        {
+                            "text": str(text),
+                            "size": font.pixelSize() if font else -1,
+                            "rgb": (color.red(), color.green(), color.blue()) if color else None,
+                            "x": child.mapToItem(self.view, 0, 0).x(),
+                            "w": child.width(),
+                        }
+                    )
+                walk(child)
+
+        walk(self.view)
+        return out
+
+    def test_timestamps_render_with_distinct_style(self) -> None:
+        texts = self._texts()
+        stamps = [t for t in texts if t["text"] in ("14:06:47", "14:06:55")]
+        bodies = [
+            t
+            for t in texts
+            if t["text"].startswith((">_", "model:", "Model metadata"))
+        ]
+        self.assertEqual(len(stamps), 2, f"时间戳没渲染出来：{texts}")
+        self.assertTrue(bodies, f"正文没渲染出来：{texts}")
+
+        self.assertLess(
+            max(t["size"] for t in stamps),
+            min(t["size"] for t in bodies),
+            "时间戳字号没有小于正文，缺少层次",
+        )
+
+    def test_stamp_uses_a_different_color_token_than_body(self) -> None:
+        """时间戳与正文必须用不同的主题色。
+
+        这里读**源码**而不是渲染结果：本用例只创建 TerminalView，脱离
+        AppShell 时 Theme 解析不出真实颜色（实测两者都读成 (0,0,0)），
+        因此用渲染颜色判断"是否不同"会得到假结果。真正要守住的是
+        "用了两个不同的色 token"，这在源码层面是确定的。
+        """
+        from pathlib import Path
+
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "codex_switch"
+            / "ui_v2"
+            / "qml"
+            / "components"
+            / "TerminalView.qml"
+        ).read_text(encoding="utf-8")
+        # 时间戳用弱化的 textFaint，正文用 text——两者必须是不同的 token。
+        self.assertIn("color: Theme.textFaint", src, "时间戳没有使用弱化颜色")
+        self.assertIn("color: Theme.text\n", src, "正文没有使用主文本色")
+
+    def test_stamp_column_does_not_overflow_and_bodies_align(self) -> None:
+        texts = self._texts()
+        stamps = [t for t in texts if t["text"] in ("14:06:47", "14:06:55")]
+        bodies = [
+            t
+            for t in texts
+            if t["text"].startswith((">_", "model:", "Model metadata"))
+        ]
+        if len(stamps) < 2 or not bodies:
+            self.skipTest("渲染尚未就绪")
+
+        # 右对齐：两个时间戳的右边缘应重合。
+        rights = {round(t["x"] + t["w"]) for t in stamps}
+        self.assertEqual(len(rights), 1, f"时间戳没有右对齐：{rights}")
+
+        # 不能向左溢出（曾经的写死列宽会把 x 顶成负数）。
+        self.assertGreaterEqual(
+            min(t["x"] for t in stamps), 0, "时间戳向左溢出了容器"
+        )
+
+        # 正文左边缘对齐。
+        lefts = {round(t["x"]) for t in bodies}
+        self.assertEqual(len(lefts), 1, f"正文左边缘没有对齐：{lefts}")
 
 
 if __name__ == "__main__":

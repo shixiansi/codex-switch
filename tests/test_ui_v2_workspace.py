@@ -914,6 +914,130 @@ class ProjectOperationTests(WorkspaceTestCase):
         self.assertTrue(fields["proxyEnabled"]["value"])
         self.assertEqual(fields["proxyUrl"]["value"], "http://127.0.0.1:7890")
 
+    # -- 回归：保存项目时的两个真实缺陷 ---------------------------------
+
+    def test_saving_project_keeps_expanded_skills(self) -> None:
+        """保存项目不能把按技能组展开的 skills 清空。
+
+        真实缺陷：表单 payload 里 skills 恒为空列表，直接落盘就把缓存清掉。
+        用户实测同一个技能组下，有的项目列表显示 19 个、有的显示 0 个——
+        区别只在于那个项目最后一次是被"保存"还是被"技能组同步"更新过。
+        左侧列表读的正是 len(project.skills)，于是显示 0 个。
+        """
+        profile = self.add_profile()
+        self.workspace.save_skill_group({"name": "常用组"})
+        group = self.workspace.session.skill_groups[0]
+        self.workspace.save_skill(
+            {"name": "find-symbol", "type": "script", "version": "1.0.0", "content": "x"},
+            group_id=group.id,
+        )
+        self.workspace.save_skill(
+            {"name": "replace-symbol", "type": "script", "version": "1.0.0", "content": "y"},
+            group_id=group.id,
+        )
+
+        project_dir = self.root / "skills-proj"
+        project_dir.mkdir()
+        payload = {
+            "name": "技能项目",
+            "projectDir": str(project_dir),
+            "codexProfileId": profile.id,
+            "claudeProfileId": profile.id,
+            "skillGroupIds": [group.id],
+        }
+        self.workspace.save_project(payload)
+        project = self.workspace.session.projects[0]
+        self.assertEqual(project.skill_group_ids, [group.id])
+        self.assertEqual(
+            sorted(skill.name for skill in project.skills),
+            ["find-symbol", "replace-symbol"],
+            "保存后 skills 被清空了，列表会显示 0 个",
+        )
+
+        # 再存一次（走"编辑"路径）也必须保持展开结果。
+        self.workspace.save_project({**payload, "name": "技能项目2"}, project_id=project.id)
+        saved = self.workspace.session.project_by_id(project.id)
+        self.assertEqual(
+            sorted(skill.name for skill in saved.skills),
+            ["find-symbol", "replace-symbol"],
+            "编辑保存后 skills 又被清空了",
+        )
+        row = snapshots.project_row(saved)
+        self.assertEqual(row["skillCount"], 2, "左侧列表仍会显示 0 个")
+
+    def test_saving_project_syncs_api_binding_into_project_files(self) -> None:
+        """改绑到另一个 API 配置后保存，必须真的写进项目配置。
+
+        真实缺陷：旧版界面保存后会调用 _sync_project_api_binding
+        （见 ui/app.py 的 set_project），迁移到 ui_v2 时漏了这一步。
+        表现为"显示保存成功、绑定的 API 也显示同步了，但项目里的
+        config.toml 根本没变"。
+        """
+        old_profile = self.add_profile(name="旧接口", base_url="https://old.example/v1")
+        old_profile.codex_model = "OLD-MODEL"
+        new_profile = self.add_profile(name="新接口", base_url="https://new.example/v1")
+        new_profile.codex_model = "NEW-MODEL"
+        self.workspace.persist()
+
+        project_dir = self.root / "api-proj"
+        (project_dir / ".codex" / "home").mkdir(parents=True, exist_ok=True)
+        config = project_dir / ".codex" / "home" / "config.toml"
+        config.write_text(
+            'model = "OLD-MODEL"\n'
+            'review_model = "OLD-MODEL"\n'
+            "\n[model_providers.project_api]\n"
+            'name = "OpenAI"\n'
+            'base_url = "https://old.example/v1"\n'
+            'env_key = "PROJECT_API_KEY"\n',
+            encoding="utf-8",
+        )
+
+        # 先绑定旧配置（此时 config.toml 内容已经匹配）。
+        self.workspace.save_project(
+            {
+                "name": "接口项目",
+                "projectDir": str(project_dir),
+                "codexProfileId": old_profile.id,
+                "claudeProfileId": "",
+            }
+        )
+        project = self.workspace.session.projects[0]
+
+        # 改绑到新配置：绑定真的变了，必须同步。
+        self.workspace.save_project(
+            {
+                "name": "接口项目",
+                "projectDir": str(project_dir),
+                "codexProfileId": new_profile.id,
+                "claudeProfileId": "",
+            },
+            project_id=project.id,
+        )
+
+        text = config.read_text(encoding="utf-8")
+        self.assertIn("NEW-MODEL", text, "config.toml 的 model 没有被同步")
+        self.assertNotIn("OLD-MODEL", text)
+        self.assertIn("new.example", text, "config.toml 的 base_url 没有被同步")
+
+    def test_saving_project_without_binding_change_leaves_config_alone(self) -> None:
+        """绑定没变时不要无谓改写项目 config.toml。"""
+        profile = self.add_profile()
+        project_dir = self.root / "noop-proj"
+        (project_dir / ".codex" / "home").mkdir(parents=True, exist_ok=True)
+        config = project_dir / ".codex" / "home" / "config.toml"
+        marker = "# hand-written comment that must survive\n"
+        config.write_text(marker + 'model = "SAME"\n', encoding="utf-8")
+
+        self.workspace.save_project(
+            {
+                "name": "x",
+                "projectDir": str(project_dir),
+                "codexProfileId": profile.id,
+                "claudeProfileId": "",
+            }
+        )
+        self.assertEqual(config.read_text(encoding="utf-8"), marker + 'model = "SAME"\n')
+
     # -- script centre ---------------------------------------------------
     def _save_script(self, **overrides: Any) -> str:
         payload = {
