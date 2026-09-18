@@ -409,124 +409,140 @@ Item {
                         description: "在左侧选择一个会话查看实时输出，或新建一个会话。"
                     }
 
-                    TerminalView {
-                        id: mainTerminal
-
+                    // ---- 终端 + 时间线：并排而非互相替换 ----
+                    //
+                    // 时间线原先与终端互斥（同一位置二选一），于是打开时间线时
+                    // **输入框也一起消失**（输入栏在 TerminalView 内部），
+                    // 用户看着时间线却没法操作。改为右侧面板并存：终端保持可用，
+                    // 时间线只在需要时占一条边栏。
+                    RowLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        visible: terminalModel.activeId !== "" && !page.showTimeline
-                        screenText: terminalModel.screen
-                        awaitingChoice: terminalModel.awaitingChoice
-                        choices: terminalModel.choices
-                        choiceKind: terminalModel.choiceKind
-                        selectedIndex: terminalModel.selectedIndex
-                        hintVisible: terminalModel.hintVisible
-                        hintItems: terminalModel.hintItems
-                        hintSelected: terminalModel.hintSelected
-                        inputEnabled: terminalModel.activeId !== ""
-                        onInputSubmitted: function (text) { terminalModel.sendInput(text) }
-                        onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
-                        onKeySent: function (key) { terminalModel.sendKey(key) }
-                        onImageFilePicked: function (path) { terminalModel.attachImage(path) }
-                        onClipboardImageRequested: function () {
-                            terminalModel.attachImageFromClipboard()
-                        }
-                        onInputEdited: function (text) {
-                            // 用户手动打字：刷新候选，并退出"正在翻历史"状态——
-                            // 否则翻到一半再编辑，光标位置与实际内容会脱节。
-                            terminalModel.updateInputHints(text)
-                            terminalModel.resetHistoryCursor()
-                        }
-                        onHistoryRequested: function (older) {
-                            var value = older
-                                ? terminalModel.historyPrevious(mainTerminal.currentDraft())
-                                : terminalModel.historyNext()
-                            if (value !== "" || !older)
-                                mainTerminal.applyHistory(value)
-                            // 这里**不能**调 resetHistoryCursor()。
-                            // 那会把翻页位置清零，于是每次 ↑ 都从最新一条重新开始，
-                            // 表现为"一直停在同一句、退不回更早的历史"。
-                            // 光标只在用户手动编辑输入框时才该重置。
-                        }
-                        onHintMoved: function (index) {
-                            terminalModel.selectHint(index)
-                        }
-                        onHintAccepted: function (index) {
-                            var value = terminalModel.applyHint(index)
-                            if (value !== "")
-                                mainTerminal.applyHintText(value)
-                        }
-                        onHintsClosed: function () {
-                            terminalModel.hideHints()
-                        }
-                    }
+                        spacing: page.showTimeline ? Theme.space3 : 0
 
-                    // ---- 时间线：带时间戳的输出段落 ----
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        visible: terminalModel.activeId !== "" && page.showTimeline
-                        radius: Theme.radiusSm
-                        color: Theme.codeBg
-                        border.width: Theme.borderWidth
-                        border.color: Theme.border
+                        TerminalView {
+                            id: mainTerminal
 
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: Theme.space2
-                            spacing: Theme.space2
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            visible: terminalModel.activeId !== ""
+                            screenText: terminalModel.screen
+                            awaitingChoice: terminalModel.awaitingChoice
+                            choices: terminalModel.choices
+                            choiceKind: terminalModel.choiceKind
+                            selectedIndex: terminalModel.selectedIndex
+                            hintVisible: terminalModel.hintVisible
+                            hintItems: terminalModel.hintItems
+                            hintSelected: terminalModel.hintSelected
+                            inputEnabled: terminalModel.activeId !== ""
+                            onInputSubmitted: function (text) { terminalModel.sendInput(text) }
+                            onChoiceSelected: function (index) { terminalModel.sendChoice(index) }
+                            onKeySent: function (key) { terminalModel.sendKey(key) }
+                            onImageFilePicked: function (path) { terminalModel.attachImage(path) }
+                            onClipboardImageRequested: function () {
+                                terminalModel.attachImageFromClipboard()
+                            }
+                            onInputEdited: function (text) {
+                                // 用户手动打字：刷新候选，并退出"正在翻历史"状态——
+                                // 否则翻到一半再编辑，光标位置与实际内容会脱节。
+                                terminalModel.updateInputHints(text)
+                                terminalModel.resetHistoryCursor()
+                            }
+                            onHistoryRequested: function (older) {
+                                var value = older
+                                    ? terminalModel.historyPrevious(mainTerminal.currentDraft())
+                                    : terminalModel.historyNext()
+                                if (value !== "" || !older)
+                                    mainTerminal.applyHistory(value)
+                                // 这里**不能**调 resetHistoryCursor()。
+                                // 那会把翻页位置清零，于是每次 ↑ 都从最新一条重新开始，
+                                // 表现为"一直停在同一句、退不回更早的历史"。
+                                // 光标只在用户手动编辑输入框时才该重置。
+                            }
+                            onHintMoved: function (index) {
+                                terminalModel.selectHint(index)
+                            }
+                            onHintAccepted: function (index) {
+                                var value = terminalModel.applyHint(index)
+                                if (value !== "")
+                                    mainTerminal.applyHintText(value)
+                            }
+                            onHintsClosed: function () {
+                                terminalModel.hideHints()
+                            }
+                        }
 
-                            RowLayout {
-                                Layout.fillWidth: true
+                        // ---- 时间线：带时间戳的输出段落（右侧面板）----
+                        Rectangle {
+                            Layout.preferredWidth: page.showTimeline ? 380 : 0
+                            Layout.fillHeight: true
+                            visible: terminalModel.activeId !== "" && page.showTimeline
+                            radius: Theme.radiusSm
+                            color: Theme.codeBg
+                            border.width: Theme.borderWidth
+                            border.color: Theme.border
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: Theme.space2
                                 spacing: Theme.space2
 
-                                AppIcon { name: "log"; color: Theme.accent; size: 15 }
-
-                                Text {
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    text: "时间线　·　每段输出按发生时间排列"
-                                    color: Theme.accent
-                                    font.pixelSize: Theme.fontCaption
-                                    font.weight: Font.Medium
+                                    spacing: Theme.space2
+
+                                    AppIcon { name: "log"; color: Theme.accent; size: 15 }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: "时间线　·　按发生时间排列"
+                                        color: Theme.accent
+                                        font.pixelSize: Theme.fontCaption
+                                        font.weight: Font.Medium
+                                    }
+
+                                    AppButton {
+                                        text: "关闭"
+                                        variant: "ghost"
+                                        implicitHeight: Theme.controlHeightSm
+                                        onClicked: page.showTimeline = false
+
+                                        ToolTip.visible: hovered
+                                        ToolTip.delay: 400
+                                        ToolTip.text: "关闭时间线面板（终端与输入框保持可用）"
+                                    }
                                 }
 
-                                AppButton {
-                                    text: "回到终端"
-                                    variant: "ghost"
-                                    implicitHeight: Theme.controlHeightSm
-                                    onClicked: page.showTimeline = false
-                                }
-                            }
+                                Flickable {
+                                    id: timelineFlick
 
-                            Flickable {
-                                id: timelineFlick
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    contentWidth: width
+                                    contentHeight: timelineText.implicitHeight
+                                    clip: true
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                contentWidth: width
-                                contentHeight: timelineText.implicitHeight
-                                clip: true
-                                boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                                    property bool pinnedToBottom: true
+                                    onContentYChanged: pinnedToBottom = contentY >= contentHeight - height - 2
+                                    onContentHeightChanged: {
+                                        if (pinnedToBottom)
+                                            contentY = Math.max(0, contentHeight - height)
+                                    }
 
-                                property bool pinnedToBottom: true
-                                onContentYChanged: pinnedToBottom = contentY >= contentHeight - height - 2
-                                onContentHeightChanged: {
-                                    if (pinnedToBottom)
-                                        contentY = Math.max(0, contentHeight - height)
-                                }
+                                    Text {
+                                        id: timelineText
 
-                                Text {
-                                    id: timelineText
-
-                                    width: parent.width
-                                    text: terminalModel.activeTimeline !== ""
-                                        ? terminalModel.activeTimeline
-                                        : "（暂无输出）"
-                                    color: terminalModel.activeTimeline !== "" ? Theme.text : Theme.textFaint
-                                    font.family: "Consolas, Menlo, Monaco, monospace"
-                                    font.pixelSize: 12
-                                    wrapMode: Text.WrapAnywhere
+                                        width: parent.width
+                                        text: terminalModel.activeTimeline !== ""
+                                            ? terminalModel.activeTimeline
+                                            : "（暂无输出）"
+                                        color: terminalModel.activeTimeline !== "" ? Theme.text : Theme.textFaint
+                                        font.family: "Consolas, Menlo, Monaco, monospace"
+                                        font.pixelSize: 12
+                                        wrapMode: Text.WrapAnywhere
+                                    }
                                 }
                             }
                         }

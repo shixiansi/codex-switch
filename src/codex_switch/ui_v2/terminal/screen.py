@@ -45,8 +45,13 @@ def _partial_alt_suffix(text: str) -> int:
 class TerminalScreen:
     """维护一块带滚动历史的 VT 字符网格，并可导出为纯文本。
 
-    同时维护一条**带时间戳的时间线**：每当输出出现一段停顿后，就把当时的屏幕
-    快照记为一个段落。这样界面既能看实时终端，也能看到"什么时候发生了什么"。
+    同时维护一条**带时间戳的时间线**：每当输出出现一段停顿后，就把**这一段真正
+    新增的输出**记为一个段落。
+
+    早期版本存的是**整屏快照**，于是每一段都把 banner、工作目录等固定内容完整
+    重印一遍——实测三段输出里 ``OpenAI Codex`` 出现 3 次、``model:`` 3 次，
+    时间线因此几乎没有阅读价值（用户的原话是"一点用没有"）。
+    改成增量后，每个段落对应一个事件，"每次工具调用/回复前面带时间戳"才成立。
 
     **备用屏幕**：codex 的选择器（resume / 审批菜单）跑在备用屏幕里
     （``ESC[?1049h`` 进入、``ESC[?1049l`` 退出）。pyte 会把 1049 记进模式集合，
@@ -73,8 +78,16 @@ class TerminalScreen:
         # 用有状态解码器缓存半个字符，避免输出出现 U+FFFD。
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._use_utf8 = True
-        # 时间线：[(时间戳秒, 该时刻的屏幕快照)]
+        # 时间线：[(时间戳秒, 该段**新增**的输出文本)]
         self._segments: list[tuple[float, str]] = []
+        # 上一次打点时的完整屏幕行，用于算出"这一段新增了什么"。
+        self._prev_lines: list[str] = []
+        # 本段**第一份新输出**到达的时刻；0 表示当前没有正在累积的段落。
+        #
+        # 时间戳取"开始"而不是"停顿被发现的时刻"：工具调用可能跑很久，
+        # 打点发生在它输出结束之后，那样记下来的是"它什么时候安静下来"，
+        # 而不是"它什么时候发生"。用户的诉求正是后者。
+        self._segment_started_at = 0.0
         self._max_segments = max_segments
         self._last_activity = 0.0
         self._dirty = False
@@ -82,6 +95,7 @@ class TerminalScreen:
         self._in_alt_screen = False
         self._saved_lines: list[str] = []
         self._saved_segments: list[tuple[float, str]] = []
+        self._saved_prev_lines: list[str] = []
         # 跨读取的未完成序列（见 _split_alt_screen）。
         self._pending_alt = ""
 
@@ -92,7 +106,11 @@ class TerminalScreen:
         text = self._decode(data)
         if not text:
             return
-        self._last_activity = time.time()
+        now = time.time()
+        self._last_activity = now
+        # 本段的第一份新输出：记下它的时刻作为时间戳。
+        if not self._segment_started_at:
+            self._segment_started_at = now
         self._dirty = True
         try:
             for chunk in self._split_alt_screen(text):
@@ -145,8 +163,12 @@ class TerminalScreen:
             return
         self._saved_lines = self._all_lines()
         self._saved_segments = list(self._segments)
+        self._saved_prev_lines = list(self._prev_lines)
         self._in_alt_screen = True
         self._new_screen()
+        # 备用屏是全新的一屏：基线要清空，否则增量会拿主屏行去比，
+        # 把整块选择器内容都当成"新增"（丢失已有的差分语义）。
+        self._prev_lines = []
         self._dirty = True
 
     def _leave_alt_screen(self) -> None:
@@ -156,10 +178,12 @@ class TerminalScreen:
         alt_segments = list(self._segments)
         saved_lines = self._saved_lines
         saved_segments = self._saved_segments
+        saved_prev_lines = self._saved_prev_lines
 
         self._in_alt_screen = False
         self._saved_lines = []
         self._saved_segments = []
+        self._saved_prev_lines = []
         self._new_screen()
         self._replay(saved_lines)
 
@@ -170,6 +194,9 @@ class TerminalScreen:
             if not merged or merged[-1][1] != item[1]:
                 merged.append(item)
         self._segments = merged[-self._max_segments:]
+        # 主屏已经重画回网格，基线同步回进入前那一份，
+        # 这样退出后的第一段增量只包含"退出之后真正新增的内容"。
+        self._prev_lines = saved_prev_lines
         self._dirty = True
 
     def _replay(self, lines: list[str]) -> None:
@@ -190,24 +217,52 @@ class TerminalScreen:
         return max(0.0, time.time() - self._last_activity)
 
     def mark_segment(self, *, force: bool = False) -> bool:
-        """把当前屏幕快照记入时间线。
+        """把**这一段新增的输出**记入时间线。
 
         由调用方在"输出停顿"或会话结束时触发；``force=True`` 用于会话收尾，
-        确保最后一段状态一定被记录。内容与上一段相同则跳过，避免刷屏。
+        确保最后一段状态一定被记录。没有新增内容则不记，避免刷屏。
         返回是否真的新增了一段。
         """
         if not self._dirty and not force:
             return False
-        snapshot = self.text.strip()
+        current = self._all_lines()
         self._dirty = False
-        if not snapshot:
+        delta = self._delta_since(current)
+        # 时间戳用"本段开始"的时刻；没有记录过就退回此刻（例如 force 收尾）。
+        stamp = self._segment_started_at or time.time()
+        self._segment_started_at = 0.0
+        if not delta:
             return False
-        if self._segments and self._segments[-1][1] == snapshot:
-            return False
-        self._segments.append((time.time(), snapshot))
+        self._segments.append((stamp, delta))
         if len(self._segments) > self._max_segments:
             self._segments = self._segments[-self._max_segments:]
         return True
+
+    def _delta_since(self, current: list[str]) -> str:
+        """算出相对上一次打点新增的行，并把基线推进到 ``current``。
+
+        为什么不能直接用"整屏快照"：CLI 的 banner、工作目录等固定内容会一直
+        留在屏幕上，每段都抄一遍就会得到"同一段文字重复 N 次"的时间线——
+        实测三段输出里 ``OpenAI Codex`` 出现 3 次，完全没法看。
+
+        实现用**最长公共前缀**而不是集合差：终端内容会向上滚动，用集合会比较
+        会把"重复出现的相同行"（例如两次相同的报错）误判成没发生过。
+        按行序找公共前缀能正确表达"屏幕从第 N 行之后都是新的"。
+        """
+        previous = self._prev_lines
+        # 找到两者的最长公共前缀长度。
+        common = 0
+        limit = min(len(previous), len(current))
+        while common < limit and previous[common] == current[common]:
+            common += 1
+
+        self._prev_lines = current
+        fresh = current[common:]
+        # 去掉纯空行，避免段落里满是空白。
+        fresh = [line for line in fresh if line.strip()]
+        if not fresh:
+            return ""
+        return "\n".join(fresh).strip()
 
     def timeline(self, max_segments: int = 200) -> str:
         """时间戳 + 段落内容，供界面渲染。"""

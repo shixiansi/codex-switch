@@ -170,6 +170,149 @@ class TimelineTests(_ManagerBackedTest):
         time.sleep(0.2)
         self.assertGreater(screen.idle_seconds, 0.1)
 
+    # -- 增量时间线 ------------------------------------------------------
+    # 真实缺陷：早期每段存的是**整屏快照**，于是 banner、工作目录这些固定内容
+    # 被逐段重印。用户实测三段时间戳下面各有一份完整 banner，评价是"一点用没有"。
+
+    BANNER = (
+        ">_ OpenAI Codex (v0.154.0)\r\n"
+        "model:     grok-4.6 xhigh\r\n"
+        "directory: F:\\test\r\n"
+        "\r\n"
+        "Tip: New Build faster with Codex.\r\n"
+        "\r\n"
+    )
+
+    def test_timeline_records_only_new_content(self) -> None:
+        """固定内容（banner）只应出现一次，不能每段重印一遍。"""
+        screen = TerminalScreen()
+        screen.feed(self.BANNER.encode())
+        screen.mark_segment()
+
+        screen.feed("› Ask Codex to do anything\r\n".encode())
+        screen.mark_segment()
+
+        screen.feed("› [Image #1] 图片上的是什么\r\n".encode())
+        screen.mark_segment()
+
+        timeline = screen.timeline()
+        self.assertEqual(
+            timeline.count("OpenAI Codex (v0.154.0)"),
+            1,
+            f"banner 被重复记录，时间线不可读：\n{timeline}",
+        )
+        self.assertEqual(timeline.count("model:"), 1)
+        self.assertEqual(timeline.count("directory:"), 1)
+        # 每一段的新内容都必须保留。
+        self.assertIn("Ask Codex to do anything", timeline)
+        self.assertIn("[Image #1]", timeline)
+        self.assertEqual(len(screen.timeline_lines()), 3, "应有三个事件段")
+
+    def test_timeline_delta_survives_scrolling(self) -> None:
+        """终端滚动后仍要是增量。
+
+        实现按**最长公共前缀**求差；若滚动导致前缀对不上，整屏会被当成新内容
+        重发一遍——那正是要修的重复问题。这里输出远超一屏（40 行）来压这条路径。
+        """
+        screen = TerminalScreen()
+        screen.feed(self.BANNER.encode())
+        screen.mark_segment()
+
+        for index in range(1, 61):
+            screen.feed(f"tool call {index}: reading file\r\n".encode())
+        screen.mark_segment()
+
+        timeline = screen.timeline()
+        self.assertEqual(timeline.count("OpenAI Codex"), 1, "滚动后 banner 被重复记录")
+        for index in (1, 30, 60):
+            self.assertEqual(
+                timeline.count(f"tool call {index}:"),
+                1,
+                f"tool call {index} 被重复记录",
+            )
+
+    def test_blank_lines_are_not_recorded_as_content(self) -> None:
+        """纯空白的增量不该形成一个段落（否则时间线会被空行刷屏）。"""
+        screen = TerminalScreen()
+        screen.feed("第一行\r\n".encode())
+        screen.mark_segment()
+        before = len(screen.timeline_lines())
+
+        screen.feed(b"\r\n\r\n")
+        self.assertFalse(screen.mark_segment(), "只有空行不应新增段落")
+        self.assertEqual(len(screen.timeline_lines()), before)
+
+    def test_timestamp_uses_segment_start_not_pause_time(self) -> None:
+        """时间戳应表示"这段输出何时开始"，而不是"何时安静下来"。
+
+        工具调用可能跑很久；若按停顿时刻打点，记下的是它结束的时间，
+        对"什么时候发生了什么"没有意义。
+
+        注意时间戳只有**秒级精度**，所以间隔必须明显大于 1 秒：用 0.3s 去测
+        截断到整秒的字符串，误差本身就可能超过阈值（那是测试设计问题，
+        不是实现问题）。这里用 2 秒，并断言"更接近开始而不是结束"。
+        """
+        screen = TerminalScreen()
+        screen.feed("开始输出\r\n".encode())
+        started = time.time()
+        # 模拟一段持续较久的输出：期间有停顿但同属一段。
+        time.sleep(2.0)
+        screen.feed("结束输出\r\n".encode())
+        ended = time.time()
+        screen.mark_segment()
+
+        line = screen.timeline_lines()[0]
+        parsed = time.mktime(
+            time.strptime(
+                time.strftime("%Y-%m-%d ") + line[1:9], "%Y-%m-%d %H:%M:%S"
+            )
+        )
+        self.assertLessEqual(
+            abs(parsed - started), 1.0, f"时间戳偏离开始时刻：{line}"
+        )
+        self.assertLess(
+            abs(parsed - started),
+            abs(parsed - ended),
+            f"时间戳更像结束时刻，说明记的是停顿时间：{line}",
+        )
+
+
+class TimelineLayoutTests(unittest.TestCase):
+    """时间线面板必须与终端**并存**，不能把输入框一起顶掉。
+
+    真实缺陷：时间线原先与终端互斥（同一位置二选一），而输入栏在 TerminalView
+    内部，于是打开时间线时输入框随之消失——用户看着时间戳却没法继续操作。
+    这里做**结构性检查**（源码断言），因为它约束的是 QML 布局关系，
+    渲染快照无法稳定表达"两者同时存在"。
+    """
+
+    def _page_source(self) -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        path = root / "src" / "codex_switch" / "ui_v2" / "qml" / "pages" / "TerminalDashboard.qml"
+        return path.read_text(encoding="utf-8")
+
+    def test_timeline_shares_a_row_with_the_terminal(self) -> None:
+        src = self._page_source()
+        self.assertIn(
+            "终端 + 时间线：并排而非互相替换",
+            src,
+            "时间线应改为与终端并排（右侧面板）",
+        )
+        # 时间线用固定宽度的侧栏，而不是 fillWidth 抢满整行。
+        self.assertIn("Layout.preferredWidth: page.showTimeline ? 380 : 0", src)
+
+    def test_terminal_stays_visible_when_timeline_is_open(self) -> None:
+        """TerminalView 的 visible 不能再依赖 showTimeline。"""
+        src = self._page_source()
+        self.assertNotIn(
+            'visible: terminalModel.activeId !== "" && !page.showTimeline',
+            src,
+            "终端仍被时间线互斥隐藏，输入框会跟着消失",
+        )
+
+
 
 class AltScreenTests(unittest.TestCase):
     """备用屏幕（ESC[?1049h / l）的换屏处理。
