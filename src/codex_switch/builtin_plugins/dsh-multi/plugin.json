@@ -6,7 +6,7 @@
   "entry": "entry.py",
   "page": "page.qml",
   "author": "CodexSwitch",
-  "description": "同时运行多个 DSH 实例（各自独立端口），每个实例可以用共用的 ~/.dsh，也可以用自己独立的 harness home 做账号与配置隔离。插件负责启动、停止、查看日志，并把带 token 的访问地址解析出来供你直接打开。",
+  "description": "同时运行多个 DSH 实例（各自独立端口），每个实例可以用共用的 ~/.dsh，也可以用自己独立的 harness home 做账号与配置隔离；并可给任意一个环境（或一次性给全部环境）安装/卸载 DSH 插件。插件负责启动、停止、查看日志，并把带 token 的访问地址解析出来供你直接打开。",
   "permissions": [
     "snapshot:read",
     "action:invoke",

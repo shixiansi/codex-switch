@@ -47,6 +47,13 @@ ALLOWED_METHODS = (
     "stop_all",
     "url",
     "open_folder",
+    # DSH 插件安装（同样属于 DSH 多开插件）
+    "plugin_targets",
+    "installed_plugins",
+    "install_plugin",
+    "uninstall_plugin",
+    "plugin_jobs",
+    "plugin_job_log",
 )
 
 
@@ -175,6 +182,40 @@ class PluginCallBridge(QObject):
     def open_folder(self) -> Any:
         result = self._call("open_folder")
         return result if result is not None else {}
+
+    # -- DSH 插件安装 ----------------------------------------------------
+    @Slot(result="QVariantList")
+    def plugin_targets(self) -> Any:
+        result = self._call("plugin_targets")
+        return result if isinstance(result, list) else []
+
+    @Slot(str, result="QVariant")
+    def installed_plugins(self, target_id: str) -> Any:
+        result = self._call("installed_plugins", str(target_id))
+        return result if result is not None else {}
+
+    @Slot("QVariantMap", result="QVariant")
+    def install_plugin(self, payload: Any) -> Any:
+        """在选定环境安装插件。
+
+        参数声明成 ``QVariantMap``：QML 传进来的是 JS 对象，声明成 ``str``
+        或其他类型会让 Qt 匹配不到签名而**静默不派发**。
+        """
+        return self._call("install_plugin", dict(payload or {}))
+
+    @Slot("QVariantMap", result="QVariant")
+    def uninstall_plugin(self, payload: Any) -> Any:
+        return self._call("uninstall_plugin", dict(payload or {}))
+
+    @Slot(result="QVariantList")
+    def plugin_jobs(self) -> Any:
+        result = self._call("plugin_jobs")
+        return result if isinstance(result, list) else []
+
+    @Slot(str, result="QVariant")
+    def plugin_job_log(self, job_id: str) -> Any:
+        result = self._call("plugin_job_log", str(job_id))
+        return result if result is not None else {"ok": False, "message": "", "text": "", "job": {}}
 
 
 __all__ = ["ALLOWED_METHODS", "PluginCallBridge"]

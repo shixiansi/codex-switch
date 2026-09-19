@@ -1,12 +1,13 @@
 # DSH 多开
 
 CodexSwitch 的内置插件 **DSH 多开** 让你同时运行多个 DSH 实例：每个实例是一个
-独立的常驻进程，各自绑定一个端口，互不干扰。
+独立的常驻进程，各自绑定一个端口，互不干扰。它同时负责**给任意一个 DSH 环境
+安装插件**——包括一次装到所有环境。
 
 - 插件标识：`dsh-multi`
 - 位置：`src/codex_switch/builtin_plugins/dsh-multi/`
-- 权限：`exec`（启动进程）、`fs:read` / `fs:write`（根目录 `~/.dsh`）、
-  `snapshot:read`、`action:invoke`
+- 权限：`exec`（启动进程、调用 dsh/pnpm）、`fs:read` / `fs:write`
+  （根目录 `~/.dsh`）、`snapshot:read`、`action:invoke`
 
 ---
 
@@ -34,7 +35,10 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 
 ## 3. 界面怎么用
 
-进入「插件中心」→ 选中「DSH 多开」。
+进入「插件中心」→ 选中「DSH 多开」。页面顶部有两个标签页：**实例** 与
+**插件安装**。
+
+### 3.1 实例标签页
 
 1. **新建实例**：填实例名（必填），选类型（当前支持 Web 界面），端口填 `0`
    表示由系统自动分配（推荐，绝不会撞端口）。需要独立身份时打开「独立 home」。
@@ -46,6 +50,36 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 6. **删除**：移除实例记录（运行中的会先停止）。**独立 home 目录不会被删除**，
    以免误删数据。
 
+### 3.2 插件安装标签页
+
+给 DSH 装插件必须装进**某个具体的 harness home**：独立的实例各有自己的
+`~/.dsh` 等价目录，插件不通用。这个标签页就是为此而生。
+
+**什么是"环境"**：一个环境 = 一对 `(harness home, profile)`。共用的 `~/.dsh`
+是一个环境；每个「独立 home」实例各自是一个环境。多个实例共用同一个 home 时
+只算一个环境（它们本来就是同一份数据）。
+
+**操作步骤**：
+
+1. 在「安装目标」里勾选要装到哪些环境。三个快捷按钮：
+   - **全选**：所有环境；
+   - **只选独立环境**：跳过共用的 `~/.dsh`，只给隔离实例装；
+   - **刷新**：重新读取实例与已装情况。
+2. 在输入框填包标识：
+   - npm 包名，如 `@scope/dsh-plugin`；
+   - 本地目录，如 `D:\我的插件`；
+   - tarball 或 git 地址。
+3. 点「安装到选中环境」。也可以填已装的包名后点「从选中环境卸载」。
+4. 在「安装任务」里看进度与日志——每个环境分别执行，逐个报告成功/失败。
+
+**「查看已装」**：点某个环境右侧的按钮，列出该环境已安装的插件，并区分
+「已启用」（被 `dsh.profile.bundles` 引用、真的会作为 profile 层生效）与
+「普通依赖」（装进去了但没声明 `dsh.bundle`）。内置层也会一并列出。
+
+> 安装是**异步**的：提交后立刻返回，任务在后台线程跑，界面显示进度。
+> 安装使用 `dsh plugin` 命令，因此**依赖 pnpm**；没装 pnpm 会明确提示。
+> 同一个时刻只允许一个安装任务——pnpm 会写同一个目录，并发会互相踩踏。
+
 ## 4. 关键设计取舍
 
 ### 为什么不用宿主的 `api.run_command` 启动
@@ -53,6 +87,15 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 宿主提供的 `run_command` 是 `subprocess.run(..., timeout=120)`，而 DSH 实例是
 **永不退出的常驻进程**。用它启动会阻塞满 120 秒再抛超时，期间界面还会卡住。
 所以插件自己用 `subprocess.Popen` 启动，并把 stdout/stderr 重定向到日志文件。
+
+安装同理，但原因不同：`run_command` **只返回 stdout**，而 pnpm 把进度和结果
+都写在 **stderr**（成功时也是），用它安装会把有用信息全丢掉。
+
+### 为什么安装必须异步
+
+QML 调插件方法是**同步执行在 UI 线程**上的。网络安装可能几十秒，同步执行会把
+整个界面冻住。因此安装交给后台工作线程，界面用 1 秒轮询任务状态；任务跑完
+轮询自动停止，不做空转。
 
 ### 为什么"进程活着"不算启动成功
 
@@ -84,8 +127,13 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 | 实例注册表 | `~/.dsh/codex-switch-instances/instances.json` |
 | 实例日志 | `~/.dsh/codex-switch-instances/logs/<实例名>.log` |
 | 独立 home | `~/.dsh/codex-switch-instances/homes/<实例名>` |
+| 安装任务日志 | `~/.dsh/codex-switch-instances/plugin-logs/<任务id>.log` |
 
 它们整体跟随 harness home；`DSH_HOME` 一变，这些路径也跟着变。
+
+装到某个环境时，真正被写入的是**该环境自己**的
+`<harness home>/profiles/<profile>/package.json`（由 `dsh plugin` 维护）。
+插件本身不直接改那个文件。
 
 ## 6. 环境变量
 
@@ -94,7 +142,7 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 | `DSH_BIN` | 显式指定 dsh 入口（PATH 里没有 dsh 时用）。可写 `dsh`、`.cmd` 路径，或 `node <bin.js>` 形式 |
 | `DSH_NODE_BIN` | 指定 node 可执行文件（默认从 PATH 查找） |
 | `DSH_INSTANCES_DIR` | 覆盖多开数据目录（便于测试与隔离） |
-| `DSH_HOME` | DSH 自身的 harness home 覆盖；独立模式的实例会被注入这个变量 |
+| `DSH_HOME` | DSH 自身的 harness home 覆盖。独立模式的实例、以及每次插件安装都会为对应环境注入它 |
 
 插件定位 `dsh` 的顺序：`DSH_BIN` → `PATH` 上的 `dsh` → npm 的 `_npx` 缓存。
 找不到时会给出可操作的提示，而不是静默失败。
@@ -117,14 +165,27 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 该地址需要先完成一次 token 交换并写入 cookie（浏览器会自动做）。插件给出的
 完整地址带 `?token=...`，直接用浏览器打开即可；不要只复制域名部分。
 
+**安装插件提示找不到 pnpm？**
+`dsh plugin` 本身就是一个 pnpm 转发器，必须装 pnpm 才能装插件。安装任务的日志
+里会有明确提示。
+
+**装完插件要重启实例吗？**
+要。插件是在 DSH 启动时按 profile 的 `bundles` 加载的，运行中的实例不会热加载
+新插件。装完请「停止」再「启动」该实例。
+
+**某个环境显示「未初始化」？**
+说明那个 harness home 里还没有 `profiles/<profile>/`。这是正常的：第一次安装
+时 `dsh plugin` 会自动创建。
+
 ## 8. 实现位置
 
 | 文件 | 职责 |
 | --- | --- |
 | `builtin_plugins/dsh-multi/plugin.json` | 清单：权限、动作、入口与页面 |
 | `builtin_plugins/dsh-multi/entry.py` | 插件层：把界面调用翻译成核心动作，返回结构化结果 |
-| `builtin_plugins/dsh-multi/page.qml` | 插件页面：实例列表、新建表单、详情与日志 |
-| `codex_switch/dsh_instances.py` | 核心逻辑：注册表、启动计划、URL 解析、进程状态机 |
+| `builtin_plugins/dsh-multi/page.qml` | 插件页面：实例管理 + 插件安装两个标签页 |
+| `codex_switch/dsh_instances.py` | 实例核心：注册表、启动计划、URL 解析、进程状态机 |
+| `codex_switch/dsh_plugins.py` | 安装核心：环境枚举、profile 读取、异步安装任务 |
 | `codex_switch/dsh_home.py` | harness home 解析（DSH 多开与 CodeBuddy 快照共用） |
 | `codex_switch/process_util.py` | 进程/日志工具（与 AI 终端的脚本运行器共用） |
 | `tests/test_dsh_multi.py` | 单元测试 + QML 渲染测试 |

@@ -675,6 +675,7 @@ class FrozenPathTests(unittest.TestCase):
         spec = (PROJECT_ROOT / "CodexSwitch.spec").read_text(encoding="utf-8")
         for module in (
             "codex_switch.dsh_instances",
+            "codex_switch.dsh_plugins",
             "codex_switch.dsh_home",
             "codex_switch.process_util",
         ):

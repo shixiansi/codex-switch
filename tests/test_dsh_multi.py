@@ -605,14 +605,22 @@ class DshBridgeTests(unittest.TestCase):
         cls.app = QGuiApplication.instance() or QGuiApplication([])
 
     def test_every_method_page_qml_calls_is_whitelisted(self) -> None:
+        """页面里出现的每个 `instance.xxx(` 都必须在白名单里。
+
+        正则要用 ``\\b`` 而不是 ``\\.``：页面里既有 ``page.instance.start(...)``
+        也有裸的 ``instance.status()``，只匹配带点前缀的那种会漏掉一大半调用
+        （曾经因此让这个测试形同虚设）。
+        """
+        import re
+
         from codex_switch.ui_v2.plugin_bridge import ALLOWED_METHODS
 
         page = (PLUGIN_DIR / "page.qml").read_text(encoding="utf-8")
-        # 页面里以 instance.xxx( 形式调用的方法都必须被白名单放行。
-        import re
-
-        called = set(re.findall(r"\.instance\.([a-z_]+)\s*\(", page))
+        called = set(re.findall(r"\binstance\.([a-z_]+)\s*\(", page))
         self.assertTrue(called, "没有从 page.qml 解析出任何调用")
+        # 这些是页面确实在用、且必须被检查到的关键方法。
+        for name in ("install_plugin", "uninstall_plugin", "plugin_targets", "plugin_jobs"):
+            self.assertIn(name, called, f"没有解析出页面里对 {name} 的调用")
         missing = sorted(name for name in called if name not in ALLOWED_METHODS)
         self.assertEqual(missing, [], f"这些方法不在调用桥白名单里：{missing}")
 
@@ -828,6 +836,421 @@ class SharedProcessUtilTests(unittest.TestCase):
         path.write_text("A" * 1000 + "TAIL", encoding="utf-8")
         text = read_log_text(path, max_bytes=10)
         self.assertTrue(text.endswith("TAIL"))
+
+
+# ---------------------------------------------------------------------------
+# 8. 插件安装（给某个/所有 DSH 环境装插件）
+# ---------------------------------------------------------------------------
+
+class PluginTargetTests(unittest.TestCase):
+    """安装目标 = (harness home, profile)。这是"装到哪个环境"的唯一模型。"""
+
+    def setUp(self) -> None:
+        from codex_switch import dsh_instances as core
+        from codex_switch import dsh_plugins as plugins
+
+        self.core = core
+        self.plugins = plugins
+
+    def test_shared_target_always_present(self) -> None:
+        """没有任何实例时，也必须能给共用的 ~/.dsh 装插件。"""
+        targets = self.plugins.enumerate_targets([])
+        self.assertEqual(len(targets), 1)
+        self.assertTrue(targets[0].shared if hasattr(targets[0], "shared") else not targets[0].home)
+        self.assertEqual(targets[0].profile, "web")
+
+    def test_isolated_instances_become_separate_targets(self) -> None:
+        instances = [
+            self.core.new_instance("a", kind="web", isolate=True),
+            self.core.new_instance("b", kind="web", isolate=True),
+        ]
+        targets = self.plugins.enumerate_targets(instances)
+        # 一个共用 + 两个独立。
+        self.assertEqual(len(targets), 3)
+        isolated = [item for item in targets if item.home]
+        self.assertEqual(len(isolated), 2)
+
+    def test_shared_home_instances_collapse_into_one_target(self) -> None:
+        """多个实例共用同一个 home 时是同一个环境，不该重复安装。"""
+        instances = [
+            self.core.new_instance("a", kind="web"),
+            self.core.new_instance("b", kind="web"),
+        ]
+        targets = self.plugins.enumerate_targets(instances)
+        self.assertEqual(len(targets), 1, "共用 home 的实例被重复列成了多个目标")
+
+    def test_duplicate_isolated_homes_collapse(self) -> None:
+        one = self.core.new_instance("a", kind="web", isolate=True)
+        two = self.core.new_instance("a", kind="web", isolate=True)
+        two.home = one.home
+        targets = self.plugins.enumerate_targets([one, two])
+        self.assertEqual(len(targets), 2)  # 共用 + 一个独立
+
+    def test_find_target_reports_unknown_id(self) -> None:
+        with self.assertRaises(self.plugins.PluginError):
+            self.plugins.find_target("nope::web", [])
+
+    def test_profile_dir_follows_the_home(self) -> None:
+        target = self.plugins.PluginTarget(home="C:/tmp/h", profile="web")
+        self.assertEqual(
+            self.plugins.profile_dir(target),
+            Path("C:/tmp/h") / "profiles" / "web",
+        )
+
+
+class PluginSpecValidationTests(unittest.TestCase):
+    """包标识会传给 pnpm，必须挡掉明显有害/无意义的输入。"""
+
+    def setUp(self) -> None:
+        from codex_switch import dsh_plugins as plugins
+
+        self.plugins = plugins
+
+    def test_accepts_npm_name_and_local_path(self) -> None:
+        self.assertEqual(self.plugins.validate_spec("  @scope/pkg  "), "@scope/pkg")
+        self.assertEqual(self.plugins.validate_spec("D:\\我的插件"), "D:\\我的插件")
+
+    def test_rejects_empty_and_flag_like_input(self) -> None:
+        for bad in ("", "   ", "-D", "--save-dev"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(self.plugins.PluginError):
+                    self.plugins.validate_spec(bad)
+
+    def test_rejects_newlines_and_overlong_input(self) -> None:
+        for bad in ("a\nb", "a\rb", "a\x00b", "x" * 501):
+            with self.subTest(bad=bad[:10]):
+                with self.assertRaises(self.plugins.PluginError):
+                    self.plugins.validate_spec(bad)
+
+
+class PluginCommandTests(unittest.TestCase):
+    """命令构造必须把 profile 带对，且路径里的空格不被拆开。"""
+
+    def setUp(self) -> None:
+        from codex_switch import dsh_plugins as plugins
+
+        self.plugins = plugins
+
+    def test_uses_dsh_plugin_with_the_target_profile(self) -> None:
+        target = self.plugins.PluginTarget(home="", profile="tui")
+        argv = self.plugins.build_plugin_command(target, ["add", "pkg"])
+        self.assertIn("plugin", argv)
+        self.assertEqual(argv[argv.index("--profile") + 1], "tui")
+        self.assertEqual(argv[-2:], ["add", "pkg"])
+
+    def test_invalid_profile_name_is_rejected(self) -> None:
+        target = self.plugins.PluginTarget(home="", profile="../evil")
+        with self.assertRaises(self.plugins.PluginError):
+            self.plugins.build_plugin_command(target, ["add", "pkg"])
+
+
+class ProfileReadTests(unittest.TestCase):
+    """读某环境已装插件：不能为了刷新界面就去跑外部命令。"""
+
+    def setUp(self) -> None:
+        from codex_switch import dsh_plugins as plugins
+
+        self.plugins = plugins
+        self.root = make_temp_dir(self)
+
+    def _target(self, profile: str = "web"):
+        return self.plugins.PluginTarget(home=str(self.root / "home"), profile=profile)
+
+    def _write_profile(self, payload, *, profile: str = "web", bom: bool = False) -> None:
+        path = self.plugins.profile_dir(self._target(profile)) / "package.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        path.write_text(text, encoding="utf-8-sig" if bom else "utf-8")
+
+    def test_missing_profile_reads_as_not_initialized(self) -> None:
+        info = self.plugins.list_installed(self._target())
+        self.assertFalse(info["exists"])
+        self.assertEqual(info["count"], 0)
+        self.assertTrue(info["ok"])
+
+    def test_lists_dependencies_and_marks_active_layers(self) -> None:
+        self._write_profile({
+            "dependencies": {"my-plugin": "^1.0.0", "plain-lib": "^2.0.0"},
+            "dsh": {"profile": {"bundles": ["@deepseek-ai/dsh-base", "my-plugin"]}},
+        })
+        info = self.plugins.list_installed(self._target())
+        rows = {row["name"]: row for row in info["plugins"]}
+        self.assertTrue(rows["my-plugin"]["active"], "被 bundles 引用的依赖应标为已启用")
+        self.assertFalse(rows["plain-lib"]["active"], "普通依赖不该标为已启用")
+        self.assertIn("@deepseek-ai/dsh-base", info["builtinLayers"])
+
+    def test_tolerates_bom_in_the_manifest(self) -> None:
+        """Windows 上写出的 JSON 常带 BOM，必须能读——否则列表永远为空。"""
+        self._write_profile({"dependencies": {"p": "1"}, "dsh": {"profile": {"bundles": []}}}, bom=True)
+        info = self.plugins.list_installed(self._target())
+        self.assertEqual(info["count"], 1)
+
+    def test_corrupt_manifest_is_reported_not_raised(self) -> None:
+        path = self.plugins.profile_dir(self._target()) / "package.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ broken", encoding="utf-8")
+        info = self.plugins.list_installed(self._target())
+        self.assertFalse(info["ok"])
+        self.assertTrue(info["message"])
+
+
+class InstallJobTests(unittest.TestCase):
+    """任务管理：异步执行、串行、状态与日志。这些用注入的 runner 驱动，不跑真 pnpm。"""
+
+    def setUp(self) -> None:
+        from codex_switch import dsh_plugins as plugins
+
+        self.plugins = plugins
+        self.root = make_temp_dir(self)
+
+    def _target(self, name: str = "env-a"):
+        return self.plugins.PluginTarget(
+            home=str(self.root / name), profile="web", label=name,
+        )
+
+    def _manager(self, runner):
+        return self.plugins.InstallJobManager(log_dir=self.root / "logs", runner=runner)
+
+    @staticmethod
+    def _wait(manager, job_id: str, timeout: float = 10.0):
+        import time as _time
+
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            if not manager.job(job_id).running:
+                return manager.job(job_id)
+            _time.sleep(0.02)
+        raise AssertionError(f"任务 {job_id} 没有在 {timeout}s 内结束")
+
+    def test_successful_install_over_all_targets(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(argv, target, job):
+            calls.append(list(argv))
+            return 0, "dsh: done\n"
+
+        manager = self._manager(runner)
+        targets = [self._target("a"), self._target("b")]
+        job = manager.submit(self.plugins.ACTION_INSTALL, "some-pkg", targets)
+        done = self._wait(manager, job.id)
+
+        self.assertEqual(done.status, self.plugins.JOB_SUCCESS)
+        self.assertEqual(done.done, 2)
+        # 两个环境各跑一次，且都指向各自的 profile。
+        self.assertEqual(len(calls), 2)
+        for argv in calls:
+            self.assertIn("add", argv)
+            self.assertIn("some-pkg", argv)
+
+    def test_each_target_runs_in_its_own_home(self) -> None:
+        """装到哪个环境由 DSH_HOME 决定——这是隔离的关键。"""
+        seen: list[tuple[str, str]] = []
+
+        def runner(argv, target, job):
+            seen.append((str(target.resolved_home), str(job.id)))
+            return 0, "ok\n"
+
+        manager = self._manager(runner)
+        first, second = self._target("a"), self._target("b")
+        job = manager.submit(self.plugins.ACTION_INSTALL, "p", [first, second])
+        self._wait(manager, job.id)
+
+        homes = {home for home, _ in seen}
+        self.assertEqual(homes, {str(first.resolved_home), str(second.resolved_home)})
+
+    def test_partial_failure_is_reported_with_the_failing_target(self) -> None:
+        """一个环境失败不该掩盖另一个成功，且要能指出是哪个环境。"""
+        def runner(argv, target, job):
+            if target.label == "b":
+                return 1, "Error: ERR_PNPM_NO_MATCHING_VERSION\n"
+            return 0, "ok\n"
+
+        manager = self._manager(runner)
+        job = manager.submit(
+            self.plugins.ACTION_INSTALL, "p", [self._target("a"), self._target("b")],
+        )
+        done = self._wait(manager, job.id)
+
+        self.assertEqual(done.status, self.plugins.JOB_FAILED)
+        self.assertEqual(done.done, 2, "失败后仍应继续处理其余目标")
+        self.assertIn("b", done.message)
+        self.assertIn("ERR_PNPM_NO_MATCHING_VERSION", done.message)
+
+    def test_concurrent_submission_is_refused(self) -> None:
+        """pnpm 会写同一个目录，并发提交必须挡住。"""
+        import threading
+
+        release = threading.Event()
+
+        def runner(argv, target, job):
+            release.wait(5)
+            return 0, "ok\n"
+
+        manager = self._manager(runner)
+        try:
+            manager.submit(self.plugins.ACTION_INSTALL, "p", [self._target()])
+            with self.assertRaises(self.plugins.PluginError) as ctx:
+                manager.submit(self.plugins.ACTION_INSTALL, "q", [self._target()])
+            self.assertIn("进行中", str(ctx.exception))
+        finally:
+            release.set()
+
+    def test_job_log_records_the_command_and_output(self) -> None:
+        """日志要能看到"实际执行了什么"，否则排查无从下手。"""
+        def runner(argv, target, job):
+            return 0, "pnpm output line\n"
+
+        manager = self._manager(runner)
+        job = manager.submit(self.plugins.ACTION_INSTALL, "my-pkg", [self._target()])
+        self._wait(manager, job.id)
+        text = manager.job_log(job.id)
+        self.assertIn("plugin", text)
+        self.assertIn("my-pkg", text)
+        self.assertIn("pnpm output line", text)
+
+    def test_uninstall_uses_remove(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(argv, target, job):
+            calls.append(list(argv))
+            return 0, "ok\n"
+
+        manager = self._manager(runner)
+        job = manager.submit(self.plugins.ACTION_UNINSTALL, "old-pkg", [self._target()])
+        self._wait(manager, job.id)
+        self.assertIn("remove", calls[0])
+        self.assertNotIn("add", calls[0])
+
+    def test_targets_are_snapshotted_at_submit_time(self) -> None:
+        """后台线程晚于提交才跑，期间实例可能被删；不能那时再解析目标。"""
+        captured: list[str] = []
+
+        def runner(argv, target, job):
+            captured.append(target.home)
+            return 0, "ok\n"
+
+        manager = self._manager(runner)
+        # 直接构造一个"注册表里根本不存在"的目标：执行时若重新按 id 解析就会失败。
+        ghost = self.plugins.PluginTarget(home=str(self.root / "ghost"), profile="web", label="ghost")
+        job = manager.submit(self.plugins.ACTION_INSTALL, "p", [ghost])
+        done = self._wait(manager, job.id)
+        self.assertEqual(done.status, self.plugins.JOB_SUCCESS, done.message)
+        self.assertEqual(captured, [ghost.home])
+
+    def test_runner_exception_fails_the_job_instead_of_hanging(self) -> None:
+        """任务抛异常必须变成"失败"，否则界面会永远转圈。"""
+        def runner(argv, target, job):
+            raise RuntimeError("boom")
+
+        manager = self._manager(runner)
+        job = manager.submit(self.plugins.ACTION_INSTALL, "p", [self._target()])
+        done = self._wait(manager, job.id)
+        self.assertEqual(done.status, self.plugins.JOB_FAILED)
+        self.assertIn("boom", done.message)
+
+    def test_empty_targets_is_refused(self) -> None:
+        manager = self._manager(lambda *a: (0, ""))
+        with self.assertRaises(self.plugins.PluginError):
+            manager.submit(self.plugins.ACTION_INSTALL, "p", [])
+
+    def test_unknown_action_is_refused(self) -> None:
+        manager = self._manager(lambda *a: (0, ""))
+        with self.assertRaises(self.plugins.PluginError):
+            manager.submit("destroy", "p", [self._target()])
+
+
+class PluginInstallEntryTests(unittest.TestCase):
+    """插件层暴露给界面的方法：形状与失败路径都要稳。"""
+
+    def setUp(self) -> None:
+        self.addCleanup(self._restore_env)
+        self._previous = os.environ.get("DSH_INSTANCES_DIR")
+        self.root = make_temp_dir(self)
+        os.environ["DSH_INSTANCES_DIR"] = str(self.root)
+        self.plugin = self._load_plugin()
+
+    def _restore_env(self) -> None:
+        if self._previous is None:
+            os.environ.pop("DSH_INSTANCES_DIR", None)
+        else:
+            os.environ["DSH_INSTANCES_DIR"] = self._previous
+
+    def _load_plugin(self):
+        from codex_switch.plugins import PluginApi
+        from codex_switch.plugins.loader import load_plugin
+        from codex_switch.plugins.registry import PluginRegistry, builtin_plugin_root
+
+        registry = PluginRegistry([(builtin_plugin_root(), True)])
+        registry.reload()
+        return load_plugin(registry.get("dsh-multi"), PluginApi(registry.get("dsh-multi").manifest))
+
+    def test_targets_include_shared_and_each_isolated_instance(self) -> None:
+        self.plugin.create({"name": "iso", "kind": "web", "isolate": True})
+        rows = self.plugin.plugin_targets()
+        self.assertEqual(len(rows), 2)
+        shared = [row for row in rows if row["shared"]]
+        self.assertEqual(len(shared), 1)
+        # 页面直接渲染这些字段。
+        for key in ("id", "label", "home", "profile", "installedCount", "profileExists"):
+            self.assertIn(key, rows[0])
+
+    def test_installed_plugins_lists_without_running_dsh(self) -> None:
+        result = self.plugin.installed_plugins("shared::web")
+        self.assertTrue(result["ok"], result["message"])
+        self.assertIn("plugins", result)
+
+    def test_installed_plugins_unknown_target_fails_softly(self) -> None:
+        result = self.plugin.installed_plugins("ghost::web")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["message"])
+
+    def test_install_requires_a_spec_and_a_target(self) -> None:
+        self.assertFalse(self.plugin.install_plugin({"spec": "", "targets": ["shared::web"]})["ok"])
+        self.assertFalse(self.plugin.install_plugin({"spec": "pkg", "targets": []})["ok"])
+
+    def test_install_rejects_unknown_target(self) -> None:
+        result = self.plugin.install_plugin({"spec": "pkg", "targets": ["ghost::web"]})
+        self.assertFalse(result["ok"])
+        self.assertIn("目标", result["message"])
+
+    def test_install_submits_a_job_for_the_selected_targets(self) -> None:
+        submitted: list[tuple] = []
+
+        def fake_submit(action, spec, targets):
+            submitted.append((action, spec, [item.id for item in targets]))
+            from codex_switch.dsh_plugins import InstallJob
+
+            return InstallJob(id="job1", action=action, spec=spec, targets=list(targets))
+
+        self.plugin.installer.submit = fake_submit  # type: ignore[assignment]
+        result = self.plugin.install_plugin({"spec": "my-pkg", "targets": ["shared::web"]})
+        self.assertTrue(result["ok"], result["message"])
+        self.assertEqual(result["jobId"], "job1")
+        self.assertEqual(submitted[0][0], "install")
+        self.assertEqual(submitted[0][1], "my-pkg")
+
+    def test_uninstall_uses_the_uninstall_action(self) -> None:
+        captured: list[str] = []
+
+        def fake_submit(action, spec, targets):
+            captured.append(action)
+            from codex_switch.dsh_plugins import InstallJob
+
+            return InstallJob(id="j", action=action, spec=spec, targets=list(targets))
+
+        self.plugin.installer.submit = fake_submit  # type: ignore[assignment]
+        self.plugin.uninstall_plugin({"spec": "my-pkg", "targets": ["shared::web"]})
+        self.assertEqual(captured, ["uninstall"])
+
+    def test_job_log_reports_unknown_job_softly(self) -> None:
+        result = self.plugin.plugin_job_log("nope")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["message"])
+
+    def test_shutdown_stops_accepting_jobs_without_killing_instances(self) -> None:
+        self.plugin.create({"name": "dev", "kind": "web"})
+        self.plugin.shutdown()
+        self.assertEqual(len(self.plugin.instances()), 1)
 
 
 if __name__ == "__main__":

@@ -362,6 +362,22 @@ class PluginCallBridgeTests(unittest.TestCase):
         result = bridge._call("secret_internal")
         self.assertFalse(result["ok"])
 
+    def test_every_method_the_page_calls_is_whitelisted(self) -> None:
+        """页面里出现的每个 `instance.xxx(` 都必须在白名单里。
+
+        正则用 ``\\b`` 而不是 ``\\.``：页面里既有 ``page.instance.foo(...)``
+        也有裸的 ``instance.foo()``，只匹配带点前缀的那种会漏掉一半调用。
+        """
+        import re
+
+        from codex_switch.ui_v2.plugin_bridge import ALLOWED_METHODS
+
+        page = (PLUGIN_DIR / "page.qml").read_text(encoding="utf-8")
+        called = set(re.findall(r"\binstance\.([a-z_]+)\s*\(", page))
+        self.assertTrue(called, "没有从 page.qml 解析出任何调用")
+        missing = sorted(name for name in called if name not in ALLOWED_METHODS)
+        self.assertEqual(missing, [], f"这些方法不在调用桥白名单里：{missing}")
+
     def test_bridge_returns_empty_defaults_when_method_missing(self) -> None:
         """插件没有某个方法时返回安全默认值，而不是 None 让页面崩掉。"""
         bridge = self._bridge(_StubInstance(without=("accounts", "status")))

@@ -102,6 +102,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 - 启动时会**等到实例真的就绪**（日志里出现带 token 的访问地址）才报告成功，并可直接用浏览器打开该地址。
 - 启动失败会终止残留进程，并把日志里的真实原因显示出来；每个实例都有独立日志。
 - 关闭 CodexSwitch 或禁用插件**不会**杀掉正在运行的实例。
+- **可给任意 DSH 环境安装插件**：每个独立 home 是一个独立环境，可单独安装，也可一次装到全部环境；支持 npm 包名、本地目录、tarball 与 git 地址，安装/卸载异步执行并显示进度与日志。
 - 详细说明见 [`docs/dsh-multi.md`](docs/dsh-multi.md)。
 
 ### MCP 配置
@@ -222,6 +223,7 @@ Windows 本地打包：
 │   ├── storage.py                  # profiles.json 读写
 │   ├── dsh_home.py                 # DSH harness home 解析（DSH_HOME > ~/.dsh）
 │   ├── dsh_instances.py            # DSH 多开：实例注册表、启动计划、进程状态机
+│   ├── dsh_plugins.py              # DSH 插件安装：环境枚举、异步安装任务
 │   ├── process_util.py             # 进程/日志工具（pid 探测、整树结束、编码解码）
 │   ├── codex_config.py             # Codex config/auth 与 MCP TOML 生成逻辑
 │   ├── claude_config.py            # Claude settings.json 生成与备份

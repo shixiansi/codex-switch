@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 from codex_switch import dsh_instances as core
+from codex_switch import dsh_plugins as plugins
 
 
 class DshMultiPlugin:
@@ -32,6 +33,8 @@ class DshMultiPlugin:
         self.api = api
         self.registry = core.InstanceRegistry()
         self.manager = core.InstanceManager(self.registry)
+        # 插件安装：给某个 DSH 环境（harness home + profile）装/卸插件。
+        self.installer = plugins.InstallJobManager()
 
     # -- 只读状态 --------------------------------------------------------
     def status(self) -> dict:
@@ -232,7 +235,101 @@ class DshMultiPlugin:
         刻意**不**停止正在运行的实例：多开的意义就是让它们独立于
         CodexSwitch 存活，关掉管理器不该把用户正在用的 DSH 一起带走。
         """
+        # 安装任务只停止"接新任务"：正在跑的 pnpm 让它写完更安全。
+        self.installer.shutdown()
         self.api.log("DSH 多开插件已卸载，运行中的实例保持运行。")
+
+    # -- 插件安装（给某个 DSH 环境装/卸插件） ------------------------------
+    def plugin_targets(self) -> list[dict]:
+        """列出所有可安装插件的 DSH 环境。
+
+        包含"共用 ~/.dsh"以及每个独立 home 的实例。多个实例共用同一个
+        home 时只出现一次——它们本来就是同一个环境。
+        """
+        try:
+            instances = self.registry.load()
+        except core.DshError as error:
+            self.api.log(f"读取实例注册表失败：{error}")
+            instances = []
+        rows: list[dict] = []
+        for target in plugins.enumerate_targets(instances):
+            row = target.to_row()
+            # 顺带把该环境已装数量带上，列表里就能看出"装过没有"。
+            info = plugins.list_installed(target)
+            row["installedCount"] = info["count"]
+            row["profileExists"] = info["exists"]
+            row["profilePath"] = info["path"]
+            rows.append(row)
+        return rows
+
+    def installed_plugins(self, target_id: str) -> dict:
+        """列出某个环境已安装的插件。"""
+        try:
+            target = plugins.find_target(target_id, self._instances())
+        except plugins.PluginError as error:
+            return {
+                "ok": False, "message": str(error), "plugins": [],
+                "builtinLayers": [], "count": 0, "exists": False, "path": "",
+            }
+        return plugins.list_installed(target)
+
+    def install_plugin(self, payload=None) -> dict:
+        """在选定环境里安装一个插件（异步，立即返回任务 id）。
+
+        参数用 ``QVariantMap``：QML 传进来的是 JS 对象，槽签名一旦不匹配，
+        Qt 会**静默不派发**（按钮点了没反应且没有任何报错）。
+        """
+        return self._submit_plugin_job(plugins.ACTION_INSTALL, payload)
+
+    def uninstall_plugin(self, payload=None) -> dict:
+        """在选定环境里卸载一个插件（异步）。"""
+        return self._submit_plugin_job(plugins.ACTION_UNINSTALL, payload)
+
+    def _submit_plugin_job(self, action: str, payload) -> dict:
+        data = payload if isinstance(payload, dict) else {}
+        raw_spec = str(data.get("spec") or "").strip()
+        target_ids = data.get("targets")
+        if isinstance(target_ids, str):
+            target_ids = [target_ids]
+        target_ids = [str(item) for item in (target_ids or []) if str(item or "").strip()]
+
+        try:
+            spec = plugins.validate_spec(raw_spec)
+            instances = self._instances()
+            if not target_ids:
+                raise plugins.PluginError("请至少选择一个安装目标。")
+            targets = [plugins.find_target(item, instances) for item in target_ids]
+            job = self.installer.submit(action, spec, targets)
+        except plugins.PluginError as error:
+            return {"ok": False, "message": str(error)}
+
+        verb = plugins.ACTION_LABELS.get(action, action)
+        return {
+            "ok": True,
+            "jobId": job.id,
+            "message": f"已开始{verb} {spec}（{len(targets)} 个环境），可在下方查看进度。",
+        }
+
+    def plugin_jobs(self) -> list[dict]:
+        """列出安装任务（最近的在前）。"""
+        return [job.to_row() for job in self.installer.jobs()]
+
+    def plugin_job_log(self, job_id: str) -> dict:
+        """读取某个安装任务的输出。"""
+        try:
+            return {
+                "ok": True, "message": "",
+                "text": self.installer.job_log(job_id),
+                "job": self.installer.job(job_id).to_row(),
+            }
+        except plugins.PluginError as error:
+            return {"ok": False, "message": str(error), "text": "", "job": {}}
+
+    def _instances(self) -> list:
+        try:
+            return self.registry.load()
+        except core.DshError:
+            return []
 
     # -- 宿主动作入口 ----------------------------------------------------
     def run_action(self, action_key: str) -> str:
