@@ -26,11 +26,42 @@ Item {
     property string message: ""
     property string messageTone: ""
 
+    // ---- DSH 多开适配：CodeBuddy 凭据是按 harness home 各存一份的，
+    // 所以每个独立实例（各自 DSH_HOME）都有自己当前登录的账号。 ----
+    property var environments: []
+    // 当前正在操作的环境 id；空串表示共用的 ~/.dsh。
+    property string activeTarget: ""
+
     function reload() {
         if (!instance) return
-        status = instance.status()
+        // 先取环境列表：目标可能因为实例被删而消失，需回退到共用环境。
+        environments = instance.environments()
+        if (activeTarget !== "" && !hasTarget(activeTarget))
+            activeTarget = ""
+        status = instance.status_of(activeTarget)
         current = status.current || {}
-        accounts = instance.accounts()
+        accounts = instance.accounts_of(activeTarget)
+    }
+
+    function hasTarget(id) {
+        for (var i = 0; i < environments.length; i++) {
+            if (environments[i].id === id) return true
+        }
+        return false
+    }
+
+    function activeLabel() {
+        for (var i = 0; i < environments.length; i++) {
+            if (environments[i].id === activeTarget) return environments[i].label
+        }
+        return environments.length > 0 ? environments[0].label : ""
+    }
+
+    function selectTarget(id) {
+        if (id === activeTarget) return
+        activeTarget = id
+        message = ""
+        reload()
     }
 
     function notify(result) {
@@ -141,7 +172,94 @@ Item {
                 iconName: "plus"
                 variant: "primary"
                 enabled: page.instance !== null && page.current.available === true
-                onClicked: page.notify(page.instance.save_current(""))
+                onClicked: page.notify(page.instance.save_current_of("", page.activeTarget))
+            }
+        }
+
+        // ---------- 目标环境（DSH 多开适配） ----------
+        // CodeBuddy 凭据是**按 harness home 各存一份**的：每个独立实例都有自己的
+        // 当前账号。这里选一个环境，下面的"当前账号/切换/保存"都作用于它。
+        AppCard {
+            Layout.fillWidth: true
+            visible: page.environments.length > 1
+            title: "目标环境"
+            subtitle: "CodeBuddy 凭据按 harness home 各存一份，所以每个独立实例各自登录。选择要操作的环境；账号快照库是共用的，可在各环境间复用同一批账号。"
+
+            Repeater {
+                model: page.environments
+
+                delegate: Rectangle {
+                    required property var modelData
+
+                    Layout.fillWidth: true
+                    implicitHeight: envRow.implicitHeight + Theme.space3 * 2
+                    radius: Theme.radiusSm
+                    color: page.activeTarget === modelData.id ? Theme.surfaceAlt : "transparent"
+                    border.width: Theme.borderWidth
+                    border.color: page.activeTarget === modelData.id ? Theme.accent : Theme.border
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.selectTarget(modelData.id)
+                    }
+
+                    RowLayout {
+                        id: envRow
+                        anchors.fill: parent
+                        anchors.margins: Theme.space3
+                        spacing: Theme.space3
+
+                        // 选中指示：与「DSH 多开」的勾选控件保持同一视觉语言。
+                        Rectangle {
+                            Layout.alignment: Qt.AlignVCenter
+                            width: 18
+                            height: 18
+                            radius: 9
+                            color: page.activeTarget === modelData.id ? Theme.accent : "transparent"
+                            border.width: Theme.borderWidth
+                            border.color: page.activeTarget === modelData.id ? Theme.accent : Theme.borderStrong
+
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 6
+                                height: 6
+                                radius: 3
+                                color: Theme.accentText
+                                visible: page.activeTarget === modelData.id
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+
+                            RowLayout {
+                                spacing: Theme.space2
+                                Text {
+                                    text: modelData.label
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fontBody
+                                    font.weight: Font.DemiBold
+                                }
+                                StatusBadge {
+                                    text: modelData.signedIn ? modelData.accountLabel : "未登录"
+                                    tone: modelData.signedIn
+                                        ? (modelData.refreshExpired ? "warning" : "success")
+                                        : "unknown"
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.home
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fontCaption
+                                elide: Text.ElideMiddle
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -151,13 +269,14 @@ Item {
         AppCard {
             Layout.fillWidth: true
             title: "当前生效账号"
+            subtitle: page.activeLabel()
 
             Text {
                 Layout.fillWidth: true
                 visible: page.current.available !== true
                 text: page.current.error
                     ? "读取当前凭据失败：" + page.current.error
-                    : "尚未登录 CodeBuddy。"
+                    : "该环境尚未登录 CodeBuddy。可从下面的快照选一个切换过去。"
                 color: Theme.textMuted
                 font.pixelSize: Theme.fontBody
                 wrapMode: Text.Wrap
@@ -325,7 +444,10 @@ Item {
                                 enabled: page.instance !== null
                                     && modelData.current !== true
                                     && modelData.broken !== true
-                                onClicked: page.notify(page.instance.switch(modelData.name))
+                                // 明确把"切到哪个环境"传下去：多开时每个实例各有
+                                // 自己的凭据文件，不指定就可能切错地方。
+                                onClicked: page.notify(
+                                    page.instance.switch_of(modelData.name, page.activeTarget))
                             }
                         }
                     }

@@ -92,6 +92,7 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 - 快照存在凭据文件之外，**不改动 CodeBuddy 插件自身文件**，插件升级不会丢失账号。
 - 切换前会自动备份原凭据，误切了还能捞回来。
 - 支持从目录批量导入凭据文件（兼容 codebuddy2api 的 `.info` 格式）。
+- **适配 DSH 多开**：凭据按 harness home 各存一份，因此可分别给共用的 `~/.dsh` 和每个独立实例设置不同账号；账号快照库共用一份、可跨环境复用。
 - 切换后若 DSH 仍显示旧账号，重启 DSH 即可生效。
 - 详细说明见 [`docs/codebuddy-accounts.md`](docs/codebuddy-accounts.md)。
 

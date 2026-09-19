@@ -80,6 +80,15 @@ harness home 覆盖方式（优先级高于默认的 `~/.dsh`）。
 > 安装使用 `dsh plugin` 命令，因此**依赖 pnpm**；没装 pnpm 会明确提示。
 > 同一个时刻只允许一个安装任务——pnpm 会写同一个目录，并发会互相踩踏。
 
+### 3.3 每个环境各自登录 CodeBuddy
+
+CodeBuddy 的凭据是 `<harness home>/codebuddy-auth.json`，所以**每个独立 home
+各有一份**——也就是说不同实例可以登录不同账号。这一点由「CodeBuddy 多账号」
+插件负责（它的页面里有「目标环境」选择），详见
+[`codebuddy-accounts.md`](codebuddy-accounts.md)。
+
+要点：账号快照库共用一份，但"当前生效的账号"按环境区分；切换后需重启该实例。
+
 ## 4. 关键设计取舍
 
 ### 为什么不用宿主的 `api.run_command` 启动

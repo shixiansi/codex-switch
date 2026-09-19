@@ -658,5 +658,296 @@ class PluginPageImportUiTests(unittest.TestCase):
         self.assertIn("fs:read", manifest.get("paths", {}))
 
 
+class CodeBuddyEnvironmentTests(unittest.TestCase):
+    """DSH 多开适配：CodeBuddy 凭据按 harness home 各存一份。
+
+    因此"当前账号"是**按环境**而言的——给独立实例切换账号，必须写它自己的
+    ``<home>/codebuddy-auth.json``，不能碰共用的 ``~/.dsh``。
+    账号快照库则刻意共用一份，让同一批账号能在各环境间复用。
+    """
+
+    def setUp(self) -> None:
+        self.root = make_temp_dir(self)
+        self._saved = {
+            key: os.environ.get(key)
+            for key in ("DSH_HOME", "CODEBUDDY_ACCOUNTS_DIR", "DSH_CODEBUDDY_AUTH_FILE")
+        }
+        os.environ["DSH_HOME"] = str(self.root / "shared")
+        os.environ["CODEBUDDY_ACCOUNTS_DIR"] = str(self.root / "accounts")
+        os.environ.pop("DSH_CODEBUDDY_AUTH_FILE", None)
+        self.addCleanup(self._restore)
+
+        from codex_switch import codebuddy_core
+
+        self.core = codebuddy_core
+        self.shared_home = self.root / "shared"
+        self.isolated_home = self.root / "isolated"
+        self.isolated_home.mkdir(parents=True, exist_ok=True)
+        self._seed_snapshots()
+
+    def _restore(self) -> None:
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _credential(self, uid: str, nickname: str) -> dict:
+        return {
+            "auth": {
+                "accessToken": f"tok-{uid}",
+                "expiresAt": 4102444800000,
+                "refreshToken": f"ref-{uid}",
+                "refreshExpiresAt": 4102444800000,
+                "domain": "www.codebuddy.cn",
+            },
+            "account": {"uid": uid, "nickname": nickname},
+        }
+
+    def _seed_snapshots(self) -> None:
+        """三个账号都进快照库，再把甲/乙分别写进两个环境的凭据文件。
+
+        注意：``rows()`` 的 "current" 是拿当前凭据的 uid 去**匹配快照**得出的，
+        所以被测的账号必须真的在快照库里，否则一律标成非当前。
+        """
+        for uid, nickname in (("uid-aaa", "甲号"), ("uid-bbb", "乙号"), ("uid-ccc", "丙号")):
+            path = self.root / f"{nickname}.json"
+            path.write_text(
+                json.dumps(self._credential(uid, nickname), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.core.import_files([path])
+        self.core.write_credential_file(
+            self.core.resolve_auth_path(self.shared_home),
+            self._credential("uid-aaa", "甲号"),
+        )
+        self.core.write_credential_file(
+            self.core.resolve_auth_path(self.isolated_home),
+            self._credential("uid-bbb", "乙号"),
+        )
+
+    # -- 路径解析 --------------------------------------------------------
+    def test_auth_path_follows_the_given_home(self) -> None:
+        shared = self.core.resolve_auth_path(self.shared_home)
+        isolated = self.core.resolve_auth_path(self.isolated_home)
+        self.assertNotEqual(shared, isolated)
+        self.assertEqual(shared.parent, self.shared_home)
+        self.assertEqual(isolated.parent, self.isolated_home)
+
+    def test_explicit_home_ignores_the_auth_file_escape_hatch(self) -> None:
+        """指定了环境就必须读写那个环境，不能被环境变量带偏。
+
+        ``DSH_CODEBUDDY_AUTH_FILE`` 表达的是"当前进程用哪份凭据"；一旦用户
+        明确选了目标环境，再用它会切错地方。
+        """
+        os.environ["DSH_CODEBUDDY_AUTH_FILE"] = str(self.root / "elsewhere.json")
+        resolved = self.core.resolve_auth_path(self.isolated_home)
+        self.assertEqual(resolved, self.isolated_home / "codebuddy-auth.json")
+
+    def test_snapshot_store_is_shared_across_environments(self) -> None:
+        """快照库共用，否则在 A 环境存的账号在 B 环境看不到。"""
+        self.assertEqual(self.core.resolve_store_dir(), self.root / "accounts")
+        self.assertIn("乙号--uid-bbb.json", self.core.SnapshotStore(
+            self.core.resolve_store_dir()).list_names())
+
+    # -- 每个环境各自的"当前账号" -----------------------------------------
+    def test_current_is_per_environment(self) -> None:
+        self.assertEqual(self.core.read_live_uid(self.shared_home), "uid-aaa")
+        self.assertEqual(self.core.read_live_uid(self.isolated_home), "uid-bbb")
+
+    def test_rows_mark_current_per_environment(self) -> None:
+        store = self.core.SnapshotStore(self.core.resolve_store_dir())
+        shared = [r["nickname"] for r in store.rows(self.shared_home) if r["current"]]
+        isolated = [r["nickname"] for r in store.rows(self.isolated_home) if r["current"]]
+        self.assertEqual(shared, ["甲号"])
+        self.assertEqual(isolated, ["乙号"])
+
+    def test_rows_without_home_keeps_the_old_behaviour(self) -> None:
+        """不传 home 时按 DSH_HOME 解析，历史行为不变。"""
+        store = self.core.SnapshotStore(self.core.resolve_store_dir())
+        current = [r["nickname"] for r in store.rows() if r["current"]]
+        self.assertEqual(current, ["甲号"])
+
+    # -- 切换的作用范围 --------------------------------------------------
+    def test_switch_to_isolated_home_leaves_shared_untouched(self) -> None:
+        """核心断言：给独立实例切换账号，共用环境不受影响。"""
+        result = self.core.switch_to("丙号", home=self.isolated_home)
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(
+            Path(result.detail["authPath"]),
+            self.isolated_home / "codebuddy-auth.json",
+        )
+        self.assertEqual(self.core.read_live_uid(self.isolated_home), "uid-ccc")
+        self.assertEqual(self.core.read_live_uid(self.shared_home), "uid-aaa",
+                         "共用环境的凭据被误改了")
+
+    def test_switch_to_shared_home_leaves_isolated_untouched(self) -> None:
+        self.core.switch_to("丙号", home=self.shared_home)
+        self.assertEqual(self.core.read_live_uid(self.shared_home), "uid-ccc")
+        self.assertEqual(self.core.read_live_uid(self.isolated_home), "uid-bbb",
+                         "独立实例的凭据被误改了")
+
+    def test_switch_backs_up_only_the_target_environment(self) -> None:
+        """备份只应出现在被切换的那个环境里。"""
+        self.core.switch_to("丙号", home=self.isolated_home)
+        self.assertTrue((self.isolated_home / "codebuddy-auth-backups").is_dir())
+        self.assertFalse((self.shared_home / "codebuddy-auth-backups").exists())
+
+    def test_save_current_reads_the_given_home(self) -> None:
+        """从指定环境保存的应当是**那个环境**的账号。"""
+        self.core.save_current(home=self.isolated_home)
+        names = self.core.SnapshotStore(self.core.resolve_store_dir()).list_names()
+        self.assertTrue(any("乙号" in name for name in names), names)
+
+
+class CodeBuddyEnvironmentPluginTests(unittest.TestCase):
+    """插件层：environments() 与 *_of 方法的行为。"""
+
+    def setUp(self) -> None:
+        self.root = make_temp_dir(self)
+        self._saved = {
+            key: os.environ.get(key)
+            for key in ("DSH_HOME", "DSH_INSTANCES_DIR", "CODEBUDDY_ACCOUNTS_DIR",
+                        "DSH_CODEBUDDY_AUTH_FILE")
+        }
+        os.environ["DSH_HOME"] = str(self.root / "shared")
+        os.environ["DSH_INSTANCES_DIR"] = str(self.root / "instances")
+        os.environ["CODEBUDDY_ACCOUNTS_DIR"] = str(self.root / "accounts")
+        os.environ.pop("DSH_CODEBUDDY_AUTH_FILE", None)
+        self.addCleanup(self._restore)
+        self.plugin = self._load_plugin()
+
+    def _restore(self) -> None:
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _load_plugin(self):
+        from codex_switch.plugins import PluginApi
+        from codex_switch.plugins.loader import load_plugin
+        from codex_switch.plugins.registry import PluginRegistry, builtin_plugin_root
+
+        registry = PluginRegistry([(builtin_plugin_root(), True)])
+        registry.reload()
+        entry = registry.get("codebuddy-accounts")
+        return load_plugin(entry, PluginApi(entry.manifest))
+
+    def _add_instance(self, name: str):
+        from codex_switch import dsh_instances
+
+        registry = dsh_instances.InstanceRegistry()
+        instance = dsh_instances.new_instance(name, kind="web", isolate=True)
+        registry.upsert(instance)
+        return instance
+
+    def test_environments_always_include_the_shared_home(self) -> None:
+        rows = self.plugin.environments()
+        self.assertTrue(rows, "至少要列出共用环境")
+        self.assertTrue(any(row["shared"] for row in rows))
+
+    def test_isolated_instance_appears_as_its_own_environment(self) -> None:
+        self._add_instance("dev-a")
+        rows = self.plugin.environments()
+        isolated = [row for row in rows if row["isolated"]]
+        self.assertEqual(len(isolated), 1)
+        self.assertIn("codebuddy-auth.json", isolated[0]["authPath"])
+        # 页面直接渲染这些字段。
+        for key in ("authPath", "signedIn", "accountLabel", "label", "home"):
+            self.assertIn(key, isolated[0])
+
+    def test_not_signed_in_environment_says_so(self) -> None:
+        self._add_instance("dev-a")
+        row = [r for r in self.plugin.environments() if r["isolated"]][0]
+        self.assertFalse(row["signedIn"], "独立 home 里没有凭据，应显示未登录")
+        self.assertEqual(row["accountLabel"], "未登录 CodeBuddy")
+
+    def test_accounts_of_target_marks_no_current_when_not_signed_in(self) -> None:
+        """未登录的环境里不该有任何账号被标成"当前"。
+
+        把共用环境登录的账号也存进快照库，确保"没有 current"是因为**该环境
+        没登录**，而不是因为快照库里恰好没有这个 uid。
+        """
+        from codex_switch import codebuddy_core
+
+        credential = {
+            "auth": {
+                "accessToken": "tok-shared",
+                "expiresAt": 4102444800000,
+                "refreshToken": "ref-shared",
+                "refreshExpiresAt": 4102444800000,
+                "domain": "www.codebuddy.cn",
+            },
+            "account": {"uid": "uid-shared", "nickname": "共用号"},
+        }
+        source = self.root / "shared.json"
+        source.write_text(json.dumps(credential, ensure_ascii=False), encoding="utf-8")
+        codebuddy_core.import_credential_file(source)
+        codebuddy_core.write_credential_file(
+            codebuddy_core.resolve_auth_path(), credential)
+
+        self._add_instance("dev-a")
+        isolated = [r for r in self.plugin.environments() if r["isolated"]][0]
+        rows = self.plugin.accounts(isolated["id"])
+        self.assertTrue(rows)
+        self.assertEqual([r["current"] for r in rows], [False] * len(rows))
+        self.assertFalse(self.plugin.current(isolated["id"])["available"])
+
+        # 而共用环境里，同一个"共用号"应当被标成当前——证明上面的 False
+        # 确实来自"该环境未登录"，不是标记逻辑整体失效。
+        shared_id = [r for r in self.plugin.environments() if r["shared"]][0]["id"]
+        shared_rows = self.plugin.accounts(shared_id)
+        current = [r["nickname"] for r in shared_rows if r["current"]]
+        self.assertEqual(current, ["共用号"])
+
+    def test_unknown_target_is_reported_not_raised(self) -> None:
+        result = self.plugin.status("nope::web")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["error"])
+
+    def test_switch_of_isolated_environment_touches_only_that_home(self) -> None:
+        """经由插件切换：只动目标环境。"""
+        instance = self._add_instance("dev-a")
+        home = instance.home
+
+        # 先在共用环境放一份凭据，再从快照导入一个号用于切换
+        from codex_switch import codebuddy_core
+
+        credential = {
+            "auth": {
+                "accessToken": "tok-shared",
+                "expiresAt": 4102444800000,
+                "refreshToken": "ref-shared",
+                "refreshExpiresAt": 4102444800000,
+                "domain": "www.codebuddy.cn",
+            },
+            "account": {"uid": "uid-shared", "nickname": "共用号"},
+        }
+        codebuddy_core.write_credential_file(
+            codebuddy_core.resolve_auth_path(), credential)
+
+        source = self.root / "import.json"
+        source.write_text(json.dumps({
+            "auth": {
+                "accessToken": "tok-x",
+                "expiresAt": 4102444800000,
+                "refreshToken": "ref-x",
+                "refreshExpiresAt": 4102444800000,
+                "domain": "www.codebuddy.cn",
+            },
+            "account": {"uid": "uid-xxx", "nickname": "独立号"},
+        }, ensure_ascii=False), encoding="utf-8")
+        codebuddy_core.import_credential_file(source)
+
+        isolated = [r for r in self.plugin.environments() if r["isolated"]][0]
+        result = self.plugin.switch("独立号", isolated["id"])
+        self.assertTrue(result["ok"], result["message"])
+        self.assertTrue((Path(home) / "codebuddy-auth.json").is_file())
+        self.assertEqual(codebuddy_core.read_live_uid(Path(home)), "uid-xxx")
+        self.assertEqual(codebuddy_core.read_live_uid(), "uid-shared",
+                         "共用环境被误改了")
+
+
 if __name__ == "__main__":
     unittest.main()

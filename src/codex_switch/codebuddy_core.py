@@ -58,8 +58,18 @@ def resolve_home() -> Path:
     return dsh_home.resolve_home()
 
 
-def resolve_auth_path() -> Path:
-    """凭据文件绝对路径，尊重插件自身的 DSH_CODEBUDDY_AUTH_FILE 逃生口。"""
+def resolve_auth_path(home: Path | None = None) -> Path:
+    """凭据文件绝对路径，尊重插件自身的 DSH_CODEBUDDY_AUTH_FILE 逃生口。
+
+    Args:
+        home: 指定 harness home（多开场景下给某个独立实例切换账号）。
+            为 ``None`` 时按 :func:`resolve_home` 解析。
+            **显式传入 home 时不看** ``DSH_CODEBUDDY_AUTH_FILE``：那个逃生口
+            表达的是"当前进程用哪份凭据"，一旦用户指定了目标环境，就应该
+            老老实实读写那个环境的凭据，而不是被环境变量带偏。
+    """
+    if home is not None:
+        return Path(home).expanduser() / DEFAULT_AUTH_FILE_NAME
     override = os.environ.get("DSH_CODEBUDDY_AUTH_FILE", "").strip()
     if override:
         return Path(override).expanduser()
@@ -67,7 +77,13 @@ def resolve_auth_path() -> Path:
 
 
 def resolve_store_dir() -> Path:
-    """快照库目录，跟随 harness home，可用环境变量覆盖（便于测试）。"""
+    """快照库目录（账号池），可用环境变量覆盖（便于测试）。
+
+    快照库**刻意共用一份**（放在 ``~/.dsh`` 下），不随目标 harness home 走：
+    多开的价值就是"同一批账号在不同环境间复用"。若每个环境各存一份快照库，
+    用户在 A 环境存的账号在 B 环境就看不到，反而制造麻烦。
+    本函数因此不接受 home 参数——真正随环境变化的是凭据文件路径。
+    """
     override = os.environ.get("CODEBUDDY_ACCOUNTS_DIR", "").strip()
     if override:
         return Path(override).expanduser()
@@ -377,13 +393,17 @@ class SnapshotStore:
             return False
         return True
 
-    def rows(self) -> list[dict]:
-        """列出全部快照，并标注哪个是当前账号。
+    def rows(self, home: Path | None = None) -> list[dict]:
+        """列出全部快照，并标注哪个是**指定 harness home** 当前用的账号。
 
         这是给界面用的：一次读盘把展示需要的字段都算好，
         避免界面为每个账号重复读文件。
+
+        Args:
+            home: 以哪个 harness home 的凭据判断"当前"。多开场景下每个
+                实例各有一份凭据，因此"当前账号"是**按环境**而言的。
         """
-        live_uid = read_live_uid()
+        live_uid = read_live_uid(home)
         rows: list[dict] = []
         for position, name in enumerate(self.list_names(), start=1):
             try:
@@ -438,10 +458,13 @@ class OperationResult:
     detail: dict = field(default_factory=dict)
 
 
-def read_live_uid() -> str:
-    """读当前凭据文件里的 uid；读不到返回空串（例如尚未登录）。"""
+def read_live_uid(home: Path | None = None) -> str:
+    """读指定 harness home 里凭据文件的 uid；读不到返回空串。
+
+    ``home`` 为 ``None`` 时读当前进程解析出的 home。
+    """
     try:
-        return str(load_credential_file(resolve_auth_path())["account"]["uid"])
+        return str(load_credential_file(resolve_auth_path(home))["account"]["uid"])
     except ToolError:
         return ""
 
@@ -471,9 +494,13 @@ def prune_backups(backup_dir: Path, keep: int = BACKUP_KEEP) -> None:
         path.unlink(missing_ok=True)
 
 
-def save_current(label: str = "") -> OperationResult:
-    """把当前生效的凭据存为快照。"""
-    credential = load_credential_file(resolve_auth_path())
+def save_current(label: str = "", *, home: Path | None = None) -> OperationResult:
+    """把当前生效的凭据存为快照。
+
+    Args:
+        home: 从哪个 harness home 读凭据（多开场景传实例的 home）。
+    """
+    credential = load_credential_file(resolve_auth_path(home))
     info = describe_credential(credential)
     store = SnapshotStore(resolve_store_dir())
     path = store.add(credential, label or info["nickname"])
@@ -484,16 +511,21 @@ def save_current(label: str = "") -> OperationResult:
     )
 
 
-def switch_to(key: str) -> OperationResult:
-    """切换到指定账号（序号 / 快照名 / 昵称）。"""
+def switch_to(key: str, *, home: Path | None = None) -> OperationResult:
+    """切换到指定账号（序号 / 快照名 / 昵称）。
+
+    Args:
+        home: 把凭据写进哪个 harness home（多开场景传实例的 home）。
+            为 ``None`` 时写当前进程解析出的 home。
+    """
     store = SnapshotStore(resolve_store_dir())
     name = store.resolve(key)
     credential = store.read(name)
     info = describe_credential(credential)
 
-    auth_path = resolve_auth_path()
+    auth_path = resolve_auth_path(home)
     backup = backup_live_file(auth_path)
-    previous = read_live_uid()
+    previous = read_live_uid(home)
     write_credential_file(auth_path, credential)
 
     message = f"已切换到：{info['nickname']}（{info['uid'][:8]}）"
@@ -508,6 +540,7 @@ def switch_to(key: str) -> OperationResult:
             "uid": info["uid"],
             "domain": info["domain"],
             "backup": str(backup) if backup else "",
+            "authPath": str(auth_path),
         },
     )
 

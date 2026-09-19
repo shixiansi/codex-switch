@@ -6,7 +6,7 @@
   "entry": "entry.py",
   "page": "page.qml",
   "author": "CodexSwitch",
-  "description": "为 DSH 的 CodeBuddy 插件维护账号快照库，可随时在多个账号之间切换。只在凭据文件之外存副本，不改动 CodeBuddy 插件自身的任何文件，插件升级不会丢失账号。",
+  "description": "为 DSH 的 CodeBuddy 插件维护账号快照库，可随时在多个账号之间切换。凭据按 harness home 各存一份，因此可以分别给共用的 ~/.dsh 和每个独立实例（DSH 多开的独立 home）设置不同账号，而账号快照库共用一份、可跨环境复用。只在凭据文件之外存副本，不改动 CodeBuddy 插件自身的任何文件，插件升级不会丢失账号。",
   "permissions": [
     "snapshot:read",
     "action:invoke",

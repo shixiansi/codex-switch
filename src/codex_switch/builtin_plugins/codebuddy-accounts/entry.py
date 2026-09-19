@@ -23,16 +23,93 @@ from codex_switch import codebuddy_core as core
 
 
 class CodeBuddyAccountsPlugin:
-    """插件实例：持有宿主 API，暴露给页面调用的动作。"""
+    """插件实例：持有宿主 API，暴露给页面调用的动作。
+
+    适配 DSH 多开：CodeBuddy 的凭据是**按 harness home 各存一份**的
+    （``<home>/codebuddy-auth.json``），而多开插件给每个独立实例注入各自的
+    ``DSH_HOME``。所以"当前账号"是**按环境**而言的——同一个快照库可以有多个
+    环境各用不同账号。
+
+    账号快照库本身**共用一份**（放在 ``~/.dsh`` 下）：多开的意义就是让同一批
+    账号在各环境间复用，各存一份只会让用户在 A 环境存的账号在 B 环境看不到。
+    """
 
     def __init__(self, api) -> None:
         self.api = api
         self._store = core.SnapshotStore(core.resolve_store_dir())
 
+    # -- 环境（安装目标 = 一个 harness home） ------------------------------
+    def _targets(self) -> list:
+        """所有可作为"账号目标"的 DSH 环境。
+
+        复用 DSH 多开插件的目标枚举（DRY）：一个环境 = 一对 (harness home,
+        profile)。共用的 ``~/.dsh`` 也算一个环境。读不到实例时至少还有共用
+        环境可用，不该让整个页面失效。
+        """
+        try:
+            from codex_switch import dsh_instances as instances_core
+            from codex_switch import dsh_plugins as plugins_core
+
+            registry = instances_core.InstanceRegistry()
+            return plugins_core.enumerate_targets(registry.load())
+        except Exception as error:  # noqa: BLE001 - 读实例失败不该阻断账号管理
+            self.api.log(f"读取 DSH 实例失败，仅提供共用环境：{error}")
+            from codex_switch import dsh_plugins as plugins_core
+
+            return plugins_core.enumerate_targets([])
+
+    def _target(self, target_id: str):
+        """按 id 找环境；为空时返回共用环境（默认行为，保持向后兼容）。"""
+        targets = self._targets()
+        wanted = str(target_id or "").strip()
+        if not wanted:
+            return targets[0] if targets else None
+        for target in targets:
+            if target.id == wanted:
+                return target
+        raise core.ToolError(f"没有找到该 DSH 环境：{wanted}")
+
+    def _home_of(self, target_id: str) -> Path | None:
+        """环境对应的 harness home；共用环境返回解析结果（等价于不传）。"""
+        target = self._target(target_id)
+        return target.resolved_home if target is not None else None
+
+    def environments(self) -> list[dict]:
+        """列出所有 DSH 环境，并标注各自当前生效的 CodeBuddy 账号。
+
+        这是"适配多开"的核心：让用户一眼看到**每个环境分别登录的是哪个号**。
+        """
+        rows: list[dict] = []
+        for target in self._targets():
+            home = target.resolved_home
+            auth_path = core.resolve_auth_path(home)
+            signed_in = auth_path.is_file()
+            current = self._current_for(home) if signed_in else {}
+            row = target.to_row()
+            row.update({
+                "authPath": str(auth_path),
+                "signedIn": signed_in,
+                "nickname": current.get("nickname", ""),
+                "uidShort": current.get("uidShort", ""),
+                "domain": current.get("domain", ""),
+                "refreshExpired": current.get("refreshExpired", False),
+                "accountLabel": (
+                    f"{current.get('nickname', '')}（{current.get('uidShort', '')}）"
+                    if signed_in and current.get("available") else
+                    ("凭据损坏" if signed_in else "未登录 CodeBuddy")
+                ),
+            })
+            rows.append(row)
+        return rows
+
     # -- 只读状态 --------------------------------------------------------
-    def accounts(self) -> list[dict]:
-        """列出全部账号快照，并标注当前生效的那个。"""
-        rows = self._store.rows()
+    def accounts(self, target_id: str = "") -> list[dict]:
+        """列出全部账号快照，并标注在指定环境里哪个是当前生效的。"""
+        try:
+            home = self._home_of(target_id)
+        except core.ToolError:
+            home = None
+        rows = self._store.rows(home)
         # 页面用固定字段渲染，这里补齐展示用的文案，避免 QML 里堆逻辑。
         for row in rows:
             if row["broken"]:
@@ -47,10 +124,10 @@ class CodeBuddyAccountsPlugin:
             row["currentLabel"] = "当前" if row["current"] else ""
         return rows
 
-    def current(self) -> dict:
-        """当前生效账号的信息；尚未登录时返回空。"""
+    def _current_for(self, home: Path | None) -> dict:
+        """读某个 harness home 里当前生效的凭据。"""
         try:
-            credential = core.load_credential_file(core.resolve_auth_path())
+            credential = core.load_credential_file(core.resolve_auth_path(home))
         except core.ToolError as error:
             return {"available": False, "error": str(error)}
         info = core.describe_credential(credential)
@@ -65,37 +142,56 @@ class CodeBuddyAccountsPlugin:
             "error": "",
         }
 
-    def status(self) -> dict:
+    def current(self, target_id: str = "") -> dict:
+        """指定环境当前生效的账号；未登录时返回不可用。"""
+        try:
+            home = self._home_of(target_id)
+        except core.ToolError as error:
+            return {"available": False, "error": str(error)}
+        return self._current_for(home)
+
+    def status(self, target_id: str = "") -> dict:
         """插件整体状态，供页面顶部展示。"""
         store_exists = self._store.root.is_dir()
+        try:
+            target = self._target(target_id)
+        except core.ToolError as error:
+            return {"ok": False, "error": str(error)}
+        home = target.resolved_home if target is not None else None
         return {
-            "authPath": str(core.resolve_auth_path()),
+            "ok": True,
+            "error": "",
+            "authPath": str(core.resolve_auth_path(home)),
             "storeDir": str(self._store.root),
             "storeReady": store_exists,
             "count": len(self._store.list_names()),
-            "current": self.current(),
-            "dshHome": str(core.resolve_home()),
+            "current": self.current(target.id if target else ""),
+            "dshHome": str(home) if home else str(core.resolve_home()),
+            "targetId": target.id if target else "",
+            "targetLabel": target.display_label if target else "",
         }
 
     # -- 动作 ------------------------------------------------------------
-    def switch(self, key: str) -> dict:
-        """切换到指定账号（序号 / 快照名 / 昵称）。"""
+    def switch(self, key: str, target_id: str = "") -> dict:
+        """把指定环境切换到某个账号（序号 / 快照名 / 昵称）。"""
         try:
-            result = core.switch_to(str(key))
+            home = self._home_of(target_id)
+            result = core.switch_to(str(key), home=home)
         except core.ToolError as error:
             return {"ok": False, "message": str(error)}
         detail = dict(result.detail)
         detail["ok"] = True
         # 明确告诉用户什么时候生效，否则会以为切换没成功。
         detail["message"] = (
-            f"{result.message}。若 DSH 仍显示旧账号，重启 DSH 即可生效。"
+            f"{result.message}。若 DSH 仍显示旧账号，重启该环境的 DSH 即可生效。"
         )
         return detail
 
-    def save_current(self, label: str = "") -> dict:
-        """把当前生效的凭据存为快照。"""
+    def save_current(self, label: str = "", target_id: str = "") -> dict:
+        """把指定环境当前生效的凭据存为快照。"""
         try:
-            result = core.save_current(str(label or "").strip())
+            home = self._home_of(target_id)
+            result = core.save_current(str(label or "").strip(), home=home)
         except core.ToolError as error:
             return {"ok": False, "message": str(error)}
         detail = dict(result.detail)

@@ -37,6 +37,14 @@ ALLOWED_METHODS = (
     "remove",
     "import_directory",
     "import_files",
+    # CodeBuddy：按 DSH 环境（harness home）操作。QML 不支持"少传参数"，
+    # 因此这些动作各有一个带环境参数的独立方法名。
+    "environments",
+    "status_of",
+    "accounts_of",
+    "current_of",
+    "switch_of",
+    "save_current_of",
     # DSH 多开
     "instances",
     "detail",
@@ -115,6 +123,38 @@ class PluginCallBridge(QObject):
     @Slot(str, result="QVariant")
     def save_current(self, label: str) -> Any:
         return self._call("save_current", str(label))
+
+    # -- CodeBuddy：按 DSH 环境操作 --------------------------------------
+    # 为什么另起名字而不是给上面的槽加一个可选参数：Qt **不匹配"少传参数"**，
+    # `slot()` 少传一个 str 会静默返回 None（实测），表现为按钮点了没反应。
+    # 所以零参数的老槽必须原样保留，带环境的方法用独立名字。
+    @Slot(str, result="QVariantList")
+    def accounts_of(self, target_id: str) -> Any:
+        result = self._call("accounts", str(target_id))
+        return result if isinstance(result, list) else []
+
+    @Slot(str, result="QVariant")
+    def current_of(self, target_id: str) -> Any:
+        result = self._call("current", str(target_id))
+        return result if result is not None else {}
+
+    @Slot(str, result="QVariant")
+    def status_of(self, target_id: str) -> Any:
+        result = self._call("status", str(target_id))
+        return result if result is not None else {}
+
+    @Slot(str, str, result="QVariant")
+    def switch_of(self, key: str, target_id: str) -> Any:
+        return self._call("switch", str(key), str(target_id))
+
+    @Slot(str, str, result="QVariant")
+    def save_current_of(self, label: str, target_id: str) -> Any:
+        return self._call("save_current", str(label), str(target_id))
+
+    @Slot(result="QVariantList")
+    def environments(self) -> Any:
+        result = self._call("environments")
+        return result if isinstance(result, list) else []
 
     @Slot(str, result="QVariant")
     def remove(self, key: str) -> Any:
