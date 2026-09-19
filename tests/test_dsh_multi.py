@@ -794,6 +794,149 @@ class DshPageRenderTests(unittest.TestCase):
         self.assertTrue(text.strip(), "空日志没有给出任何提示文案")
 
 
+@unittest.skipUnless(QT_READY, "需要 PySide6 才能跑 QML 窗口测试")
+class DshPageLayoutTests(unittest.TestCase):
+    """页面布局必须在**真实窗口**里验证。
+
+    教训：用裸 ``QQmlComponent.create()``（没有 QQuickWindow）测量时，positioner
+    的高度还停在 polish 之前的旧值——同一个页面会读出"内容永远不增长"的假象，
+    从而把好代码改坏。所以这一组测试一律用 ``QQuickView`` 并多次 processEvents。
+
+    覆盖两个真实缺陷：
+    1. 内容变多时页面必须能滚动（否则靠下的卡片被挤出可视区）；
+    2. 详情/日志必须能关闭（否则"打开后关不掉"）。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+        from PySide6.QtGui import QGuiApplication
+
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+
+    def setUp(self) -> None:
+        self.addCleanup(self._restore_env)
+        self._previous = os.environ.get("DSH_INSTANCES_DIR")
+        self.root_dir = make_temp_dir(self)
+        os.environ["DSH_INSTANCES_DIR"] = str(self.root_dir)
+        self._build()
+
+    def _restore_env(self) -> None:
+        if self._previous is None:
+            os.environ.pop("DSH_INSTANCES_DIR", None)
+        else:
+            os.environ["DSH_INSTANCES_DIR"] = self._previous
+
+    def _build(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtQuick import QQuickView
+
+        from codex_switch.plugins import PluginApi
+        from codex_switch.plugins.loader import load_plugin
+        from codex_switch.plugins.registry import PluginRegistry, builtin_plugin_root
+        from codex_switch.ui_v2.plugin_bridge import PluginCallBridge
+
+        registry = PluginRegistry([(builtin_plugin_root(), True)])
+        registry.reload()
+        entry = registry.get("dsh-multi")
+        self.plugin = load_plugin(entry, PluginApi(entry.manifest))
+        self.bridge = PluginCallBridge(self.plugin)
+
+        view = QQuickView()
+        view.engine().addImportPath(str(SRC / "codex_switch" / "ui_v2" / "qml"))
+        view.setResizeMode(QQuickView.SizeRootObjectToView)
+        view.resize(1000, 460)
+        view.setSource(QUrl.fromLocalFile(str(entry.page_path)))
+        view.show()
+        self._pump()
+        self.assertEqual(
+            view.status(), QQuickView.Status.Ready,
+            "\n".join(e.toString() for e in view.errors()),
+        )
+        # view 与 engine 都要保活到测试结束，否则析构顺序会崩。
+        self._view = view
+        self.page = view.rootObject()
+        self.page.setProperty("instance", self.bridge)
+        self._pump()
+
+    @staticmethod
+    def _pump(times: int = 12) -> None:
+        """布局发生在 polish 阶段，一次 processEvents 不足以拿到最终高度。"""
+        from PySide6.QtCore import QCoreApplication
+
+        for _ in range(times):
+            QCoreApplication.processEvents()
+
+    def _content_height(self) -> float:
+        from PySide6.QtQuick import QQuickItem
+
+        self._pump()
+        scroll = self.page.findChild(QQuickItem, "pageScroll")
+        self.assertIsNotNone(scroll, "页面没有可滚动容器（缺少 pageScroll）")
+        return float(scroll.property("contentHeight"))
+
+    def test_content_grows_as_instances_are_added(self) -> None:
+        """内容必须随实例数量增长——这正是它需要滚动的原因。"""
+        empty = self._content_height()
+        for index in range(4):
+            self.plugin.create({"name": f"i{index}", "kind": "web", "isolate": True})
+        self.page.setProperty("instance", None)
+        self.page.setProperty("instance", self.bridge)
+        few = self._content_height()
+
+        for index in range(20):
+            self.plugin.create({"name": f"j{index}", "kind": "web", "isolate": True})
+        self.page.setProperty("instance", None)
+        self.page.setProperty("instance", self.bridge)
+        many = self._content_height()
+
+        self.assertGreater(few, empty, "加入实例后内容高度没有增长")
+        self.assertGreater(many, few, "实例继续增加后内容高度没有继续增长")
+
+    def test_page_is_scrollable_when_content_overflows(self) -> None:
+        """内容高于视口时，外层容器必须可滚动，否则下方内容永远看不到。"""
+        from PySide6.QtQuick import QQuickItem
+
+        for index in range(24):
+            self.plugin.create({"name": f"i{index}", "kind": "web", "isolate": True})
+        self.page.setProperty("instance", None)
+        self.page.setProperty("instance", self.bridge)
+        self._pump()
+
+        scroll = self.page.findChild(QQuickItem, "pageScroll")
+        self.assertGreater(
+            float(scroll.property("contentHeight")), scroll.height(),
+            "内容已超出视口，但容器不可滚动",
+        )
+
+    def test_detail_can_be_closed(self) -> None:
+        """详情/日志面板必须能关闭。
+
+        缺陷表现：打开后内容被挤到可视区外，卡片右上角的折叠箭头也点不到，
+        用户会觉得"关不掉"。这里同时验证 toggle 与显式关闭两条路径。
+        """
+        from PySide6.QtCore import Q_ARG, QMetaObject
+
+        self.plugin.create({"name": "dev", "kind": "web"})
+        self.page.setProperty("instance", None)
+        self.page.setProperty("instance", self.bridge)
+
+        QMetaObject.invokeMethod(self.page, "toggleLog", Q_ARG("QVariant", "dev"))
+        self._pump()
+        self.assertEqual(self.page.property("selectedKey"), "dev", "日志没有打开")
+
+        QMetaObject.invokeMethod(self.page, "toggleLog", Q_ARG("QVariant", "dev"))
+        self._pump()
+        self.assertEqual(self.page.property("selectedKey"), "", "再点一次没有收起")
+
+        QMetaObject.invokeMethod(self.page, "toggleLog", Q_ARG("QVariant", "dev"))
+        self._pump()
+        QMetaObject.invokeMethod(self.page, "closeDetail")
+        self._pump()
+        self.assertEqual(self.page.property("selectedKey"), "", "closeDetail 没有关闭详情")
+
+
 # ---------------------------------------------------------------------------
 # 7. 与 script_runner 的共享实现（DRY 回归）
 # ---------------------------------------------------------------------------

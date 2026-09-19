@@ -230,6 +230,23 @@ Item {
         logText = ""
     }
 
+    function closeDetail() {
+        selectedKey = ""
+        selected = ({})
+        logText = ""
+    }
+
+    // 「日志」按钮做开关：已经打开同一个实例就收起，否则打开。
+    // 只做"打开"会让用户没有明显办法把面板收回去。
+    function toggleLog(key) {
+        if (selectedKey === key) {
+            closeDetail()
+            return
+        }
+        select(key)
+        loadLog(key)
+    }
+
     function createInstance() {
         if (!instance) return
         var payload = {
@@ -319,10 +336,27 @@ Item {
         height: 0
     }
 
-    ColumnLayout {
+    // 整页可滚动。
+    //
+    // 本页内容会随实例数量增长（概览 + 实例列表 + 详情/日志，安装页还有四张
+    // 卡片），固定高度的 ColumnLayout 会把靠下的内容直接挤出可视区：详情/日志
+    // 卡片一旦打开就落在屏幕外，连它右上角的折叠箭头都点不到，表现为"日志打开
+    // 后关不掉"。所以这里用 ScrollView 承载，并把内部列表改为随内容自适应高度
+    // （页面负责滚动，列表不再自己嵌套滚动，避免滚轮被内层吃掉）。
+    ScrollView {
+        id: pageScroll
+
+        objectName: "pageScroll"
         anchors.fill: parent
         anchors.margins: Theme.space5
-        spacing: Theme.space4
+        clip: true
+        contentWidth: availableWidth
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+        ColumnLayout {
+            objectName: "pageContent"
+            width: pageScroll.availableWidth
+            spacing: Theme.space4
 
         SectionHeader {
             title: "DSH 多开"
@@ -472,21 +506,32 @@ Item {
         // ---------- 实例列表 ----------
         Rectangle {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.minimumHeight: 200
             visible: page.activeTab === 0
+            // 高度随内容增长，由外层 ScrollView 负责滚动。
+            // 若这里继续 fillHeight + 内层 ListView 自己滚动，会形成嵌套滚动区：
+            // 滚轮被内层吃掉，滚到底后也无法继续滚动外层，靠下的内容就永远够不着。
+            implicitHeight: instanceColumn.implicitHeight + Theme.space3 * 2
             radius: Theme.radius
             color: Theme.surface
             border.width: Theme.borderWidth
             border.color: Theme.border
 
-            ColumnLayout {
-                anchors.fill: parent
+            // 用普通 Column 而不是 ColumnLayout。
+            //
+            // 列表行放进外层 ScrollView 后，不需要 Layout 协议来分配高度：Column
+            // 按子项真实高度依次摆放，implicitHeight 就是它们的和，行为直观确定。
+            // 列表规模很小（用户自己开的实例数），也不需要 ListView 的惰性实例化。
+            Column {
+                id: instanceColumn
+                objectName: "instanceColumn"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
                 anchors.margins: Theme.space3
                 spacing: Theme.space2
 
                 Text {
-                    Layout.fillWidth: true
+                    width: parent.width
                     text: "实例 (" + page.instances.length + ")"
                     color: Theme.text
                     font.pixelSize: Theme.fontSubtitle
@@ -494,8 +539,7 @@ Item {
                 }
 
                 EmptyState {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    width: parent.width
                     visible: page.instances.length === 0
                     iconName: "grid"
                     title: "还没有实例"
@@ -504,20 +548,20 @@ Item {
                     onActionTriggered: newDialog.open()
                 }
 
-                ListView {
-                    id: instanceList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    visible: page.instances.length > 0
+                // 用 Repeater 而不是 ListView。
+                //
+                // 放进外层 ScrollView 后，列表自身不该再滚动：ListView 需要视口
+                // 高度才会布局，而它的高度又由内容决定，容易绕成"高度算不出来"的
+                // 局面；嵌套滚动区也会抢滚轮。Repeater 把每行直接放进 Column，
+                // 高度自然累加，滚动统一交给外层。
+                Repeater {
                     model: page.instances
-                    boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                     delegate: Rectangle {
                         required property var modelData
-                        width: instanceList.width
+                        width: instanceColumn.width
                         implicitHeight: cardLayout.implicitHeight + Theme.space3 * 2
+                        height: implicitHeight
                         radius: Theme.radiusSm
                         color: page.selectedKey === modelData.name ? Theme.surfaceAlt : "transparent"
 
@@ -591,12 +635,9 @@ Item {
                                     onClicked: page.openInstance(modelData.name)
                                 }
                                 AppButton {
-                                    text: "日志"
+                                    text: page.selectedKey === modelData.name ? "收起日志" : "日志"
                                     variant: "ghost"
-                                    onClicked: {
-                                        page.select(modelData.name)
-                                        page.loadLog(modelData.name)
-                                    }
+                                    onClicked: page.toggleLog(modelData.name)
                                 }
                                 AppButton {
                                     text: "删除"
@@ -615,7 +656,6 @@ Item {
         // 共用的 ~/.dsh 也是一个环境。这里可以单独装、也可以一次装到全部。
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.fillHeight: true
             visible: page.activeTab === 1
             spacing: Theme.space4
 
@@ -885,8 +925,6 @@ Item {
             // ---------- 任务与日志 ----------
             AppCard {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.minimumHeight: 220
                 title: "安装任务"
 
                 EmptyState {
@@ -897,20 +935,16 @@ Item {
                     description: "提交安装后，这里会显示每个环境的执行进度与输出。"
                 }
 
-                ListView {
-                    id: jobList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    implicitHeight: Math.min(contentHeight, 220)
-                    clip: true
-                    visible: page.installJobs.length > 0
+                // 同实例列表：Repeater 让行数随任务数增长，高度由内容决定；
+                // 不使用 ListView，避免它需要视口高度才能布局、又与外层
+                // ScrollView 形成嵌套滚动。
+                Repeater {
                     model: page.installJobs
-                    boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                     delegate: Rectangle {
                         required property var modelData
-                        width: jobList.width
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: jobRow.implicitHeight + Theme.space2 * 2
                         implicitHeight: jobRow.implicitHeight + Theme.space2 * 2
                         radius: Theme.radiusSm
                         color: page.jobLogJobId === modelData.id ? Theme.surfaceAlt : "transparent"
@@ -965,6 +999,24 @@ Item {
             title: "详情：" + page.selectedKey
             collapsible: true
             expanded: true
+
+            // 顶部给一个明确的关闭入口。
+            //
+            // 折叠箭头在卡片右上角，而卡片本身可能在滚动区下方；只靠箭头会
+            // 让用户觉得"打开了就关不掉"。这个按钮任何时候都在，语义也直白。
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space2
+
+                Item { Layout.fillWidth: true }
+
+                AppButton {
+                    text: "关闭详情"
+                    iconName: "close"
+                    variant: "ghost"
+                    onClicked: page.closeDetail()
+                }
+            }
 
             DetailRow {
                 Layout.fillWidth: true
@@ -1041,6 +1093,7 @@ Item {
                 text: page.logText
                 placeholderText: "点「刷新日志」查看该实例的输出。"
             }
+        }
         }
     }
 
