@@ -290,6 +290,18 @@ Property 'foo' of object QVariant(PySide::PyObjectWrapper, <MyPlugin>) is not a 
 
 ## 参考实现
 
-`src/codex_switch/builtin_plugins/codebuddy-accounts/` 是一个完整的示例：
-它声明了文件权限与 `paths`、提供了页面、通过调用桥与界面交互，
-可以作为编写新插件的起点。
+`src/codex_switch/builtin_plugins/` 下有两个完整的示例，可以按需要参考：
+
+- **`codebuddy-accounts/`** —— 声明了文件权限与 `paths`、提供了页面、通过调用桥
+  与界面交互。适合作为"读写文件 + 展示列表"这类插件的起点。
+- **`dsh-multi/`** —— 除了页面与文件读写，还声明并使用了 `exec`（启动常驻子
+  进程）。适合作为"需要启动/管理外部进程"这类插件的起点；它演示了如何在插件
+  里自己用 `Popen` 管理长生命周期进程，以及为什么不能用 `api.run_command`
+  启动常驻进程（见下）。
+
+### `exec` 与常驻进程
+
+`api.run_command` 的实现是 `subprocess.run(..., timeout=120)`，它会**阻塞到命令
+结束**。因此它只适合跑"有明确终点"的命令。要启动一个永不退出的常驻进程（例如
+一个服务器），必须在插件里自己用 `subprocess.Popen` 管理，并把输出重定向到日志
+文件——否则会阻塞满 120 秒再抛超时，期间界面也会卡住。`dsh-multi` 就是这么做的。

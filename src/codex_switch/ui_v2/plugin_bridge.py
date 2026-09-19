@@ -23,7 +23,12 @@ from .qt_compat import Property, QObject, Signal, Slot
 #
 # 不做成"任意方法都能调"：插件实例上可能有内部方法（甚至宿主注入的东西），
 # 逐个列出才能保证界面上能触发的行为是可审计的。
+#
+# 插件的同名方法共用同一个名字（例如两个插件都提供 status / remove），
+# 调用桥按名字派发，因此这里是一份"允许被界面调用的方法名"总表，而不是
+# "某个插件能调什么"——后者由插件自己是否实现该方法决定。
 ALLOWED_METHODS = (
+    # CodeBuddy 多账号
     "status",
     "accounts",
     "current",
@@ -32,6 +37,16 @@ ALLOWED_METHODS = (
     "remove",
     "import_directory",
     "import_files",
+    # DSH 多开
+    "instances",
+    "detail",
+    "log",
+    "create",
+    "start",
+    "stop",
+    "stop_all",
+    "url",
+    "open_folder",
 )
 
 
@@ -112,6 +127,54 @@ class PluginCallBridge(QObject):
         """
         cleaned = [str(item) for item in (paths or []) if str(item or "").strip()]
         return self._call("import_files", cleaned)
+
+    # -- DSH 多开 --------------------------------------------------------
+    # 这一组方法名与 CodeBuddy 插件不重叠（status / remove 已在上方定义，
+    # 两个插件语义一致，直接复用）。
+    @Slot(result="QVariantList")
+    def instances(self) -> Any:
+        result = self._call("instances")
+        return result if isinstance(result, list) else []
+
+    @Slot(str, result="QVariant")
+    def detail(self, key: str) -> Any:
+        result = self._call("detail", str(key))
+        return result if result is not None else {}
+
+    @Slot(str, result="QVariant")
+    def log(self, key: str) -> Any:
+        result = self._call("log", str(key))
+        return result if result is not None else {"ok": False, "message": "", "text": ""}
+
+    @Slot("QVariantMap", result="QVariant")
+    def create(self, payload: Any) -> Any:
+        """新建 DSH 实例。
+
+        参数声明成 ``QVariantMap``：QML 传进来的是 JS 对象，声明成 ``str``
+        或其他类型会让 Qt 匹配不到签名而**静默不派发**。
+        """
+        return self._call("create", dict(payload or {}))
+
+    @Slot(str, result="QVariant")
+    def start(self, key: str) -> Any:
+        return self._call("start", str(key))
+
+    @Slot(str, result="QVariant")
+    def stop(self, key: str) -> Any:
+        return self._call("stop", str(key))
+
+    @Slot(result="QVariant")
+    def stop_all(self) -> Any:
+        return self._call("stop_all")
+
+    @Slot(str, result="QVariant")
+    def url(self, key: str) -> Any:
+        return self._call("url", str(key))
+
+    @Slot(result="QVariant")
+    def open_folder(self) -> Any:
+        result = self._call("open_folder")
+        return result if result is not None else {}
 
 
 __all__ = ["ALLOWED_METHODS", "PluginCallBridge"]

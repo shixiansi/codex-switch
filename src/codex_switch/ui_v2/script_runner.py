@@ -13,16 +13,23 @@ the entries whose pid is still alive so the UI shows them as running again.
 
 from __future__ import annotations
 
-import ctypes
 from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
-import signal
 import subprocess
 from typing import Any
 
 from ..models import now_iso
+# 进程/日志的通用实现抽到了 codex_switch.process_util：DSH 多开插件同样需要
+# 这些能力，而插件不能 import 本包（ui_v2/__init__ 会拉起 Qt）。这里继续从
+# 原位置导出，历史调用方与测试不受影响（DRY）。
+from ..process_util import (
+    decode_output,
+    hidden_process_kwargs,
+    kill_pid,
+    pid_alive,
+)
 
 STATUS_IDLE = "idle"
 STATUS_RUNNING = "running"
@@ -32,32 +39,6 @@ STATUS_STOPPED = "stopped"
 
 # How much of a log the detail panel shows; the file keeps everything.
 OUTPUT_TAIL_LINES = 200
-
-# Console programs on a Chinese Windows write the OEM code page (GBK/cp936),
-# not UTF-8. The log keeps the raw bytes, so decoding has to detect which one a
-# run actually produced; guessing UTF-8 unconditionally mangled every Chinese
-# line into U+FFFD.
-_PREFERRED_ENCODINGS = ("utf-8", "mbcs", "cp936", "gbk", "big5", "utf-16")
-
-
-def decode_output(data: bytes) -> str:
-    """Decode captured console bytes, preferring a strict UTF-8 reading.
-
-    UTF-8 is tried first so modern tools (and our own ``PYTHONIOENCODING``
-    children) stay lossless. Anything that is *not* valid UTF-8 is far more
-    likely to be the local ANSI/OEM code page, so that is tried next. Only if
-    every candidate fails do we fall back to a lossy decode, which keeps
-    mojibake out of the UI while still showing something.
-    """
-    if not data:
-        return ""
-    for encoding in _PREFERRED_ENCODINGS:
-        try:
-            return data.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return data.decode("utf-8", errors="replace")
-
 
 def _read_log_bytes(log_path: str) -> bytes:
     try:
@@ -110,77 +91,13 @@ class ScriptRun:
 
 
 def _hidden_process_kwargs() -> dict[str, Any]:
-    """Flags that start a process with no console window (Windows only)."""
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined]
-    startupinfo.wShowWindow = 0  # SW_HIDE
-    return {
-        "startupinfo": startupinfo,
-        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    }
+    """Flags that start a process with no console window (Windows only).
 
-
-def pid_alive(pid: int) -> bool:
-    """Whether a process with ``pid`` currently exists.
-
-    Used to re-adopt background runs after an app restart, so it must not
-    create or signal anything. A reused pid could falsely read as alive, but
-    for a desktop tool the window for that race is negligible.
+    薄封装：真实实现在 :mod:`codex_switch.process_util`，与 DSH 多开插件共用。
+    保留这个私有名字是为了不惊动本模块内部既有的调用点。
     """
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_uint32()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return exit_code.value == STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Exists but belongs to someone else: alive is the safer answer.
-        return True
-    return True
+    return hidden_process_kwargs()
 
-
-def kill_pid(pid: int) -> bool:
-    """Forcefully kill a process we hold no Popen handle for."""
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        # /T takes the script's own children with it, which a plain handle
-        # kill would orphan.
-        try:
-            completed = subprocess.run(  # noqa: S603 - fixed argv
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError:
-            return False
-        return completed.returncode == 0
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return False
-    return True
 
 
 class ScriptRunManager:

@@ -150,6 +150,10 @@ PLUGIN_HIDDENIMPORTS = [
     "codex_switch.plugins.manifest",
     "codex_switch.plugins.registry",
     "codex_switch.codebuddy_core",
+    # DSH 多开插件依赖的宿主模块（含它自己 import 的两个共享模块）。
+    "codex_switch.dsh_instances",
+    "codex_switch.dsh_home",
+    "codex_switch.process_util",
 ]
 
 QML_HIDDENIMPORTS = [

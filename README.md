@@ -95,6 +95,15 @@ Codex Switch 是一个本地桌面配置管理工具，用来维护多套 Codex 
 - 切换后若 DSH 仍显示旧账号，重启 DSH 即可生效。
 - 详细说明见 [`docs/codebuddy-accounts.md`](docs/codebuddy-accounts.md)。
 
+#### 内置插件：DSH 多开
+
+- 同时运行多个 DSH 实例，各自独立端口，互不干扰。
+- 默认共用 `~/.dsh`（沿用登录态与设置，无需重新登录）；勾选「独立 home」则为该实例注入独立的 `DSH_HOME`，做到账号、设置、会话完全隔离。
+- 启动时会**等到实例真的就绪**（日志里出现带 token 的访问地址）才报告成功，并可直接用浏览器打开该地址。
+- 启动失败会终止残留进程，并把日志里的真实原因显示出来；每个实例都有独立日志。
+- 关闭 CodexSwitch 或禁用插件**不会**杀掉正在运行的实例。
+- 详细说明见 [`docs/dsh-multi.md`](docs/dsh-multi.md)。
+
 ### MCP 配置
 
 - 以列表形式管理全局 MCP server，每个工具单独占一行。
@@ -211,6 +220,9 @@ Windows 本地打包：
 │   ├── main.py                     # 应用启动入口（默认启动 QML 界面）
 │   ├── models.py                   # Profile、ProjectRecord、健康结果等数据模型
 │   ├── storage.py                  # profiles.json 读写
+│   ├── dsh_home.py                 # DSH harness home 解析（DSH_HOME > ~/.dsh）
+│   ├── dsh_instances.py            # DSH 多开：实例注册表、启动计划、进程状态机
+│   ├── process_util.py             # 进程/日志工具（pid 探测、整树结束、编码解码）
 │   ├── codex_config.py             # Codex config/auth 与 MCP TOML 生成逻辑
 │   ├── claude_config.py            # Claude settings.json 生成与备份
 │   ├── health.py                   # /models 健康检测

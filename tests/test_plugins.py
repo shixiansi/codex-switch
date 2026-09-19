@@ -665,6 +665,22 @@ class FrozenPathTests(unittest.TestCase):
         self.assertIn("codex_switch.codebuddy_core", spec,
                       "插件入口用 importlib 加载，其依赖必须作为隐藏导入声明")
 
+    def test_spec_declares_dsh_multi_plugin_dependencies(self) -> None:
+        """DSH 多开插件的宿主依赖也必须登记为隐藏导入。
+
+        与 CodeBuddy 插件同理：插件入口由 importlib 按路径加载，PyInstaller
+        的静态分析看不到它 import 了什么。漏登记的后果是插件能被打包、能被
+        发现，但一加载就 ModuleNotFoundError——插件中心显示"错误"。
+        """
+        spec = (PROJECT_ROOT / "CodexSwitch.spec").read_text(encoding="utf-8")
+        for module in (
+            "codex_switch.dsh_instances",
+            "codex_switch.dsh_home",
+            "codex_switch.process_util",
+        ):
+            with self.subTest(module=module):
+                self.assertIn(module, spec, f"spec 缺少隐藏导入：{module}")
+
     def test_builtin_plugin_directory_has_no_pycache_in_spec_scope(self) -> None:
         """收集逻辑要跳过 __pycache__，避免把陈旧字节码打进包里。"""
         spec = (PROJECT_ROOT / "CodexSwitch.spec").read_text(encoding="utf-8")

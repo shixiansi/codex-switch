@@ -1,0 +1,32 @@
+{
+  "id": "dsh-multi",
+  "name": "DSH 多开",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "entry.py",
+  "page": "page.qml",
+  "author": "CodexSwitch",
+  "description": "同时运行多个 DSH 实例（各自独立端口），每个实例可以用共用的 ~/.dsh，也可以用自己独立的 harness home 做账号与配置隔离。插件负责启动、停止、查看日志，并把带 token 的访问地址解析出来供你直接打开。",
+  "permissions": [
+    "snapshot:read",
+    "action:invoke",
+    "fs:read",
+    "fs:write",
+    "exec"
+  ],
+  "paths": {
+    "fs:read": [
+      "~/.dsh"
+    ],
+    "fs:write": [
+      "~/.dsh"
+    ]
+  },
+  "actions": [
+    {
+      "key": "refresh-status",
+      "label": "刷新状态",
+      "description": "重新探测各实例的进程与访问地址。"
+    }
+  ]
+}

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from . import dsh_home
+
 # 快照文件里必须存在的字段：与插件 storage.js 的校验保持一致。
 REQUIRED_AUTH_FIELDS = ("accessToken", "expiresAt", "refreshToken", "refreshExpiresAt", "domain")
 
@@ -48,11 +50,12 @@ class ToolError(Exception):
 # --------------------------------------------------------------------------
 
 def resolve_home() -> Path:
-    """按 DSH 自己的优先级解析 harness home：DSH_HOME > ~/.dsh。"""
-    override = os.environ.get("DSH_HOME", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".dsh"
+    """按 DSH 自己的优先级解析 harness home：DSH_HOME > ~/.dsh。
+
+    真实实现在 :mod:`codex_switch.dsh_home`，DSH 多开插件共用同一份规则。
+    这里保留同名函数，历史调用方与测试不受影响。
+    """
+    return dsh_home.resolve_home()
 
 
 def resolve_auth_path() -> Path:
