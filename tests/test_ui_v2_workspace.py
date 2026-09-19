@@ -1578,6 +1578,43 @@ class ProjectOperationTests(WorkspaceTestCase):
         self.assertIn("已在浏览器打开", result.message)
         self.assertIn("https://guard.example.com/signin", workspace_module.opened_urls())
 
+    def test_opening_folders_never_launches_a_file_manager_during_tests(self) -> None:
+        """测试期间绝不能真的弹出文件管理器窗口。
+
+        真实缺陷：URL 有测试守卫，但"打开文件夹"没有——每跑一次测试套件都会
+        执行 ``explorer <路径>``；而 ``explorer`` 打不开目标时不报错、会退回到
+        默认位置（文档），用户看到的现象就是"程序一直在打开我的文档文件夹"。
+        """
+        import subprocess
+
+        self.assertFalse(
+            workspace_module.OPENS_ENABLED,
+            "tests must run with folder opening disabled",
+        )
+
+        launched: list[list[str]] = []
+        original = subprocess.Popen
+
+        def spy(argv, *args, **kwargs):
+            if isinstance(argv, (list, tuple)) and str(argv[0]).lower().startswith("explorer"):
+                launched.append([str(item) for item in argv])
+                return type("P", (), {"pid": 0, "poll": lambda self: 0})()
+            return original(argv, *args, **kwargs)
+
+        from unittest.mock import patch
+
+        from codex_switch.ui_v2.controller import AppController
+
+        controller = AppController()
+        with workspace_tempdir() as target:
+            with patch.object(subprocess, "Popen", spy):
+                opened = controller._reveal_directory(target)
+
+        self.assertTrue(opened, "禁用状态下应视为已记录")
+        self.assertEqual(launched, [], f"测试期间真的启动了文件管理器：{launched}")
+        self.assertIn(str(target), workspace_module.opened_paths(),
+                      "被拦下的打开动作应当被记录下来，便于断言")
+
     def test_open_urls_disabled_records_and_restores(self) -> None:
         """The context manager records opens and restores the previous state."""
         profile = self.add_profile(

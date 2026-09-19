@@ -1484,7 +1484,17 @@ class AppController(QObject):
         Windows 上以 ``explorer`` 为主：它比 ``QDesktopServices`` 可靠，
         且不受 Qt 平台插件/COM 注册状态影响。注意 ``explorer`` 成功打开
         目录时**返回码是 1**，所以这里不能按"非零即失败"判断。
+
+        测试环境必须走"只记录、不真的打开"的分支：本方法会弹出真实窗口，
+        否则每跑一次测试套件都会出现文件管理器，而且 ``explorer`` 打不开目标
+        时不报错、会退回到默认位置（文档），看起来就像程序莫名打开了文档夹。
         """
+        from .workspace import OPENS_ENABLED, record_opened_path
+
+        if not OPENS_ENABLED:
+            record_opened_path(str(path))
+            return True
+
         import subprocess
         import sys as _sys
 

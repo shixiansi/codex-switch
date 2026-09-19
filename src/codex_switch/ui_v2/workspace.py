@@ -2550,19 +2550,34 @@ def _append_events(
 
 
 def _open_path(path: Path) -> None:
-    os.startfile(str(path))  # type: ignore[attr-defined]  # Windows-only target
+    """Open a folder in the system file manager, or record it when disabled.
+
+    与 :func:`_open_url` 对称：测试环境必须能一次性关掉**所有**外部打开行为。
+    这里曾经只守卫了 URL 而漏了路径，后果是每跑一次测试套件就真的弹出文件
+    管理器窗口——而且 ``explorer`` 打不开目标时不报错，会退回到默认位置
+    （文档），看起来就像"程序一直在打开我的文档文件夹"。
+    """
+    target = str(path)
+    if not OPENS_ENABLED:
+        _opened_paths.append(target)
+        return
+    os.startfile(target)  # type: ignore[attr-defined]  # Windows-only target
 
 
-def _urls_disabled_by_env() -> bool:
-    """Tests opt out once by environment, so no call site can forget."""
+def _opens_disabled_by_env() -> bool:
+    """测试通过环境变量一次性关掉所有"打开外部位置"的行为。"""
     flag = os.environ.get("CODEX_SWITCH_DISABLE_OPEN_URL", "").strip().lower()
     return flag in ("1", "true", "yes", "on")
 
 
-# Set to False in tests so a forgotten patch can never launch a real browser:
+# Set to False in tests so a forgotten patch can never open a real window:
 # the open becomes a recorded no-op instead of an OS-level side effect.
-OPEN_URLS_ENABLED = not _urls_disabled_by_env()
+# 名称保留 OPEN_URLS_ENABLED 以兼容既有测试，但它同时管住"打开文件夹"。
+OPEN_URLS_ENABLED = not _opens_disabled_by_env()
+# 别名：语义更准确的名字，供新代码使用。
+OPENS_ENABLED = OPEN_URLS_ENABLED
 _opened_urls: list[str] = []
+_opened_paths: list[str] = []
 
 
 def _open_url(url: str) -> None:
@@ -2583,18 +2598,24 @@ def open_urls_disabled():
     """Context manager that records opens instead of launching a browser.
 
     Yields the list of URLs that were requested, so tests can assert on them
-    without patching individual call sites.
+    without patching individual call sites. 同时也关掉"打开文件夹"——两者
+    都属于"会弹出真实窗口"的副作用，测试里必须一起禁止。
     """
-    global OPEN_URLS_ENABLED, _opened_urls
+    global OPEN_URLS_ENABLED, OPENS_ENABLED, _opened_urls, _opened_paths
     previous_enabled = OPEN_URLS_ENABLED
     previous_urls = _opened_urls
+    previous_paths = _opened_paths
     OPEN_URLS_ENABLED = False
+    OPENS_ENABLED = False
     _opened_urls = []
+    _opened_paths = []
     try:
         yield _opened_urls
     finally:
         OPEN_URLS_ENABLED = previous_enabled
+        OPENS_ENABLED = previous_enabled
         _opened_urls = previous_urls
+        _opened_paths = previous_paths
 
 
 def opened_urls() -> list[str]:
@@ -2602,12 +2623,32 @@ def opened_urls() -> list[str]:
     return list(_opened_urls)
 
 
+def opened_paths() -> list[str]:
+    """文件夹路径 recorded while opening was disabled."""
+    return list(_opened_paths)
+
+
+def record_opened_path(path: str) -> None:
+    """记录一次"本该打开文件夹"的调用。
+
+    给那些自己实现打开逻辑、但同样要遵守测试开关的调用方使用（例如
+    ``AppController._reveal_directory``——它走的是 ``explorer`` 而不是
+    ``os.startfile``，所以不能直接用 :func:`_open_path`）。
+    """
+    _opened_paths.append(str(path))
+
+
 __all__ = [
     "ActionResult",
     "HealthOutcome",
+    "OPENS_ENABLED",
+    "OPEN_URLS_ENABLED",
     "Workspace",
     "WorkspaceError",
     "existing_repo_files",
     "expanded_skills_for_group_ids",
     "mask_secret",
+    "opened_paths",
+    "opened_urls",
+    "record_opened_path",
 ]
